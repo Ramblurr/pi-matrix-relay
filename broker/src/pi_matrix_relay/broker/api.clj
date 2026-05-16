@@ -150,8 +150,12 @@
 
 (defn ensure-send-authorized!
   [state client-id room-id]
-  (when-not (state/known-room-for-client? state client-id room-id)
-    (throw (ex-info "Client is not registered for the target Matrix room."
+  (when-not (if client-id
+              (state/known-room-for-client? state client-id room-id)
+              (boolean (state/joined-room state room-id)))
+    (throw (ex-info (if client-id
+                      "Client is not registered for the target Matrix room."
+                      "Target Matrix room has not been joined or registered for this client.")
                     {:code :room_not_allowed
                      :client-id client-id
                      :room-id room-id}))))

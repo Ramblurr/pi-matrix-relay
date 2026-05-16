@@ -111,6 +111,31 @@
               :send-calls (count (filter #(= :send-message (first %))
                                          (tu/calls gateway)))})))))
 
+(deftest matrix-send-without-client-id-is-allowed-for-joined-rooms
+  (testing "the local command spike can send to a broker-joined room over UDS without a registered client"
+    (let [gateway (tu/fake-gateway)
+          env (tu/test-env gateway)
+          app (api/app env)]
+      (tu/json-request app :post "/v1/matrix/rooms/resolve"
+                       {:requestId "resolve-local-command"
+                        :room "!joined:example.org"})
+      (is (= {:allowed {:ok true
+                        :data {:roomId "!joined:example.org"
+                               :eventId "$message:example.org"}}
+              :forbidden {:ok false
+                          :error {:code "room_not_allowed"
+                                  :message "Target Matrix room has not been joined or registered for this client."
+                                  :details {:client-id nil
+                                            :room-id "!missing:example.org"}}}}
+             {:allowed (tu/json-request app :post "/v1/matrix/messages"
+                                       {:requestId "send-local-command"
+                                        :target {:roomId "!joined:example.org"}
+                                        :body "hello from local command"})
+              :forbidden (tu/json-request app :post "/v1/matrix/messages"
+                                         {:requestId "send-local-command-forbidden"
+                                          :target {:roomId "!missing:example.org"}
+                                          :body "nope"})})))))
+
 (deftest slot-acquire-is-idempotent-and-allocates-next-free-slot
   (testing "slot leases are coordinated by the broker and mutating requestIds are replay-safe"
     (let [gateway (tu/fake-gateway)
