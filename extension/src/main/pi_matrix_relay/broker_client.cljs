@@ -27,6 +27,13 @@
               :method method
               :headers headers})))
 
+(defn event-stream-options
+  [env client-id]
+  (clj->js {:socketPath (socket-path env)
+            :path (str "/v1/clients/" client-id "/events")
+            :method "GET"
+            :headers {"Accept" "text/event-stream"}}))
+
 (defn broker-error
   [{:keys [message code details]}]
   (let [err (js/Error. (or message "Broker request failed"))]
@@ -44,6 +51,42 @@
   [text]
   (when-not (str/blank? text)
     (js->clj (js/JSON.parse text) :keywordize-keys true)))
+
+(defn- parse-sse-frame
+  [frame]
+  (let [lines (str/split-lines frame)
+        parsed (reduce (fn [acc line]
+                         (cond
+                           (str/starts-with? line ":")
+                           acc
+
+                           (str/starts-with? line "id:")
+                           (assoc acc :id (str/trim (subs line 3)))
+
+                           (str/starts-with? line "event:")
+                           (assoc acc :event (str/trim (subs line 6)))
+
+                           (str/starts-with? line "data:")
+                           (update acc :data-lines (fnil conj []) (str/triml (subs line 5)))
+
+                           :else
+                           acc))
+                       {}
+                       lines)]
+    (when (seq (:data-lines parsed))
+      {:id (:id parsed)
+       :event (:event parsed)
+       :data (parse-json (str/join "\n" (:data-lines parsed)))})))
+
+(defn parse-sse-chunk
+  [buffer chunk]
+  (let [combined (str (or buffer "") chunk)
+        parts (str/split combined #"\n\n" -1)
+        frames (butlast parts)]
+    {:events (->> frames
+                  (keep parse-sse-frame)
+                  vec)
+     :buffer (last parts)}))
 
 (defn request-json!
   ([method uri body]
@@ -75,6 +118,46 @@
    (health! {}))
   ([opts]
    (request-json! opts "GET" "/v1/health" nil)))
+
+(defn register-client!
+  ([request]
+   (register-client! {} request))
+  ([opts request]
+   (request-json! opts "POST" "/v1/clients" request)))
+
+(defn update-subscriptions!
+  ([client-id rooms]
+   (update-subscriptions! {} client-id rooms))
+  ([opts client-id rooms]
+   (request-json! opts "PATCH" (str "/v1/clients/" client-id "/subscriptions")
+                  {:rooms rooms})))
+
+(defn open-event-stream!
+  ([client-id on-event]
+   (open-event-stream! {:env (.-env js/process)} client-id on-event))
+  ([{:keys [env on-error]} client-id on-event]
+   (let [env (or env (.-env js/process))
+         buffer* (atom "")
+         req (.request http
+                       (event-stream-options env client-id)
+                       (fn [^js res]
+                         (.setEncoding res "utf8")
+                         (.on res "data"
+                              (fn [chunk]
+                                (try
+                                  (let [{:keys [events buffer]} (parse-sse-chunk @buffer* chunk)]
+                                    (reset! buffer* buffer)
+                                    (doseq [event events]
+                                      (on-event (:data event))))
+                                  (catch js/Error err
+                                    (when on-error
+                                      (on-error err))))))))]
+     (.on req "error" (fn [err]
+                        (when on-error
+                          (on-error err))))
+     (.end req)
+     #js {:close (fn []
+                   (.destroy req))})))
 
 (defn resolve-room!
   ([room]

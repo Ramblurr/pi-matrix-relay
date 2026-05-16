@@ -42,3 +42,18 @@
       (is (= {:code "matrix_not_configured"
               :details {:field "password"}}
              (js->clj (.-data e) :keywordize-keys true))))))
+
+(deftest parse-sse-chunk-returns-complete-events-and-buffer
+  (let [result (broker-client/parse-sse-chunk
+                ""
+                (str ": connected\n\n"
+                     "id: evt-1\n"
+                     "event: matrix.message\n"
+                     "data: {\"type\":\"matrix.message\",\"event\":{\"text\":\"hello\"}}\n\n"
+                     "id: evt-2\n"))]
+    (is (= [{:id "evt-1"
+             :event "matrix.message"
+             :data {:type "matrix.message"
+                    :event {:text "hello"}}}]
+           (:events result)))
+    (is (= "id: evt-2\n" (:buffer result)))))

@@ -1,5 +1,6 @@
 (ns pi-matrix-relay.extension-test
   (:require [cljs.test :refer [async deftest is testing]]
+            [clojure.string :as str]
             [pi-matrix-relay.extension :as extension]))
 
 (deftest greeting-includes-target
@@ -125,3 +126,101 @@
           (.catch (fn [err]
                     (is false (.-stack err))
                     (done)))))))
+
+(deftest session-start-registers-project-room-subscriptions-and-opens-event-stream
+  (async done
+    (let [calls* (atom [])
+          stream* (atom nil)
+          deps {:read-project-config! (fn [_cwd]
+                                        {:rooms {"ops" {:alias "ops"
+                                                        :roomId "!room:example.org"
+                                                        :mode "all"}}})
+                :health! (fn []
+                           (swap! calls* conj [:health])
+                           (js/Promise.resolve {:matrix {:connected true
+                                                         :userId "@bot:example.org"}}))
+                :register-client! (fn [request]
+                                    (swap! calls* conj [:register request])
+                                    (js/Promise.resolve {:clientId "client-1"
+                                                         :eventStream "/v1/clients/client-1/events"
+                                                         :globalOperators ["@alice:example.org"]}))
+                :open-event-stream! (fn [client-id on-event]
+                                      (swap! calls* conj [:open-event-stream client-id])
+                                      (reset! stream* {:client-id client-id
+                                                       :on-event on-event
+                                                       :closed? (atom false)})
+                                      #js {:close (fn []
+                                                    (reset! (:closed? @stream*) true))})}
+          notifications* (atom [])
+          statuses* (atom [])
+          pi #js {:sendUserMessage (fn [_message])}
+          ctx #js {:cwd "/work/project"
+                   :ui #js {:notify (fn [message level]
+                                      (swap! notifications* conj [message level]))
+                            :setStatus (fn [id status]
+                                         (swap! statuses* conj [id status]))}}]
+      (-> (extension/start-relay! deps pi ctx)
+          (.then (fn [_]
+                   (is (= [:health] (first @calls*)))
+                   (is (= [:register {:clientInstanceId "matrix-relay-/work/project"
+                                      :protocolVersion 1
+                                      :project {:root "/work/project"
+                                                :id "project"}
+                                      :subscriptions {:rooms ["!room:example.org"]}}]
+                          (second @calls*)))
+                   (is (= [:open-event-stream "client-1"] (nth @calls* 2)))
+                   (is (= [["pi-matrix-relay" "matrix: listening to ops"]]
+                          @statuses*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest authorized-matrix-message-from-bound-room-is-injected-as-user-message
+  (let [sent* (atom [])
+        notifications* (atom [])
+        pi #js {:sendUserMessage (fn [message options]
+                                   (swap! sent* conj {:message message
+                                                      :options (some-> options (js->clj :keywordize-keys true))}))}
+        ctx #js {:cwd "/work/project"
+                 :isIdle (fn [] true)
+                 :ui #js {:notify (fn [message level]
+                                    (swap! notifications* conj [message level]))}}
+        relay-state {:project-config {:rooms {"ops" {:alias "ops"
+                                                      :roomId "!room:example.org"
+                                                      :mode "all"}}}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"}
+        event {:type "matrix.message"
+               :room {:roomId "!room:example.org"}
+               :event {:eventId "$event:example.org"
+                       :sender "@alice:example.org"
+                       :timestamp "2026-05-16T12:34:56Z"
+                       :text "please check status"}}]
+    (extension/handle-broker-event! {} pi ctx relay-state event)
+    (is (= 1 (count @sent*)))
+    (is (str/includes? (:message (first @sent*)) "Matrix ops from @alice:example.org at 12:34"))
+    (is (str/includes? (:message (first @sent*)) "please check status"))
+    (is (str/includes? (:message (first @sent*)) "roomId: !room:example.org"))
+    (is (str/includes? (:message (first @sent*)) "eventId: $event:example.org"))
+    (is (nil? (:options (first @sent*))))
+    (is (= [] @notifications*))))
+
+(deftest unauthorized-matrix-message-is-ignored
+  (let [sent* (atom [])
+        pi #js {:sendUserMessage (fn [message]
+                                   (swap! sent* conj message))}
+        ctx #js {:cwd "/work/project"
+                 :isIdle (fn [] true)}
+        relay-state {:project-config {:rooms {"ops" {:alias "ops"
+                                                      :roomId "!room:example.org"
+                                                      :mode "all"}}}
+                     :global-operators #{"@alice:example.org"}}
+        event {:type "matrix.message"
+               :room {:roomId "!room:example.org"}
+               :event {:eventId "$event:example.org"
+                       :sender "@mallory:example.org"
+                       :timestamp "2026-05-16T12:34:56Z"
+                       :text "please check status"}}]
+    (extension/handle-broker-event! {} pi ctx relay-state event)
+    (is (= [] @sent*))))
