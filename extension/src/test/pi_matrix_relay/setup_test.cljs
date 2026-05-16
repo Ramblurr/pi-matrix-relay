@@ -53,6 +53,107 @@
         (is (= "Operator MXID must look like @user:server: alice"
                (.-message e)))))))
 
+(deftest run-setup-reprompts-invalid-homeserver-before-continuing
+  (async done
+    (let [calls* (atom [])
+          homeserver-values (atom ["matrix.example.org" "https://matrix.example.org"])
+          deps {:read-global-config! (constantly {})
+                :editor! (fn [label initial]
+                           (swap! calls* conj [:editor label initial])
+                           (js/Promise.resolve
+                            (case label
+                              "Matrix homeserver URL" (let [v (first @homeserver-values)]
+                                                        (swap! homeserver-values subvec 1)
+                                                        v)
+                              "Matrix bot user ID" "@bot:example.org"
+                              "Global operator MXIDs, one per line" "@alice:example.org")))
+                :input! (fn [label placeholder]
+                          (swap! calls* conj [:input label placeholder])
+                          (js/Promise.resolve "secret"))
+                :confirm! (fn [title message]
+                            (swap! calls* conj [:confirm title message])
+                            (js/Promise.resolve false))
+                :write-global-config! (fn [config]
+                                        (swap! calls* conj [:write-global-config config]))
+                :health! (fn []
+                           (swap! calls* conj [:health])
+                           (js/Promise.resolve {:matrix {:connected true
+                                                         :userId "@bot:example.org"}}))
+                :notify! (fn [message level]
+                           (swap! calls* conj [:notify message level]))
+                :set-status! (fn [status]
+                               (swap! calls* conj [:status status]))}]
+      (-> (setup/run-setup! deps)
+          (.then (fn [_]
+                   (is (= [[:editor "Matrix homeserver URL" "https://matrix.example.org"]
+                           [:notify "Matrix homeserver URL must be an https:// URL." "error"]
+                           [:editor "Matrix homeserver URL" "matrix.example.org"]
+                           [:editor "Matrix bot user ID" "@pi:example.org"]]
+                          (take 4 @calls*)))
+                   (is (some (fn [[op config]]
+                               (and (= :write-global-config op)
+                                    (= "https://matrix.example.org"
+                                       (get-in config [:matrix :homeserver-url]))))
+                             @calls*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest run-setup-reprompts-invalid-operators-before-encryption-confirm
+  (async done
+    (let [calls* (atom [])
+          operator-values (atom ["alice" "@alice:example.org"])
+          deps {:read-global-config! (constantly {})
+                :editor! (fn [label initial]
+                           (swap! calls* conj [:editor label initial])
+                           (js/Promise.resolve
+                            (case label
+                              "Matrix homeserver URL" "https://matrix.example.org"
+                              "Matrix bot user ID" "@bot:example.org"
+                              "Global operator MXIDs, one per line" (let [v (first @operator-values)]
+                                                                      (swap! operator-values subvec 1)
+                                                                      v))))
+                :input! (fn [label placeholder]
+                          (swap! calls* conj [:input label placeholder])
+                          (js/Promise.resolve "secret"))
+                :confirm! (fn [title message]
+                            (swap! calls* conj [:confirm title message])
+                            (js/Promise.resolve false))
+                :write-global-config! (fn [config]
+                                        (swap! calls* conj [:write-global-config config]))
+                :health! (fn []
+                           (swap! calls* conj [:health])
+                           (js/Promise.resolve {:matrix {:connected true
+                                                         :userId "@bot:example.org"}}))
+                :notify! (fn [message level]
+                           (swap! calls* conj [:notify message level]))
+                :set-status! (fn [status]
+                               (swap! calls* conj [:status status]))}]
+      (-> (setup/run-setup! deps)
+          (.then (fn [_]
+                   (let [events @calls*
+                         operator-start (first (keep-indexed
+                                                (fn [idx call]
+                                                  (when (= [:editor "Global operator MXIDs, one per line" ""] call)
+                                                    idx))
+                                                events))
+                         after-operator (take 4 (drop operator-start events))]
+                     (is (= [[:editor "Global operator MXIDs, one per line" ""]
+                             [:notify "Operator MXID must look like @user:server: alice" "error"]
+                             [:editor "Global operator MXIDs, one per line" "alice"]]
+                            (take 3 after-operator)))
+                     (is (= :confirm (ffirst (drop 3 after-operator)))))
+                   (is (some (fn [[op config]]
+                               (and (= :write-global-config op)
+                                    (= ["@alice:example.org"]
+                                       (get-in config [:matrix :operators]))))
+                             @calls*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
 (deftest run-setup-prefills-existing-config-and-keeps-existing-password-on-blank
   (async done
     (let [calls* (atom [])

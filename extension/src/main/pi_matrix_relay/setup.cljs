@@ -46,22 +46,41 @@
       trimmed
       (str "https://" trimmed))))
 
+(defn- validate-homeserver!
+  [homeserver-url]
+  (when-not (https-url? homeserver-url)
+    (throw (js/Error. "Matrix homeserver URL must be an https:// URL.")))
+  homeserver-url)
+
+(defn- validate-user-id!
+  [user-id]
+  (when-not (mxid? user-id)
+    (throw (js/Error. "Matrix bot user ID must look like @user:server.")))
+  user-id)
+
+(defn- validate-password!
+  [password]
+  (when (str/blank? (str password))
+    (throw (js/Error. "Matrix bot password is required.")))
+  password)
+
+(defn- validate-operators!
+  [operators]
+  (doseq [operator operators]
+    (when-not (mxid? operator)
+      (throw (js/Error. (str "Operator MXID must look like @user:server: " operator)))))
+  operators)
+
+(defn- validate-operator-text!
+  [operator-text]
+  (validate-operators! (parse-operators operator-text)))
+
 (defn validate-fields!
   [{:keys [homeserver-url user-id password operators] :as fields}]
-  (cond
-    (not (https-url? homeserver-url))
-    (throw (js/Error. "Matrix homeserver URL must be an https:// URL."))
-
-    (not (mxid? user-id))
-    (throw (js/Error. "Matrix bot user ID must look like @user:server."))
-
-    (str/blank? (str password))
-    (throw (js/Error. "Matrix bot password is required."))
-
-    :else
-    (doseq [operator operators]
-      (when-not (mxid? operator)
-        (throw (js/Error. (str "Operator MXID must look like @user:server: " operator))))))
+  (validate-homeserver! homeserver-url)
+  (validate-user-id! user-id)
+  (validate-password! password)
+  (validate-operators! operators)
   fields)
 
 (defn config-from-fields
@@ -113,6 +132,19 @@
     "Matrix bot password"
     "Matrix bot password (leave blank to keep existing password)"))
 
+(defn- prompt-valid!
+  [{:keys [notify!]} prompt! label initial validate!]
+  (letfn [(ask [current-initial]
+            (-> (prompt! label current-initial)
+                (.then (fn [value]
+                         (try
+                           (validate! value)
+                           (catch js/Error err
+                             (when notify!
+                               (notify! (.-message err) "error"))
+                             (ask (str value))))))))]
+    (ask initial)))
+
 (defn- status-text
   [health]
   (if-let [user-id (get-in health [:matrix :userId])]
@@ -139,36 +171,52 @@
       (attempt 1))))
 
 (defn- collect-fields!
-  [{:keys [input! editor! confirm!]} existing]
+  [{:keys [input! editor! confirm! notify!]} existing]
   (let [existing-matrix (:matrix existing)
         existing-homeserver (homeserver-prefill (:homeserver-url existing-matrix))
         existing-user-id (:user-id existing-matrix)
         existing-password (:password existing-matrix)
         existing-operators (:operators existing-matrix)
         existing-encrypted? (not (false? (:encrypted? existing-matrix)))]
-    (-> (editor! "Matrix homeserver URL" (or existing-homeserver "https://matrix.example.org"))
+    (-> (prompt-valid! {:notify! notify!}
+                       editor!
+                       "Matrix homeserver URL"
+                       (or existing-homeserver "https://matrix.example.org")
+                       #(validate-homeserver! (keep-blank % existing-homeserver)))
         (.then (fn [homeserver-url]
-                 (-> (editor! "Matrix bot user ID" (or existing-user-id "@pi:example.org"))
+                 (-> (prompt-valid! {:notify! notify!}
+                                    editor!
+                                    "Matrix bot user ID"
+                                    (or existing-user-id "@pi:example.org")
+                                    #(validate-user-id! (keep-blank % existing-user-id)))
                      (.then (fn [user-id]
                               [homeserver-url user-id])))))
         (.then (fn [[homeserver-url user-id]]
-                 (-> (input! (password-label existing-password) "")
+                 (-> (prompt-valid! {:notify! notify!}
+                                    input!
+                                    (password-label existing-password)
+                                    ""
+                                    #(validate-password! (keep-blank % existing-password)))
                      (.then (fn [password]
                               [homeserver-url user-id password])))))
         (.then (fn [[homeserver-url user-id password]]
-                 (-> (editor! "Global operator MXIDs, one per line" (str/join "\n" existing-operators))
-                     (.then (fn [operators-text]
-                              [homeserver-url user-id password operators-text])))))
-        (.then (fn [[homeserver-url user-id password operators-text]]
+                 (-> (prompt-valid! {:notify! notify!}
+                                    editor!
+                                    "Global operator MXIDs, one per line"
+                                    (str/join "\n" existing-operators)
+                                    validate-operator-text!)
+                     (.then (fn [operators]
+                              [homeserver-url user-id password operators])))))
+        (.then (fn [[homeserver-url user-id password operators]]
                  (-> (confirm! "Enable Matrix encryption?"
                               (str "Encrypted rooms are the default for pi-matrix-relay. Current: "
                                    (if existing-encrypted? "enabled" "disabled")))
                      (.then (fn [encrypted?]
                               (validate-fields!
-                               {:homeserver-url (keep-blank homeserver-url existing-homeserver)
-                                :user-id (keep-blank user-id existing-user-id)
-                                :password (keep-blank password existing-password)
-                                :operators (parse-operators operators-text)
+                               {:homeserver-url homeserver-url
+                                :user-id user-id
+                                :password password
+                                :operators operators
                                 :encrypted? encrypted?})))))))))
 
 (defn run-setup!
