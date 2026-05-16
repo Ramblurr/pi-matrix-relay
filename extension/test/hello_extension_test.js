@@ -13,22 +13,12 @@ const pi = {
 
 extensionFactory(pi);
 
-assert.deepEqual(Array.from(commands.keys()), ["hello"]);
+assert.deepEqual(Array.from(commands.keys()).sort(), ["matrix-relay", "mr"]);
 
-const hello = commands.get("hello");
-assert.equal(hello.description, "Say hello from the ClojureScript Pi extension");
+for (const name of ["matrix-relay", "mr"]) {
+  const command = commands.get(name);
+  assert.equal(command.description, "Control the Pi Matrix relay");
+  assert.equal(typeof command.handler, "function");
+}
 
-const notifications = [];
-hello.handler("Matrix", {
-  ui: {
-    notify(message, level) {
-      notifications.push({ message, level });
-    },
-  },
-});
-
-assert.deepEqual(notifications, [
-  { message: "Hello, Matrix, from ClojureScript!", level: "info" },
-]);
-
-console.log("hello extension behavior ok");
+console.log("matrix relay extension behavior ok");
