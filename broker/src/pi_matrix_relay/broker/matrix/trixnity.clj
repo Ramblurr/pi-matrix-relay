@@ -46,31 +46,37 @@
      :matrixContentUri (event/url ev)}))
 
 (defn- normalized-event
-  [ev]
-  (cond
-    (event/text? ev)
-    {:event "matrix.message"
-     :data {:type "matrix.message"
-            :room {:roomId (event/room-id ev)}
-            :event {:eventId (event/event-id ev)
-                    :sender (event/sender ev)
-                    :senderDisplayName (event/sender-display-name ev)
-                    :timestamp (now-iso)
-                    :msgtype (event/msgtype ev)
-                    :text (event/body ev)
-                    :replyToEventId (event/relation-event-id ev)}
-            :attachments (cond-> []
-                           (attachment ev) (conj (attachment ev)))}}
+  ([ev]
+   (normalized-event ev nil))
+  ([ev bot-user-id]
+   (let [sender (event/sender ev)
+         sender-is-bot? (= sender bot-user-id)]
+     (cond
+       (event/text? ev)
+       {:event "matrix.message"
+        :data {:type "matrix.message"
+               :room {:roomId (event/room-id ev)}
+               :event {:eventId (event/event-id ev)
+                       :sender sender
+                       :senderDisplayName (event/sender-display-name ev)
+                       :senderIsBot sender-is-bot?
+                       :timestamp (now-iso)
+                       :msgtype (event/msgtype ev)
+                       :text (event/body ev)
+                       :replyToEventId (event/relation-event-id ev)}
+               :attachments (cond-> []
+                              (attachment ev) (conj (attachment ev)))}}
 
-    (event/reaction? ev)
-    {:event "matrix.reaction"
-     :data {:type "matrix.reaction"
-            :room {:roomId (event/room-id ev)}
-            :event {:eventId (event/event-id ev)
-                    :sender (event/sender ev)
-                    :timestamp (now-iso)
-                    :reactsToEventId (event/relation-event-id ev)
-                    :key (event/key ev)}}}))
+       (event/reaction? ev)
+       {:event "matrix.reaction"
+        :data {:type "matrix.reaction"
+               :room {:roomId (event/room-id ev)}
+               :event {:eventId (event/event-id ev)
+                       :sender sender
+                       :senderIsBot sender-is-bot?
+                       :timestamp (now-iso)
+                       :reactsToEventId (event/relation-event-id ev)
+                       :key (event/key ev)}}}))))
 
 (defn- start-virtual-thread!
   [f]
@@ -81,18 +87,19 @@
 (defn- start-timeline-loop!
   [client event-sink]
   (when-let [publish! (:publish! event-sink)]
-    (start-virtual-thread!
-     (fn []
-       (m/?
-        (m/reduce
-         (fn [_ ev]
-           (when-let [normalized (normalized-event ev)]
-             (publish! normalized))
-           nil)
-         nil
-         (room/get-timeline-events-from-now-on
-          client
-          {::mx/decryption-timeout (Duration/ofSeconds 8)})))))))
+    (let [bot-user-id (str (client/current-user-id client))]
+      (start-virtual-thread!
+       (fn []
+         (m/?
+          (m/reduce
+           (fn [_ ev]
+             (when-let [normalized (normalized-event ev bot-user-id)]
+               (publish! normalized))
+             nil)
+           nil
+           (room/get-timeline-events-from-now-on
+            client
+            {::mx/decryption-timeout (Duration/ofSeconds 8)}))))))))
 
 (defrecord TrixnityGateway [config paths event-sink runtime*]
   matrix/MatrixGateway
