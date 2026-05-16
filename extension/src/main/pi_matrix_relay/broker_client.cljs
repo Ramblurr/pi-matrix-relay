@@ -167,8 +167,22 @@
 
 (defn send-message!
   ([room-id message]
-   (send-message! {} room-id message))
-  ([opts room-id message]
+   (send-message! {} room-id message nil))
+  ([room-id message send-opts]
+   (send-message! {} room-id message send-opts))
+  ([opts room-id message send-opts]
    (request-json! opts "POST" "/v1/matrix/messages"
-                  {:target {:roomId room-id}
-                   :body message})))
+                  (cond-> {:target {:roomId room-id}
+                           :body message}
+                    (:replyToEventId send-opts)
+                    (assoc :replyTo {:roomId room-id
+                                     :eventId (:replyToEventId send-opts)})))))
+
+(defn send-reaction!
+  ([room-id event-id key]
+   (send-reaction! {} room-id event-id key))
+  ([opts room-id event-id key]
+   (request-json! opts "POST" "/v1/matrix/reactions"
+                  {:roomId room-id
+                   :eventId event-id
+                   :key key})))

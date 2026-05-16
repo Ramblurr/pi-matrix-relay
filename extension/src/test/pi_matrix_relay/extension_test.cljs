@@ -18,9 +18,10 @@
     (extension/init pi)
     (is (= #{"matrix-relay" "mr"}
            (set (keys @commands*))))
-    (is (= #{"send_matrix_message"}
+    (is (= #{"send_matrix_message" "send_matrix_reaction"}
            (set (keys @tools*))))
-    (is (fn? (.-execute ^js (get @tools* "send_matrix_message"))))))
+    (is (fn? (.-execute ^js (get @tools* "send_matrix_message"))))
+    (is (fn? (.-execute ^js (get @tools* "send_matrix_reaction"))))))
 
 (deftest room-bind-resolves-room-and-writes-project-config
   (async done
@@ -82,21 +83,59 @@
           deps {:read-project-config! (fn [_cwd]
                                         {:rooms {"ops" {:alias "ops"
                                                         :roomId "!room:example.org"}}})
-                :send-message! (fn [room-id message]
-                                (reset! sent* {:room-id room-id :message message})
+                :send-message! (fn [room-id message opts]
+                                (reset! sent* {:room-id room-id :message message :opts opts})
                                 (js/Promise.resolve {:eventId "$event:example.org"}))}
           ctx #js {:cwd "/work/project"}]
       (-> (extension/execute-send-matrix-message! deps {:target "ops"
-                                                        :message "tool says hello"}
+                                                        :message "tool says hello"
+                                                        :replyToEventId "$parent:example.org"}
                                                 ctx)
           (.then (fn [result]
-                   (is (= {:room-id "!room:example.org" :message "tool says hello"}
+                   (is (= {:room-id "!room:example.org"
+                           :message "tool says hello"
+                           :opts {:replyToEventId "$parent:example.org"}}
                           @sent*))
                    (is (= {:content [{:type "text"
                                       :text "Sent Matrix message $event:example.org to !room:example.org"}]
                            :details {:roomId "!room:example.org"
                                      :eventId "$event:example.org"
-                                     :target "ops"}}
+                                     :target "ops"
+                                     :replyToEventId "$parent:example.org"}}
+                          result))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest send-matrix-reaction-tool-reuses-bound-target-resolution
+  (async done
+    (let [sent* (atom nil)
+          deps {:read-project-config! (fn [_cwd]
+                                        {:rooms {"ops" {:alias "ops"
+                                                        :roomId "!room:example.org"}}})
+                :send-reaction! (fn [room-id event-id key]
+                                  (reset! sent* {:room-id room-id
+                                                 :event-id event-id
+                                                 :key key})
+                                  (js/Promise.resolve {:eventId "$reaction:example.org"}))}
+          ctx #js {:cwd "/work/project"}]
+      (-> (extension/execute-send-matrix-reaction! deps {:target "ops"
+                                                         :eventId "$event:example.org"
+                                                         :key "👍"}
+                                                 ctx)
+          (.then (fn [result]
+                   (is (= {:room-id "!room:example.org"
+                           :event-id "$event:example.org"
+                           :key "👍"}
+                          @sent*))
+                   (is (= {:content [{:type "text"
+                                      :text "Sent Matrix reaction 👍 to $event:example.org in !room:example.org"}]
+                           :details {:roomId "!room:example.org"
+                                     :eventId "$reaction:example.org"
+                                     :reactsToEventId "$event:example.org"
+                                     :target "ops"
+                                     :key "👍"}}
                           result))
                    (done)))
           (.catch (fn [err]
@@ -205,6 +244,30 @@
     (is (str/includes? (:message (first @sent*)) "eventId: $event:example.org"))
     (is (nil? (:options (first @sent*))))
     (is (= [] @notifications*))))
+
+(deftest matrix-reaction-from-bound-room-is-injected-as-user-message
+  (let [sent* (atom [])
+        pi #js {:sendUserMessage (fn [message options]
+                                   (swap! sent* conj {:message message
+                                                      :options (some-> options (js->clj :keywordize-keys true))}))}
+        ctx #js {:cwd "/work/project"
+                 :isIdle (fn [] true)}
+        relay-state {:project-config {:rooms {"ops" {:alias "ops"
+                                                      :roomId "!room:example.org"
+                                                      :mode "all"}}}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"}
+        event {:type "matrix.reaction"
+               :room {:roomId "!room:example.org"}
+               :event {:eventId "$reaction:example.org"
+                       :sender "@alice:example.org"
+                       :timestamp "2026-05-16T12:34:56Z"
+                       :reactsToEventId "$event:example.org"
+                       :key "👍"}}]
+    (extension/handle-broker-event! {} pi ctx relay-state event)
+    (is (= 1 (count @sent*)))
+    (is (str/includes? (:message (first @sent*)) "Matrix reaction in ops from @alice:example.org at 12:34"))
+    (is (str/includes? (:message (first @sent*)) "reacted 👍 to event $event:example.org"))))
 
 (deftest unauthorized-matrix-message-is-ignored
   (let [sent* (atom [])

@@ -14,6 +14,7 @@
    :open-event-stream! broker-client/open-event-stream!
    :resolve-room! broker-client/resolve-room!
    :send-message! broker-client/send-message!
+   :send-reaction! broker-client/send-reaction!
    :read-project-config! config/read-project-config!
    :write-project-config! config/write-project-config!
    :run-setup! setup/run-setup!})
@@ -116,6 +117,18 @@
          (when-let [reply-to (:replyToEventId event)]
            (str "\nreplyToEventId: " reply-to)))))
 
+(defn- matrix-reaction-prompt
+  [binding {:keys [room event]}]
+  (let [alias (or (:alias binding) (:name binding) (get room :name) (get room :roomId))
+        sender (or (:sender event) "unknown sender")
+        timestamp (short-time (:timestamp event))]
+    (str "Matrix reaction in " alias " from " sender " at " timestamp "\n"
+         "reacted " (:key event) " to event " (:reactsToEventId event) "\n\n"
+         "Matrix metadata:\n"
+         "roomId: " (get room :roomId) "\n"
+         "eventId: " (:eventId event) "\n"
+         "reactsToEventId: " (:reactsToEventId event))))
+
 (defn- idle?
   [^js ctx]
   (if-let [is-idle (.-isIdle ctx)]
@@ -143,6 +156,15 @@
                  (authorized-sender? relay-state (:sender message))
                  (message-allowed-by-mode? binding (:text message) (:bot-user-id relay-state)))
         (deliver-user-message! pi ctx binding (matrix-message-prompt binding event))))
+
+    "matrix.reaction"
+    (let [room-id (get-in event [:room :roomId])
+          reaction (:event event)
+          binding (binding-for-room-id (:project-config relay-state) room-id)]
+      (when (and binding
+                 (not (:senderIsBot reaction))
+                 (authorized-sender? relay-state (:sender reaction)))
+        (deliver-user-message! pi ctx binding (matrix-reaction-prompt binding event))))
 
     "broker.notice"
     (notify! ctx (:message event) (or (:level event) "info"))
@@ -265,16 +287,42 @@
         cwd (ctx-cwd ctx)
         target (:target params)
         message (:message params)
+        reply-to-event-id (:replyToEventId params)
         project-config (read-project-config! cwd)]
     (if-let [binding (config/resolve-target project-config target)]
-      (-> (promise (send-message! (:roomId binding) message))
+      (-> (promise (send-message! (:roomId binding)
+                                  message
+                                  (cond-> {}
+                                    reply-to-event-id (assoc :replyToEventId reply-to-event-id))))
           (.then (fn [result]
                    {:content [{:type "text"
                                :text (str "Sent Matrix message " (:eventId result)
                                           " to " (:roomId binding))}]
+                    :details (cond-> {:roomId (:roomId binding)
+                                      :eventId (:eventId result)
+                                      :target target}
+                               reply-to-event-id (assoc :replyToEventId reply-to-event-id))})))
+      (js/Promise.reject (js/Error. (str "No Matrix room binding for target " target))))))
+
+(defn execute-send-matrix-reaction!
+  [deps params ^js ctx]
+  (let [{:keys [read-project-config! send-reaction!]} deps
+        cwd (ctx-cwd ctx)
+        target (:target params)
+        event-id (:eventId params)
+        key (:key params)
+        project-config (read-project-config! cwd)]
+    (if-let [binding (config/resolve-target project-config target)]
+      (-> (promise (send-reaction! (:roomId binding) event-id key))
+          (.then (fn [result]
+                   {:content [{:type "text"
+                               :text (str "Sent Matrix reaction " key " to " event-id
+                                          " in " (:roomId binding))}]
                     :details {:roomId (:roomId binding)
                               :eventId (:eventId result)
-                              :target target}})))
+                              :reactsToEventId event-id
+                              :target target
+                              :key key}})))
       (js/Promise.reject (js/Error. (str "No Matrix room binding for target " target))))))
 
 (def send-matrix-message-parameters
@@ -284,7 +332,9 @@
        :properties #js {:target #js {:type "string"
                                      :description "Bound local alias or Matrix room id to send to"}
                         :message #js {:type "string"
-                                      :description "Plain text Matrix message body"}}})
+                                      :description "Plain text Matrix message body"}
+                        :replyToEventId #js {:type "string"
+                                             :description "Optional Matrix event id to reply to using Matrix-native reply metadata"}}})
 
 (defn register-send-tool!
   [^js pi deps]
@@ -293,10 +343,35 @@
          :label "Send Matrix Message"
          :description "Send a plain text Matrix message through the local pi-matrix-relay broker."
          :promptSnippet "Send a Matrix message to a bound project room alias."
-         :promptGuidelines #js ["Use send_matrix_message only when the user explicitly asks to send a Matrix message."]
+         :promptGuidelines #js ["Use send_matrix_message only when the user explicitly asks to send a Matrix message."
+                                "Use replyToEventId when replying to a Matrix message that included an eventId in the prompt metadata."]
          :parameters send-matrix-message-parameters
          :execute (fn [_tool-call-id params _signal _on-update ctx]
                     (-> (execute-send-matrix-message! deps (js->clj params :keywordize-keys true) ctx)
+                        (.then clj->js)))}))
+
+(def send-matrix-reaction-parameters
+  #js {:type "object"
+       :additionalProperties false
+       :required #js ["target" "eventId" "key"]
+       :properties #js {:target #js {:type "string"
+                                     :description "Bound local alias or Matrix room id containing the event"}
+                        :eventId #js {:type "string"
+                                      :description "Matrix event id to react to"}
+                        :key #js {:type "string"
+                                  :description "Reaction key, for example 👍"}}})
+
+(defn register-reaction-tool!
+  [^js pi deps]
+  (.registerTool pi
+    #js {:name "send_matrix_reaction"
+         :label "Send Matrix Reaction"
+         :description "Send a Matrix reaction through the local pi-matrix-relay broker."
+         :promptSnippet "React to a Matrix event in a bound project room."
+         :promptGuidelines #js ["Use send_matrix_reaction only when the user explicitly asks to react to a Matrix message."]
+         :parameters send-matrix-reaction-parameters
+         :execute (fn [_tool-call-id params _signal _on-update ctx]
+                    (-> (execute-send-matrix-reaction! deps (js->clj params :keywordize-keys true) ctx)
                         (.then clj->js)))}))
 
 (defn hello-handler [args ^js ctx]
@@ -319,6 +394,7 @@
               :handler (fn [args ctx]
                          (handle-command! deps args ctx))}))
      (register-send-tool! pi deps)
+     (register-reaction-tool! pi deps)
      (when-let [on (.-on pi)]
        (on "session_start"
            (fn [_event ctx]

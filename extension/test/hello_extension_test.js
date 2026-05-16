@@ -18,7 +18,7 @@ const pi = {
 extensionFactory(pi);
 
 assert.deepEqual(Array.from(commands.keys()).sort(), ["matrix-relay", "mr"]);
-assert.deepEqual(Array.from(tools.keys()), ["send_matrix_message"]);
+assert.deepEqual(Array.from(tools.keys()).sort(), ["send_matrix_message", "send_matrix_reaction"]);
 
 for (const name of ["matrix-relay", "mr"]) {
   const command = commands.get(name);
@@ -29,5 +29,9 @@ for (const name of ["matrix-relay", "mr"]) {
 const tool = tools.get("send_matrix_message");
 assert.equal(tool.label, "Send Matrix Message");
 assert.equal(typeof tool.execute, "function");
+
+const reactionTool = tools.get("send_matrix_reaction");
+assert.equal(reactionTool.label, "Send Matrix Reaction");
+assert.equal(typeof reactionTool.execute, "function");
 
 console.log("matrix relay extension behavior ok");
