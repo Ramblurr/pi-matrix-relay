@@ -7,13 +7,19 @@
     (is (= "Hello, Matrix, from ClojureScript!"
            (extension/greeting "Matrix")))))
 
-(deftest registers-long-and-short-commands
+(deftest registers-long-and-short-commands-and-send-tool
   (let [commands* (atom {})
+        tools* (atom {})
         pi #js {:registerCommand (fn [name opts]
-                                   (swap! commands* assoc name opts))}]
+                                   (swap! commands* assoc name opts))
+                :registerTool (fn [tool]
+                                (swap! tools* assoc (.-name tool) tool))}]
     (extension/init pi)
     (is (= #{"matrix-relay" "mr"}
-           (set (keys @commands*))))))
+           (set (keys @commands*))))
+    (is (= #{"send_matrix_message"}
+           (set (keys @tools*))))
+    (is (fn? (.-execute ^js (get @tools* "send_matrix_message"))))))
 
 (deftest room-bind-resolves-room-and-writes-project-config
   (async done
@@ -64,6 +70,33 @@
                    (is (fn? (:confirm! @deps-seen*)))
                    (is (fn? (:notify! @deps-seen*)))
                    (is (fn? (:set-status! @deps-seen*)))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest send-matrix-message-tool-reuses-bound-target-resolution
+  (async done
+    (let [sent* (atom nil)
+          deps {:read-project-config! (fn [_cwd]
+                                        {:rooms {"ops" {:alias "ops"
+                                                        :roomId "!room:example.org"}}})
+                :send-message! (fn [room-id message]
+                                (reset! sent* {:room-id room-id :message message})
+                                (js/Promise.resolve {:eventId "$event:example.org"}))}
+          ctx #js {:cwd "/work/project"}]
+      (-> (extension/execute-send-matrix-message! deps {:target "ops"
+                                                        :message "tool says hello"}
+                                                ctx)
+          (.then (fn [result]
+                   (is (= {:room-id "!room:example.org" :message "tool says hello"}
+                          @sent*))
+                   (is (= {:content [{:type "text"
+                                      :text "Sent Matrix message $event:example.org to !room:example.org"}]
+                           :details {:roomId "!room:example.org"
+                                     :eventId "$event:example.org"
+                                     :target "ops"}}
+                          result))
                    (done)))
           (.catch (fn [err]
                     (is false (.-stack err))

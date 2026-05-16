@@ -106,6 +106,46 @@
                 (notify-error! ctx message)
                 (promise nil))))))
 
+(defn execute-send-matrix-message!
+  [deps params ^js ctx]
+  (let [{:keys [read-project-config! send-message!]} deps
+        cwd (ctx-cwd ctx)
+        target (:target params)
+        message (:message params)
+        project-config (read-project-config! cwd)]
+    (if-let [binding (config/resolve-target project-config target)]
+      (-> (promise (send-message! (:roomId binding) message))
+          (.then (fn [result]
+                   {:content [{:type "text"
+                               :text (str "Sent Matrix message " (:eventId result)
+                                          " to " (:roomId binding))}]
+                    :details {:roomId (:roomId binding)
+                              :eventId (:eventId result)
+                              :target target}})))
+      (js/Promise.reject (js/Error. (str "No Matrix room binding for target " target))))))
+
+(def send-matrix-message-parameters
+  #js {:type "object"
+       :additionalProperties false
+       :required #js ["target" "message"]
+       :properties #js {:target #js {:type "string"
+                                     :description "Bound local alias or Matrix room id to send to"}
+                        :message #js {:type "string"
+                                      :description "Plain text Matrix message body"}}})
+
+(defn register-send-tool!
+  [^js pi deps]
+  (.registerTool pi
+    #js {:name "send_matrix_message"
+         :label "Send Matrix Message"
+         :description "Send a plain text Matrix message through the local pi-matrix-relay broker."
+         :promptSnippet "Send a Matrix message to a bound project room alias."
+         :promptGuidelines #js ["Use send_matrix_message only when the user explicitly asks to send a Matrix message."]
+         :parameters send-matrix-message-parameters
+         :execute (fn [_tool-call-id params _signal _on-update ctx]
+                    (-> (execute-send-matrix-message! deps (js->clj params :keywordize-keys true) ctx)
+                        (.then clj->js)))}))
+
 (defn hello-handler [args ^js ctx]
   (let [target (if (and (string? args)
                         (not= "" (.trim args)))
@@ -122,4 +162,5 @@
      (.registerCommand pi command-name
        #js {:description "Control the Pi Matrix relay"
             :handler (fn [args ctx]
-                       (handle-command! deps args ctx))}))))
+                       (handle-command! deps args ctx))}))
+   (register-send-tool! pi deps)))
