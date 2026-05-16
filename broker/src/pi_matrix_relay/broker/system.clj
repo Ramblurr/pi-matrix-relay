@@ -6,7 +6,62 @@
             [pi-matrix-relay.broker.http :as http]
             [pi-matrix-relay.broker.matrix :as matrix]
             [pi-matrix-relay.broker.paths :as paths]
-            [pi-matrix-relay.broker.state :as state]))
+            [pi-matrix-relay.broker.state :as state])
+  (:import [java.io File RandomAccessFile]
+           [java.nio.channels OverlappingFileLockException]))
+
+(defn- close-quietly!
+  [resource]
+  (when resource
+    (try
+      (.close resource)
+      (catch Throwable _
+        nil))))
+
+(defn- start-process-lock!
+  [{:keys [paths]}]
+  (let [lock-path (:lock-path paths)
+        lock-file (File. lock-path)
+        raf (RandomAccessFile. lock-file "rw")
+        channel (.getChannel raf)]
+    (try
+      (if-let [lock (.tryLock channel)]
+        (do
+          (.setLength raf 0)
+          (.writeBytes raf (str (.pid (java.lang.ProcessHandle/current)) "\n"))
+          {:path lock-path
+           :file lock-file
+           :raf raf
+           :channel channel
+           :lock lock})
+        (throw (ex-info "pi-matrix-relay broker is already running."
+                        {:code :broker_already_running
+                         :lock-path lock-path})))
+      (catch OverlappingFileLockException _
+        (close-quietly! channel)
+        (close-quietly! raf)
+        (throw (ex-info "pi-matrix-relay broker is already running."
+                        {:code :broker_already_running
+                         :lock-path lock-path})))
+      (catch Throwable t
+        (close-quietly! channel)
+        (close-quietly! raf)
+        (throw t)))))
+
+(defn- stop-process-lock!
+  [{:keys [lock channel raf file]}]
+  (when lock
+    (try
+      (.release lock)
+      (catch Throwable _
+        nil)))
+  (close-quietly! channel)
+  (close-quietly! raf)
+  (when file
+    (try
+      (.delete ^File file)
+      (catch Throwable _
+        nil))))
 
 (defn- start-sweeper!
   [{:keys [state* config]}]
@@ -36,6 +91,17 @@
   (when thread
     (.interrupt ^Thread thread)))
 
+(defn- merge-path-overrides
+  [overrides]
+  (let [base (paths/xdg-paths)
+        merged (merge base overrides)]
+    (cond-> merged
+      (and (:runtime-dir overrides) (not (:socket-path overrides)))
+      (assoc :socket-path (paths/path-str (:runtime-dir merged) "broker.sock"))
+
+      (and (:runtime-dir overrides) (not (:lock-path overrides)))
+      (assoc :lock-path (paths/path-str (:runtime-dir merged) "broker.lock")))))
+
 (defn broker-system
   "Build the broker's donut.system definition.
 
@@ -50,7 +116,12 @@
     {:broker
      {:paths #::ds{:start (fn [_]
                            (paths/ensure-runtime-dirs!
-                            (merge (paths/xdg-paths) paths)))}
+                            (merge-path-overrides paths)))}
+      :process-lock #::ds{:start (fn [{::ds/keys [config]}]
+                                  (start-process-lock! config))
+                         :stop (fn [{::ds/keys [instance]}]
+                                 (stop-process-lock! instance))
+                         :config {:paths (ds/ref [:broker :paths])}}
       :config #::ds{:start (fn [{::ds/keys [config]}]
                             (config/deep-merge
                              (config/load-config (:paths config))
@@ -75,6 +146,7 @@
                            :stop (fn [{::ds/keys [instance]}]
                                    (matrix/stop! instance))
                            :config {:matrix-gateway matrix-gateway
+                                    :process-lock (ds/ref [:broker :process-lock])
                                     :broker-config (ds/ref [:broker :config])
                                     :paths (ds/ref [:broker :paths])
                                     :state* (ds/ref [:broker :state])
@@ -108,7 +180,14 @@
 (defn start!
   ([] (start! {}))
   ([opts]
-   (ds/signal (broker-system opts) ::ds/start)))
+   (try
+     (ds/signal (broker-system opts) ::ds/start)
+     (catch clojure.lang.ExceptionInfo ex
+       (if-let [cause (ex-cause ex)]
+         (if (:code (ex-data cause))
+           (throw cause)
+           (throw ex))
+         (throw ex))))))
 
 (defn stop!
   [system]

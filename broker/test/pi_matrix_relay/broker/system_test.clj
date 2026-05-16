@@ -41,6 +41,29 @@
         (finally
           (system/stop! running))))))
 
+(deftest broker-system-refuses-to-start-twice-for-the-same-runtime-dir
+  (testing "a process lock prevents a second broker from stealing the Unix socket"
+    (let [runtime-dir (str "/tmp/pi-matrix-relay-system-test-lock-" (random-uuid))
+          socket-path (str runtime-dir "/broker.sock")
+          running (system/start! {:paths {:runtime-dir runtime-dir
+                                          :socket-path socket-path}
+                                  :http {:transport :tcp :port 0}
+                                  :matrix-gateway (tu/fake-gateway)})]
+      (try
+        (let [ex (try
+                   (system/start! {:paths {:runtime-dir runtime-dir
+                                           :socket-path socket-path}
+                                   :http {:transport :tcp :port 0}
+                                   :matrix-gateway (tu/fake-gateway)})
+                   nil
+                   (catch clojure.lang.ExceptionInfo ex
+                     ex))]
+          (is (= {:code :broker_already_running
+                  :lock-path (str runtime-dir "/broker.lock")}
+                 (select-keys (ex-data ex) [:code :lock-path]))))
+        (finally
+          (system/stop! running))))))
+
 (deftest broker-system-can-bind-a-unix-domain-socket
   (testing "the default local transport creates the configured broker socket"
     (let [socket-path "/tmp/pi-matrix-relay-system-test-uds/broker.sock"

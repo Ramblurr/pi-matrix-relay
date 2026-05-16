@@ -28,7 +28,8 @@
      :media-dir (path-str state-dir "media")
      :database-path (path-str state-dir "trixnity.sqlite")
      :runtime-dir runtime-dir
-     :socket-path (path-str runtime-dir "broker.sock")}))
+     :socket-path (path-str runtime-dir "broker.sock")
+     :lock-path (path-str runtime-dir "broker.lock")}))
 
 (defn ensure-dir!
   [path]
