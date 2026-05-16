@@ -11,7 +11,8 @@ target/
 extra/
 .direnv
 *.log
-prompts/PROMPTS.md
+prompts/
+extension/dist/
 result
 .env
 .pi
