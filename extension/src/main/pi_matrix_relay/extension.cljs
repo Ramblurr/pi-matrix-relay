@@ -2,7 +2,8 @@
   (:require [clojure.string :as str]
             [pi-matrix-relay.broker-client :as broker-client]
             [pi-matrix-relay.commands :as commands]
-            [pi-matrix-relay.config :as config]))
+            [pi-matrix-relay.config :as config]
+            [pi-matrix-relay.setup :as setup]))
 
 (defn greeting [name]
   (str "Hello, " name ", from ClojureScript!"))
@@ -12,7 +13,8 @@
    :resolve-room! broker-client/resolve-room!
    :send-message! broker-client/send-message!
    :read-project-config! config/read-project-config!
-   :write-project-config! config/write-project-config!})
+   :write-project-config! config/write-project-config!
+   :run-setup! setup/run-setup!})
 
 (defn- promise
   [value]
@@ -40,9 +42,20 @@
   (promise nil))
 
 (defn- handle-setup!
-  [ctx]
-  (notify! ctx "Matrix relay setup is not wired yet; edit ~/.config/pi-matrix-relay/config.json for now." "warning")
-  (promise nil))
+  [{:keys [run-setup!] :as deps} ^js ctx]
+  (let [ui (.-ui ctx)]
+    (run-setup!
+     (merge deps
+            {:input! (fn [label placeholder]
+                       (.input ui label placeholder))
+             :editor! (fn [label initial]
+                        (.editor ui label initial))
+             :confirm! (fn [title message]
+                         (.confirm ui title message))
+             :notify! (fn [message level]
+                        (.notify ui message level))
+             :set-status! (fn [status]
+                            (.setStatus ui "pi-matrix-relay" status))}))))
 
 (defn- handle-status!
   [{:keys [health!]} ctx]
@@ -85,7 +98,7 @@
    (let [{:keys [op message] :as command} (commands/parse args)]
      (case op
        :help (handle-help! ctx)
-       :setup (handle-setup! ctx)
+       :setup (handle-setup! deps ctx)
        :status (handle-status! deps ctx)
        :room-bind (handle-room-bind! deps command ctx)
        :send (handle-send! deps command ctx)

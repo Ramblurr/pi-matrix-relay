@@ -46,6 +46,29 @@
                     (is false (.-stack err))
                     (done)))))))
 
+(deftest setup-command-delegates-to-setup-runner-with-ui-functions
+  (async done
+    (let [deps-seen* (atom nil)
+          deps {:run-setup! (fn [setup-deps]
+                              (reset! deps-seen* setup-deps)
+                              (js/Promise.resolve {:matrix {:connected true}}))}
+          ctx #js {:ui #js {:input (fn [_ _] (js/Promise.resolve "input"))
+                            :editor (fn [_ _] (js/Promise.resolve "editor"))
+                            :confirm (fn [_ _] (js/Promise.resolve true))
+                            :notify (fn [_ _])
+                            :setStatus (fn [_ _])}}]
+      (-> (extension/handle-command! deps "setup" ctx)
+          (.then (fn [_]
+                   (is (fn? (:input! @deps-seen*)))
+                   (is (fn? (:editor! @deps-seen*)))
+                   (is (fn? (:confirm! @deps-seen*)))
+                   (is (fn? (:notify! @deps-seen*)))
+                   (is (fn? (:set-status! @deps-seen*)))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
 (deftest send-command-resolves-bound-target-and-posts-message
   (async done
     (let [sent* (atom nil)
