@@ -1,0 +1,17 @@
+;; shadow-cljs configuration
+{:source-paths
+ ["src/dev"
+  "src/main"
+  "src/test"]
+
+ :dependencies
+ []
+
+ :builds
+ {:app {:target :node-library
+        :output-to "dist/pi-matrix-relay.js"
+        :exports-var pi-matrix-relay.extension/init
+        :compiler-options {:infer-externs :auto}}
+  :test {:target :node-test
+         :output-to "out/node-tests.js"
+         :ns-regexp "-test$"}}}

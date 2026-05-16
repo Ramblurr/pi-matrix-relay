@@ -1,0 +1,14 @@
+{:tasks
+ {shadow-server (shell "npx shadow-cljs server")
+  shadow-compile (shell "npx shadow-cljs compile :app")
+  shadow-release (shell "npx shadow-cljs release :app")
+  shadow-test (do
+                (shell "npx shadow-cljs compile test")
+                (shell "node out/node-tests.js"))
+  test {:depends [shadow-test]}
+  install-local-extension {:depends [shadow-release]
+                           :task (do
+                                   (shell "mkdir -p ../.pi/extensions")
+                                   (shell "cp dist/pi-matrix-relay.js ../.pi/extensions/pi-matrix-relay.js")
+                                   (println "Installed ../.pi/extensions/pi-matrix-relay.js"))}
+  shadow-node-repl (shell "npx shadow-cljs node-repl")}}
