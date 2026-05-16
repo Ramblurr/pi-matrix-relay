@@ -37,3 +37,12 @@
               :alias "ops"}
              (select-keys (config/resolve-target by-alias "!room:example.org") [:roomId :alias])))
       (is (nil? (config/resolve-target by-alias "!other:example.org"))))))
+
+(deftest target-resolution-tolerates-json-read-keywordized-room-aliases
+  (testing "project configs read from JSON can keywordize room-map keys"
+    (is (= {:roomId "!room:example.org"
+            :alias "ops"}
+           (select-keys (config/resolve-target {:rooms {:ops {:alias "ops"
+                                                              :roomId "!room:example.org"}}}
+                                               "ops")
+                        [:roomId :alias])))))

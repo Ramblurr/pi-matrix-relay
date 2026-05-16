@@ -47,7 +47,8 @@
   ([method uri body]
    (request-json! {:env (.-env js/process)} method uri body))
   ([{:keys [env]} method uri body]
-   (let [payload (when body (js/JSON.stringify (clj->js body)))]
+   (let [env (or env (.-env js/process))
+         payload (when body (js/JSON.stringify (clj->js body)))]
      (js/Promise.
       (fn [resolve reject]
         (let [req (.request http

@@ -73,6 +73,7 @@
   [project-config target]
   (let [rooms (:rooms project-config)]
     (or (get rooms target)
+        (get rooms (keyword target))
         (some (fn [[_ binding]]
                 (when (= target (:roomId binding))
                   binding))
