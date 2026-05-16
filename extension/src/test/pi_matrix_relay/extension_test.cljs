@@ -80,7 +80,8 @@
 (deftest send-matrix-message-tool-reuses-bound-target-resolution
   (async done
     (let [sent* (atom nil)
-          deps {:read-project-config! (fn [_cwd]
+          deps {:relay-state* (atom {:client-id "client-1"})
+                :read-project-config! (fn [_cwd]
                                         {:rooms {"ops" {:alias "ops"
                                                         :roomId "!room:example.org"}}})
                 :send-message! (fn [room-id message opts]
@@ -94,7 +95,8 @@
           (.then (fn [result]
                    (is (= {:room-id "!room:example.org"
                            :message "tool says hello"
-                           :opts {:replyToEventId "$parent:example.org"}}
+                           :opts {:clientId "client-1"
+                                  :replyToEventId "$parent:example.org"}}
                           @sent*))
                    (is (= {:content [{:type "text"
                                       :text "Sent Matrix message $event:example.org to !room:example.org"}]
@@ -111,13 +113,15 @@
 (deftest send-matrix-reaction-tool-reuses-bound-target-resolution
   (async done
     (let [sent* (atom nil)
-          deps {:read-project-config! (fn [_cwd]
+          deps {:relay-state* (atom {:client-id "client-1"})
+                :read-project-config! (fn [_cwd]
                                         {:rooms {"ops" {:alias "ops"
                                                         :roomId "!room:example.org"}}})
-                :send-reaction! (fn [room-id event-id key]
+                :send-reaction! (fn [room-id event-id key opts]
                                   (reset! sent* {:room-id room-id
                                                  :event-id event-id
-                                                 :key key})
+                                                 :key key
+                                                 :opts opts})
                                   (js/Promise.resolve {:eventId "$reaction:example.org"}))}
           ctx #js {:cwd "/work/project"}]
       (-> (extension/execute-send-matrix-reaction! deps {:target "ops"
@@ -127,7 +131,8 @@
           (.then (fn [result]
                    (is (= {:room-id "!room:example.org"
                            :event-id "$event:example.org"
-                           :key "👍"}
+                           :key "👍"
+                           :opts {:clientId "client-1"}}
                           @sent*))
                    (is (= {:content [{:type "text"
                                       :text "Sent Matrix reaction 👍 to $event:example.org in !room:example.org"}]

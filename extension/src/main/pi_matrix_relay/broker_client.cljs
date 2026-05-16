@@ -168,21 +168,32 @@
 (defn send-message!
   ([room-id message]
    (send-message! {} room-id message nil))
-  ([room-id message send-opts]
-   (send-message! {} room-id message send-opts))
+  ([opts-or-room-id room-id-or-message message-or-opts]
+   (if (map? opts-or-room-id)
+     (send-message! opts-or-room-id room-id-or-message message-or-opts nil)
+     (send-message! {} opts-or-room-id room-id-or-message message-or-opts)))
   ([opts room-id message send-opts]
    (request-json! opts "POST" "/v1/matrix/messages"
                   (cond-> {:target {:roomId room-id}
                            :body message}
+                    (:clientId send-opts)
+                    (assoc :clientId (:clientId send-opts))
+
                     (:replyToEventId send-opts)
                     (assoc :replyTo {:roomId room-id
                                      :eventId (:replyToEventId send-opts)})))))
 
 (defn send-reaction!
   ([room-id event-id key]
-   (send-reaction! {} room-id event-id key))
-  ([opts room-id event-id key]
+   (send-reaction! {} room-id event-id key nil))
+  ([opts-or-room-id room-id-or-event-id event-id-or-key key-or-opts]
+   (if (map? opts-or-room-id)
+     (send-reaction! opts-or-room-id room-id-or-event-id event-id-or-key key-or-opts nil)
+     (send-reaction! {} opts-or-room-id room-id-or-event-id event-id-or-key key-or-opts)))
+  ([opts room-id event-id key send-opts]
    (request-json! opts "POST" "/v1/matrix/reactions"
-                  {:roomId room-id
-                   :eventId event-id
-                   :key key})))
+                  (cond-> {:roomId room-id
+                           :eventId event-id
+                           :key key}
+                    (:clientId send-opts)
+                    (assoc :clientId (:clientId send-opts))))))

@@ -281,6 +281,10 @@
                 (notify-error! ctx message)
                 (promise nil))))))
 
+(defn- relay-client-id
+  [deps]
+  (some-> (:relay-state* deps) deref :client-id))
+
 (defn execute-send-matrix-message!
   [deps params ^js ctx]
   (let [{:keys [read-project-config! send-message!]} deps
@@ -288,11 +292,13 @@
         target (:target params)
         message (:message params)
         reply-to-event-id (:replyToEventId params)
+        client-id (relay-client-id deps)
         project-config (read-project-config! cwd)]
     (if-let [binding (config/resolve-target project-config target)]
       (-> (promise (send-message! (:roomId binding)
                                   message
                                   (cond-> {}
+                                    client-id (assoc :clientId client-id)
                                     reply-to-event-id (assoc :replyToEventId reply-to-event-id))))
           (.then (fn [result]
                    {:content [{:type "text"
@@ -311,9 +317,14 @@
         target (:target params)
         event-id (:eventId params)
         key (:key params)
+        client-id (relay-client-id deps)
         project-config (read-project-config! cwd)]
     (if-let [binding (config/resolve-target project-config target)]
-      (-> (promise (send-reaction! (:roomId binding) event-id key))
+      (-> (promise (send-reaction! (:roomId binding)
+                                    event-id
+                                    key
+                                    (cond-> {}
+                                      client-id (assoc :clientId client-id))))
           (.then (fn [result]
                    {:content [{:type "text"
                                :text (str "Sent Matrix reaction " key " to " event-id
@@ -386,8 +397,8 @@
   ([^js pi]
    (init pi default-deps))
   ([^js pi deps]
-   (let [deps (merge default-deps deps)
-         relay-state* (atom nil)]
+   (let [relay-state* (atom nil)
+         deps (merge default-deps deps {:relay-state* relay-state*})]
      (doseq [command-name ["matrix-relay" "mr"]]
        (.registerCommand pi command-name
          #js {:description "Control the Pi Matrix relay"
