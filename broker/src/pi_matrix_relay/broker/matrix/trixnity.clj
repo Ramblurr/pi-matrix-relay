@@ -27,6 +27,18 @@
   [{:keys [name roomName]}]
   (or name roomName))
 
+(defn- reply-target-event
+  [{:keys [roomId eventId]}]
+  {::mx/room-id roomId
+   ::mx/event-id eventId})
+
+(defn- text-message
+  [{:keys [body formattedBody replyTo]}]
+  (cond-> (msg/text body (cond-> {}
+                            formattedBody (assoc ::mx/format "org.matrix.custom.html"
+                                                 ::mx/formatted-body formattedBody)))
+    replyTo (msg/reply-to (reply-target-event replyTo))))
+
 (defn- now-iso []
   (str (Instant/now)))
 
@@ -158,12 +170,10 @@
                                              (seq invite) (assoc ::mx/invite invite))))]
       {:roomId (str room-id)
        :name (room-name-from-request request)}))
-  (send-message! [_ {:keys [target body formattedBody replyTo]}]
+  (send-message! [_ {:keys [target replyTo] :as request}]
     (let [c (:client @runtime*)
           room-id (:roomId target)
-          message (msg/text body (cond-> {}
-                                   formattedBody (assoc ::mx/format "org.matrix.custom.html"
-                                                        ::mx/formatted-body formattedBody)))
+          message (text-message request)
           handle (m/? (room/send-message c room-id message {::mx/timeout (Duration/ofSeconds 10)}))
           tx (str (::mx/transaction-id handle))]
       {:roomId room-id
@@ -174,6 +184,18 @@
     (let [c (:client @runtime*)]
       (m/? (room/set-typing c roomId (boolean typing) {::mx/timeout (duration-ms (or timeoutMs 30000))}))
       {}))
+  (send-reaction! [_ {:keys [roomId eventId key]}]
+    (let [c (:client @runtime*)
+          tx (m/? (room/send-reaction c
+                                      roomId
+                                      (reply-target-event {:roomId roomId :eventId eventId})
+                                      key
+                                      {::mx/timeout (Duration/ofSeconds 10)}))]
+      {:roomId roomId
+       :eventId (str tx)
+       :transactionId (str tx)
+       :reactsToEventId eventId
+       :key key}))
   (send-file! [_ {:keys [target path name mimeType caption replyTo]}]
     (let [c (:client @runtime*)
           room-id (:roomId target)

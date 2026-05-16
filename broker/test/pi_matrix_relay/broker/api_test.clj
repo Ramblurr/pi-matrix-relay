@@ -136,6 +136,66 @@
                                           :target {:roomId "!missing:example.org"}
                                           :body "nope"})})))))
 
+(deftest matrix-reaction-requires-known-room
+  (testing "a client can react only in subscribed or acquired rooms"
+    (let [gateway (tu/fake-gateway)
+          env (tu/test-env gateway)
+          app (api/app env)
+          registration (tu/json-request app :post "/v1/clients"
+                                        {:requestId "register-reaction"
+                                         :clientInstanceId "instance-reaction"
+                                         :protocolVersion 1
+                                         :project {:id "project"}
+                                         :subscriptions {:rooms ["!project:example.org"]}})
+          client-id (get-in registration [:data :clientId])]
+      (is (= {:allowed {:ok true
+                        :data {:roomId "!project:example.org"
+                               :eventId "$reaction:example.org"
+                               :reactsToEventId "$message:example.org"
+                               :key "👍"}}
+              :forbidden {:ok false
+                          :error {:code "room_not_allowed"
+                                  :message "Client is not registered for the target Matrix room."
+                                  :details {:client-id client-id
+                                            :room-id "!other:example.org"}}}
+              :reaction-calls 1}
+             {:allowed (tu/json-request app :post "/v1/matrix/reactions"
+                                       {:requestId "react-allowed"
+                                        :clientId client-id
+                                        :roomId "!project:example.org"
+                                        :eventId "$message:example.org"
+                                        :key "👍"})
+              :forbidden (tu/json-request app :post "/v1/matrix/reactions"
+                                         {:requestId "react-forbidden"
+                                          :clientId client-id
+                                          :roomId "!other:example.org"
+                                          :eventId "$message:example.org"
+                                          :key "👍"})
+              :reaction-calls (count (filter #(= :send-reaction (first %))
+                                             (tu/calls gateway)))})))))
+
+(deftest matrix-send-forwards-reply-target
+  (testing "reply metadata reaches the Matrix gateway"
+    (let [gateway (tu/fake-gateway)
+          env (tu/test-env gateway)
+          app (api/app env)]
+      (tu/json-request app :post "/v1/matrix/rooms/resolve"
+                       {:requestId "resolve-reply"
+                        :room "!joined:example.org"})
+      (tu/json-request app :post "/v1/matrix/messages"
+                       {:requestId "send-reply"
+                        :target {:roomId "!joined:example.org"}
+                        :body "reply text"
+                        :replyTo {:roomId "!joined:example.org"
+                                  :eventId "$parent:example.org"}})
+      (is (= {:target {:roomId "!joined:example.org"}
+              :body "reply text"
+              :replyTo {:roomId "!joined:example.org"
+                        :eventId "$parent:example.org"}}
+             (select-keys (second (first (filter #(= :send-message (first %))
+                                                 (tu/calls gateway))))
+                          [:target :body :replyTo]))))))
+
 (deftest slot-acquire-is-idempotent-and-allocates-next-free-slot
   (testing "slot leases are coordinated by the broker and mutating requestIds are replay-safe"
     (let [gateway (tu/fake-gateway)

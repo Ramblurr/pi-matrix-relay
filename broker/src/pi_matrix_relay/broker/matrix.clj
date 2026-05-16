@@ -9,6 +9,7 @@
   (create-room! [gateway request])
   (send-message! [gateway request])
   (set-typing! [gateway request])
+  (send-reaction! [gateway request])
   (send-file! [gateway request])
   (download-media! [gateway request])
   (transcribe-media! [gateway request])
@@ -41,6 +42,8 @@
   (send-message! [_ request]
     (unavailable :matrix_not_configured "Matrix client is not configured." {:request request}))
   (set-typing! [_ request]
+    (unavailable :matrix_not_configured "Matrix client is not configured." {:request request}))
+  (send-reaction! [_ request]
     (unavailable :matrix_not_configured "Matrix client is not configured." {:request request}))
   (send-file! [_ request]
     (unavailable :matrix_not_configured "Matrix client is not configured." {:request request}))

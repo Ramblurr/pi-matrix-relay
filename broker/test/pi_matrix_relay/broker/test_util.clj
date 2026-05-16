@@ -22,6 +22,12 @@
   (set-typing! [_ request]
     (swap! calls* conj [:typing request])
     {})
+  (send-reaction! [_ request]
+    (swap! calls* conj [:send-reaction request])
+    {:roomId (:roomId request)
+     :eventId "$reaction:example.org"
+     :reactsToEventId (:eventId request)
+     :key (:key request)})
   (send-file! [_ request]
     (swap! calls* conj [:send-file request])
     {:roomId (get-in request [:target :roomId]) :eventId "$file:example.org"})

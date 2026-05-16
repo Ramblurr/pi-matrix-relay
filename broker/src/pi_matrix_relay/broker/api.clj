@@ -180,6 +180,16 @@
       (json/ok-response
        (idempotent! env request #(matrix/set-typing! matrix-gateway body))))))
 
+(defn send-reaction-handler
+  [{:keys [state* matrix-gateway] :as env}]
+  (fn [request]
+    (let [body (body-params request)
+          client-id (:clientId body)
+          room-id (:roomId body)]
+      (ensure-send-authorized! @state* client-id room-id)
+      (json/ok-response
+       (idempotent! env request #(matrix/send-reaction! matrix-gateway body))))))
+
 (defn send-file-handler
   [{:keys [state* matrix-gateway] :as env}]
   (fn [request]
@@ -274,6 +284,7 @@
     ["/slots/release" {:post (release-slot-handler env)}]
     ["/matrix/messages" {:post (send-message-handler env)}]
     ["/matrix/typing" {:post (typing-handler env)}]
+    ["/matrix/reactions" {:post (send-reaction-handler env)}]
     ["/matrix/files" {:post (send-file-handler env)}]
     ["/matrix/media/download" {:post (download-media-handler env)}]
     ["/matrix/media/transcribe" {:post (transcribe-media-handler env)}]
