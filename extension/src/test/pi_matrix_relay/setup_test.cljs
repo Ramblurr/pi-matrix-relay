@@ -56,7 +56,6 @@
 (deftest run-setup-prefills-existing-config-and-keeps-existing-password-on-blank
   (async done
     (let [calls* (atom [])
-          input-values (atom ["" "" ""])
           deps {:read-global-config! (fn []
                                        {:matrix {:homeserver-url "https://matrix.example.org"
                                                  :user-id "@bot:example.org"
@@ -65,9 +64,59 @@
                                                  :encrypted? true}})
                 :input! (fn [label placeholder]
                           (swap! calls* conj [:input label placeholder])
-                          (js/Promise.resolve (let [v (first @input-values)]
-                                                (swap! input-values subvec 1)
-                                                v)))
+                          (js/Promise.resolve ""))
+                :editor! (fn [label initial]
+                           (swap! calls* conj [:editor label initial])
+                           (js/Promise.resolve
+                            (case label
+                              "Matrix homeserver URL" ""
+                              "Matrix bot user ID" ""
+                              initial)))
+                :confirm! (fn [title message]
+                            (swap! calls* conj [:confirm title message])
+                            (js/Promise.resolve false))
+                :write-global-config! (fn [config]
+                                        (swap! calls* conj [:write-global-config config]))
+                :health! (fn []
+                           (swap! calls* conj [:health])
+                           (js/Promise.resolve {:matrix {:connected true
+                                                         :userId "@bot:example.org"}}))
+                :notify! (fn [message level]
+                           (swap! calls* conj [:notify message level]))
+                :set-status! (fn [status]
+                               (swap! calls* conj [:status status]))}]
+      (-> (setup/run-setup! deps)
+          (.then (fn [_]
+                   (is (some #(= [:editor "Matrix homeserver URL" "https://matrix.example.org"] %) @calls*))
+                   (is (some #(= [:editor "Matrix bot user ID" "@bot:example.org"] %) @calls*))
+                   (is (some #(= [:input "Matrix bot password (leave blank to keep existing password)" ""] %) @calls*))
+                   (is (some #(= [:editor "Global operator MXIDs, one per line" "@alice:example.org\n@bob:example.org"] %) @calls*))
+                   (is (not-any? #(= [:input "Matrix homeserver URL" "https://matrix.example.org"] %) @calls*))
+                   (is (not-any? #(= [:input "Matrix bot user ID" "@bot:example.org"] %) @calls*))
+                   (is (some (fn [[op config]]
+                               (and (= :write-global-config op)
+                                    (= "old-secret" (get-in config [:matrix :password]))
+                                    (= "https://matrix.example.org" (get-in config [:matrix :homeserver-url]))
+                                    (= ["@alice:example.org" "@bob:example.org"]
+                                       (get-in config [:matrix :operators]))))
+                             @calls*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest run-setup-normalizes-legacy-schemeless-existing-homeserver
+  (async done
+    (let [calls* (atom [])
+          deps {:read-global-config! (fn []
+                                       {:matrix {:homeserver-url "matrix.example.org"
+                                                 :user-id "@bot:example.org"
+                                                 :password "old-secret"
+                                                 :operators ["@alice:example.org"]
+                                                 :encrypted? true}})
+                :input! (fn [label placeholder]
+                          (swap! calls* conj [:input label placeholder])
+                          (js/Promise.resolve ""))
                 :editor! (fn [label initial]
                            (swap! calls* conj [:editor label initial])
                            (js/Promise.resolve initial))
@@ -86,16 +135,11 @@
                                (swap! calls* conj [:status status]))}]
       (-> (setup/run-setup! deps)
           (.then (fn [_]
-                   (is (some #(= [:input "Matrix homeserver URL" "https://matrix.example.org"] %) @calls*))
-                   (is (some #(= [:input "Matrix bot user ID" "@bot:example.org"] %) @calls*))
-                   (is (some #(= [:input "Matrix bot password" "leave blank to keep existing password"] %) @calls*))
-                   (is (some #(= [:editor "Global operator MXIDs, one per line" "@alice:example.org\n@bob:example.org"] %) @calls*))
+                   (is (some #(= [:editor "Matrix homeserver URL" "https://matrix.example.org"] %) @calls*))
                    (is (some (fn [[op config]]
                                (and (= :write-global-config op)
-                                    (= "old-secret" (get-in config [:matrix :password]))
-                                    (= "https://matrix.example.org" (get-in config [:matrix :homeserver-url]))
-                                    (= ["@alice:example.org" "@bob:example.org"]
-                                       (get-in config [:matrix :operators]))))
+                                    (= "https://matrix.example.org"
+                                       (get-in config [:matrix :homeserver-url]))))
                              @calls*))
                    (done)))
           (.catch (fn [err]
@@ -142,18 +186,18 @@
 (deftest run-setup-writes-config-installs-service-and-checks-health
   (async done
     (let [calls* (atom [])
-          input-values (atom ["https://matrix.example.org"
-                              "@bot:example.org"
-                              "secret"])
           confirm-values (atom [true true])
-          deps {:input! (fn [label placeholder]
+          deps {:read-global-config! (constantly {})
+                :input! (fn [label placeholder]
                           (swap! calls* conj [:input label placeholder])
-                          (js/Promise.resolve (let [v (first @input-values)]
-                                                (swap! input-values subvec 1)
-                                                v)))
+                          (js/Promise.resolve "secret"))
                 :editor! (fn [label initial]
                            (swap! calls* conj [:editor label initial])
-                           (js/Promise.resolve "@alice:example.org\n@bob:example.org"))
+                           (js/Promise.resolve
+                            (case label
+                              "Matrix homeserver URL" "https://matrix.example.org"
+                              "Matrix bot user ID" "@bot:example.org"
+                              "@alice:example.org\n@bob:example.org")))
                 :confirm! (fn [title message]
                             (swap! calls* conj [:confirm title message])
                             (js/Promise.resolve (let [v (first @confirm-values)]
@@ -178,6 +222,7 @@
                           result))
                    (is (some #(= [:install-service] %) @calls*))
                    (is (some #(= [:health] %) @calls*))
+                   (is (some #(= [:input "Matrix bot password" ""] %) @calls*))
                    (is (some (fn [[op config]]
                                (and (= :write-global-config op)
                                     (= "secret" (get-in config [:matrix :password]))

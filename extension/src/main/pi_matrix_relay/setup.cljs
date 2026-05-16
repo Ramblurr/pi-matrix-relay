@@ -29,6 +29,23 @@
     (catch js/Error _
       false)))
 
+(defn- nonblank-string
+  [value]
+  (let [trimmed (str/trim (str value))]
+    (when-not (str/blank? trimmed)
+      trimmed)))
+
+(defn- has-url-scheme?
+  [value]
+  (boolean (re-find #"^[A-Za-z][A-Za-z0-9+.-]*://" value)))
+
+(defn- homeserver-prefill
+  [value]
+  (when-let [trimmed (nonblank-string value)]
+    (if (has-url-scheme? trimmed)
+      trimmed
+      (str "https://" trimmed))))
+
 (defn validate-fields!
   [{:keys [homeserver-url user-id password operators] :as fields}]
   (cond
@@ -90,11 +107,11 @@
       fallback
       trimmed)))
 
-(defn- password-placeholder
+(defn- password-label
   [existing-password]
   (if (str/blank? (str existing-password))
-    ""
-    "leave blank to keep existing password"))
+    "Matrix bot password"
+    "Matrix bot password (leave blank to keep existing password)"))
 
 (defn- status-text
   [health]
@@ -124,18 +141,18 @@
 (defn- collect-fields!
   [{:keys [input! editor! confirm!]} existing]
   (let [existing-matrix (:matrix existing)
-        existing-homeserver (:homeserver-url existing-matrix)
+        existing-homeserver (homeserver-prefill (:homeserver-url existing-matrix))
         existing-user-id (:user-id existing-matrix)
         existing-password (:password existing-matrix)
         existing-operators (:operators existing-matrix)
         existing-encrypted? (not (false? (:encrypted? existing-matrix)))]
-    (-> (input! "Matrix homeserver URL" (or existing-homeserver "https://matrix.example.org"))
+    (-> (editor! "Matrix homeserver URL" (or existing-homeserver "https://matrix.example.org"))
         (.then (fn [homeserver-url]
-                 (-> (input! "Matrix bot user ID" (or existing-user-id "@pi:example.org"))
+                 (-> (editor! "Matrix bot user ID" (or existing-user-id "@pi:example.org"))
                      (.then (fn [user-id]
                               [homeserver-url user-id])))))
         (.then (fn [[homeserver-url user-id]]
-                 (-> (input! "Matrix bot password" (password-placeholder existing-password))
+                 (-> (input! (password-label existing-password) "")
                      (.then (fn [password]
                               [homeserver-url user-id password])))))
         (.then (fn [[homeserver-url user-id password]]
