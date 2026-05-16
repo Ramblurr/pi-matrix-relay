@@ -1,5 +1,6 @@
 (ns pi-matrix-relay.systemd
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [ol.dirs :as dirs]))
 
 (def fs (js/require "fs"))
 (def path (js/require "path"))
@@ -16,7 +17,7 @@
 
 (defn service-path
   ([]
-   (service-path (.-env js/process)))
+   (.join path (dirs/config-dir "systemd") "user" service-name))
   ([env]
    (.join path
           (or (env-value env "XDG_CONFIG_HOME")

@@ -1,5 +1,6 @@
 (ns pi-matrix-relay.config
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [ol.dirs :as dirs]))
 
 (def fs (js/require "fs"))
 (def path (js/require "path"))
@@ -17,9 +18,12 @@
       (.homedir os)))
 
 (defn global-paths
-  "Return global Matrix relay config paths from a Node `process.env`-style object."
+  "Return global Matrix relay config paths."
   ([]
-   (global-paths (.-env js/process)))
+   (let [config-dir (dirs/config-dir app-name)]
+     {:config-dir config-dir
+      :config-path (.join path config-dir "config.json")
+      :token-path (.join path config-dir "token")}))
   ([env]
    (let [config-home (or (env-value env "XDG_CONFIG_HOME")
                          (.join path (home-dir env) ".config"))

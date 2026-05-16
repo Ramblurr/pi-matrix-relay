@@ -1,14 +1,16 @@
 (ns pi-matrix-relay.broker-client
   (:require [clojure.string :as str]
+            [ol.dirs :as dirs]
             [pi-matrix-relay.config :as config]))
 
 (def http (js/require "http"))
 (def path (js/require "path"))
 
 (defn socket-path
-  "Return the broker Unix domain socket path for a Node `process.env` object."
+  "Return the broker Unix domain socket path."
   ([]
-   (socket-path (.-env js/process)))
+   (or (dirs/runtime-dir config/app-name)
+       (.join path "/tmp" config/app-name "broker.sock")))
   ([env]
    (.join path (or (aget (or env #js {}) "XDG_RUNTIME_DIR")
                    "/tmp")

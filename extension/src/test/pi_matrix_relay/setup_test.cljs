@@ -19,6 +19,126 @@
                                     :operators ["@alice:example.org"]
                                     :encrypted? true}))))
 
+(deftest setup-field-validation-rejects-bad-urls-and-mxids
+  (testing "homeserver must be a real https URL"
+    (try
+      (setup/validate-fields! {:homeserver-url "matrix.example.org"
+                               :user-id "@bot:example.org"
+                               :password "secret"
+                               :operators []
+                               :encrypted? true})
+      (is false "expected validation error")
+      (catch js/Error e
+        (is (= "Matrix homeserver URL must be an https:// URL."
+               (.-message e))))))
+  (testing "bot user id and operators must be Matrix IDs"
+    (try
+      (setup/validate-fields! {:homeserver-url "https://matrix.example.org"
+                               :user-id "bot"
+                               :password "secret"
+                               :operators ["@alice:example.org"]
+                               :encrypted? true})
+      (is false "expected validation error")
+      (catch js/Error e
+        (is (= "Matrix bot user ID must look like @user:server."
+               (.-message e)))))
+    (try
+      (setup/validate-fields! {:homeserver-url "https://matrix.example.org"
+                               :user-id "@bot:example.org"
+                               :password "secret"
+                               :operators ["alice"]
+                               :encrypted? true})
+      (is false "expected validation error")
+      (catch js/Error e
+        (is (= "Operator MXID must look like @user:server: alice"
+               (.-message e)))))))
+
+(deftest run-setup-prefills-existing-config-and-keeps-existing-password-on-blank
+  (async done
+    (let [calls* (atom [])
+          input-values (atom ["" "" ""])
+          deps {:read-global-config! (fn []
+                                       {:matrix {:homeserver-url "https://matrix.example.org"
+                                                 :user-id "@bot:example.org"
+                                                 :password "old-secret"
+                                                 :operators ["@alice:example.org" "@bob:example.org"]
+                                                 :encrypted? true}})
+                :input! (fn [label placeholder]
+                          (swap! calls* conj [:input label placeholder])
+                          (js/Promise.resolve (let [v (first @input-values)]
+                                                (swap! input-values subvec 1)
+                                                v)))
+                :editor! (fn [label initial]
+                           (swap! calls* conj [:editor label initial])
+                           (js/Promise.resolve initial))
+                :confirm! (fn [title message]
+                            (swap! calls* conj [:confirm title message])
+                            (js/Promise.resolve false))
+                :write-global-config! (fn [config]
+                                        (swap! calls* conj [:write-global-config config]))
+                :health! (fn []
+                           (swap! calls* conj [:health])
+                           (js/Promise.resolve {:matrix {:connected true
+                                                         :userId "@bot:example.org"}}))
+                :notify! (fn [message level]
+                           (swap! calls* conj [:notify message level]))
+                :set-status! (fn [status]
+                               (swap! calls* conj [:status status]))}]
+      (-> (setup/run-setup! deps)
+          (.then (fn [_]
+                   (is (some #(= [:input "Matrix homeserver URL" "https://matrix.example.org"] %) @calls*))
+                   (is (some #(= [:input "Matrix bot user ID" "@bot:example.org"] %) @calls*))
+                   (is (some #(= [:input "Matrix bot password" "leave blank to keep existing password"] %) @calls*))
+                   (is (some #(= [:editor "Global operator MXIDs, one per line" "@alice:example.org\n@bob:example.org"] %) @calls*))
+                   (is (some (fn [[op config]]
+                               (and (= :write-global-config op)
+                                    (= "old-secret" (get-in config [:matrix :password]))
+                                    (= "https://matrix.example.org" (get-in config [:matrix :homeserver-url]))
+                                    (= ["@alice:example.org" "@bob:example.org"]
+                                       (get-in config [:matrix :operators]))))
+                             @calls*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest run-setup-retries-health-until-matrix-connects
+  (async done
+    (let [calls* (atom [])
+          health-values (atom [{:matrix {:connected false}}
+                               {:matrix {:connected true :userId "@bot:example.org"}}])
+          deps {:input! (fn [_ _] (js/Promise.resolve ""))
+                :editor! (fn [_ initial] (js/Promise.resolve initial))
+                :confirm! (fn [_ _] (js/Promise.resolve false))
+                :read-global-config! (constantly {:matrix {:homeserver-url "https://matrix.example.org"
+                                                           :user-id "@bot:example.org"
+                                                           :password "secret"
+                                                           :operators []
+                                                           :encrypted? true}})
+                :write-global-config! (fn [_])
+                :sleep! (fn [ms]
+                          (swap! calls* conj [:sleep ms])
+                          (js/Promise.resolve nil))
+                :health-attempts 2
+                :health-delay-ms 5
+                :health! (fn []
+                           (swap! calls* conj [:health])
+                           (js/Promise.resolve (let [v (first @health-values)]
+                                                 (swap! health-values subvec 1)
+                                                 v)))
+                :notify! (fn [_ _])
+                :set-status! (fn [_])}]
+      (-> (setup/run-setup! deps)
+          (.then (fn [result]
+                   (is (= {:matrix {:connected true :userId "@bot:example.org"}}
+                          result))
+                   (is (= [[:health] [:sleep 5] [:health]]
+                          (filter #(#{:health :sleep} (first %)) @calls*)))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
 (deftest run-setup-writes-config-installs-service-and-checks-health
   (async done
     (let [calls* (atom [])
