@@ -1,0 +1,33 @@
+# pi-matrix-relay
+
+`pi-matrix-relay` connects Matrix rooms to live Pi coding-agent sessions. It is
+Matrix-only, supports encrypted rooms from the start, and lets one Matrix bot
+account serve multiple concurrent Pi sessions.
+
+It consists of a broker and an extension.
+
+The broker owns Matrix connectivity. It runs as a systemd user service.
+
+The extension runs in process with pi instances and connects to the broker over local UDS socket.
+
+The broker is written in JVM Clojure. It uses donut.system for lifecycle
+management, http-kit for the Ring web server, reitit for routing/middleware,
+charred for JSON, ol.dirs for XDG paths, and trixnity-clj for Matrix.
+
+The extension runs in process with Pi and is written in ClojureScript with
+shadow-cljs.
+
+## Clojure and broker resources
+
+- trixnity-clj src: ~/src/github.com/outskirtslabs/trixnity-clj
+- trixnity example usage: ~/src/github.com/ramblurr/thingstead/components/matrix/deps.edn
+- ol.dirs src: ~/src/github.com/outskirtslabs/dirs
+- reitit src: ~/src/github.com/metosin/reitit
+- Broker commands:
+  - `cd broker && bb dev` starts the JVM nREPL from the broker directory.
+  - `cd broker && bb test` runs JVM Clojure tests.
+
+## Clojurescript and shadow-cljs resources
+
+- shadow-cljs src ~/src/github.com/thheller/shadow-cljs
+- shadow-cljs docs ~/src/github.com/shadow-cljs/shadow-cljs.github.io/docs

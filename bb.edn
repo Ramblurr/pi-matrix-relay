@@ -1,0 +1,4 @@
+{:tasks
+ {broker:test (shell {:dir "broker"} "bb test")
+  extension:test (shell {:dir "extension"} "bb test")
+  ci {:depends [broker:test extension:test]}}}
