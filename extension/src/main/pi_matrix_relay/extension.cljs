@@ -98,7 +98,8 @@
   [err]
   (cond-> {:message (or (.-message err) (str err))}
     (.-data err) (assoc :data (js->clj (.-data err) :keywordize-keys true))
-    (.-code err) (assoc :code (.-code err))))
+    (.-code err) (assoc :code (.-code err))
+    (.-stack err) (assoc :stack (.-stack err))))
 
 (defn- record-diagnostic!
   ([diagnostics* type]
@@ -336,6 +337,39 @@
         (.catch (fn [err]
                   (record-diagnostic! diagnostics* :remote-command-ack-error (error-summary err))
                   nil)))))
+
+(defn- debug-mode-enabled?
+  [relay-state]
+  (let [debug (get-in relay-state [:project-config :debug])]
+    (cond
+      (= false debug) false
+      (map? debug) (and (not= false (:enabled debug))
+                        (not= false (:modelContext debug))
+                        (not= false (:model-context debug)))
+      :else true)))
+
+(defn- extension-error-notice
+  [{:keys [source command room-id event-id sender]} err]
+  (let [message (or (.-message err) (str err))]
+    (str/join "\n"
+              (cond-> ["pi-matrix-relay extension error"
+                       "A relay extension error was recorded. Use matrix_relay_diagnostics for details."
+                       (str "source: " (or source "extension"))]
+                command (conj (str "command: /" command))
+                room-id (conj (str "roomId: " room-id))
+                event-id (conj (str "eventId: " event-id))
+                sender (conj (str "sender: " sender))
+                true (conj (str "error: " message))))))
+
+(defn- inject-extension-error-notice!
+  [{:keys [diagnostics*]} ^js pi relay-state details err]
+  (when (debug-mode-enabled? relay-state)
+    (try
+      (when-let [send-user-message (.-sendUserMessage pi)]
+        (send-user-message (extension-error-notice details err)
+                           #js {:deliverAs "followUp"}))
+      (catch js/Error inject-err
+        (record-diagnostic! diagnostics* :debug-context-error (error-summary inject-err))))))
 
 (defn- js->clj-safe
   [value]
@@ -578,12 +612,18 @@
                                       :roomId room-id
                                       :eventId event-id}
                                      (error-summary err)))
+          (inject-extension-error-notice! deps pi relay-state {:source "remote-command"
+                                                              :command name
+                                                              :room-id room-id
+                                                              :event-id event-id
+                                                              :sender (:sender event)}
+                                          err)
           (send-room-ack! deps relay-state room-id event-id
                           (str "Remote command /" name " failed: " (or (.-message err) (str err))))
           true))
       false)))
 
-(defn handle-broker-event!
+(defn- handle-broker-event-unsafe!
   [deps pi ctx relay-state event]
   (case (:type event)
     "matrix.message"
@@ -613,6 +653,26 @@
 
     nil)
   nil)
+
+(defn handle-broker-event!
+  [deps pi ctx relay-state event]
+  (try
+    (handle-broker-event-unsafe! deps pi ctx relay-state event)
+    (catch js/Error err
+      (let [matrix-event (:event event)
+            room-id (get-in event [:room :roomId])]
+        (record-diagnostic! (:diagnostics* deps)
+                            :broker-event-error
+                            (merge {:eventType (:type event)
+                                    :roomId room-id
+                                    :eventId (:eventId matrix-event)}
+                                   (error-summary err)))
+        (inject-extension-error-notice! deps pi relay-state {:source "broker-event"
+                                                            :room-id room-id
+                                                            :event-id (:eventId matrix-event)
+                                                            :sender (:sender matrix-event)}
+                                        err)
+        nil))))
 
 (defn- start-heartbeat!
   [{:keys [heartbeat! set-interval! diagnostics*]} ctx client-id heartbeat-seconds]
@@ -686,6 +746,7 @@
                                                    stream (open-event-stream!
                                                            {:on-error (fn [err]
                                                                         (record-diagnostic! diagnostics* :event-stream-error (error-summary err))
+                                                                        (inject-extension-error-notice! deps pi @relay-state* {:source "event-stream"} err)
                                                                         (notify! ctx (str "Matrix relay event stream failed: " (.-message err)) "warning"))}
                                                            client-id
                                                            #(handle-broker-event! deps pi ctx @relay-state* %))
@@ -857,8 +918,28 @@
                                          slots)))
     "slots: none visible"))
 
+(defn- diagnostic-error-event?
+  [event]
+  (str/ends-with? (str (:type event)) "-error"))
+
+(defn- recent-error-events
+  [events]
+  (->> events
+       (filter diagnostic-error-event?)
+       (take-last 5)
+       vec))
+
+(defn- diagnostic-error-line
+  [event]
+  (let [label (or (:message event) (get-in event [:error :message]) "unknown error")]
+    (str "- " (:type event) ": " label
+         (when-let [command (:command event)]
+           (str " command=/" command))
+         (when-let [event-id (:eventId event)]
+           (str " eventId=" event-id)))))
+
 (defn- diagnostics-summary
-  [{:keys [relay broker]}]
+  [{:keys [relay broker diagnostics]}]
   (str "pi-matrix-relay diagnostics\n"
        (if (:running relay)
          (str "extension: running slot " (:slot relay) " " (:roomName relay) "\n"
@@ -867,6 +948,10 @@
               "heartbeat: " (if (:heartbeatActive relay) "active" "inactive") ", stream: "
               (if (:streamActive relay) "active" "inactive") "\n")
          "extension: not running\n")
+       (when-let [errors (seq (:recentErrors diagnostics))]
+         (str "recent extension errors:\n"
+              (str/join "\n" (map diagnostic-error-line errors))
+              "\n"))
        (broker-summary-line broker) "\n"
        (slots-summary-line broker)))
 
@@ -897,12 +982,14 @@
                                        :slots (settled-result slots-result)}
                                 (some? (settled-result rooms-result))
                                 (assoc :rooms (settled-result rooms-result)))
+                       diagnostic-events (vec (:events (if diagnostics* @diagnostics* {})))
                        details {:cwd cwd
                                 :project project
                                 :projectConfig {:rooms (vec (room-bindings project-config))
                                                 :allowedUsers (vec (:allowedUsers project-config))}
                                 :relay relay
-                                :diagnostics {:events (vec (:events (if diagnostics* @diagnostics* {})))}
+                                :diagnostics {:events diagnostic-events
+                                              :recentErrors (recent-error-events diagnostic-events)}
                                 :broker broker}]
                    {:content [{:type "text"
                                :text (diagnostics-summary details)}]

@@ -363,6 +363,14 @@
           (.then (fn [result]
                    (is (str/includes? (get-in result [:content 0 :text])
                                       "extension: running slot A project-A"))
+                   (is (str/includes? (get-in result [:content 0 :text])
+                                      "recent extension errors:"))
+                   (is (str/includes? (get-in result [:content 0 :text])
+                                      "start-error: Route not found"))
+                   (is (= [{:at "2026-05-17T16:31:27.000Z"
+                            :type "start-error"
+                            :message "Route not found"}]
+                          (get-in result [:details :diagnostics :recentErrors])))
                    (is (= {:running true
                            :clientId "matrix-relay-/work/project"
                            :slot "A"
@@ -604,6 +612,64 @@
                              :timestamp "2026-05-16T12:34:56Z"
                              :text "/status"}})
                    (is (str/includes? (:message (last @sent*)) "stream: active"))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest session-start-event-handler-injects-debug-context-on-event-error
+  (async done
+    (let [sent* (atom [])
+          stream* (atom nil)
+          diagnostics* (atom {})
+          deps {:diagnostics* diagnostics*
+                :read-project-config! (fn [_cwd] {})
+                :health! (fn []
+                           (js/Promise.resolve {:matrix {:connected true
+                                                         :userId "@bot:example.org"}}))
+                :register-client! (fn [_request]
+                                    (js/Promise.resolve {:clientId "client-1"
+                                                         :heartbeatSeconds 30
+                                                         :globalOperators ["@alice:example.org"]}))
+                :acquire-slot! (fn [_client-id _project _invite]
+                                 (js/Promise.resolve {:slot "A"
+                                                      :roomId "!slot:example.org"
+                                                      :roomName "project-A"}))
+                :update-subscriptions! (fn [_client-id rooms]
+                                         (js/Promise.resolve {:rooms rooms}))
+                :send-message! (fn [_room-id _message _opts]
+                                (js/Promise.resolve {:eventId "$sent:example.org"}))
+                :heartbeat! (fn [_client-id]
+                              (js/Promise.resolve {:heartbeatSeconds 30}))
+                :set-interval! (fn [_f _ms] :interval-1)
+                :open-event-stream! (fn [_opts _client-id on-event]
+                                      (reset! stream* {:on-event on-event})
+                                      #js {:close (fn [])})}
+          pi #js {:sendUserMessage (fn [message options]
+                                     (swap! sent* conj {:message message
+                                                        :options (some-> options (js->clj :keywordize-keys true))}))}
+          ctx #js {:cwd "/work/project"
+                   :isIdle (fn []
+                             (throw (js/Error. "idle check failed")))
+                   :ui #js {:setStatus (fn [_id _status])}}]
+      (-> (extension/start-relay! deps pi ctx)
+          (.then (fn [_relay-state]
+                   ((:on-event @stream*)
+                    {:type "matrix.message"
+                     :room {:roomId "!slot:example.org"}
+                     :event {:eventId "$event:example.org"
+                             :sender "@alice:example.org"
+                             :senderIsBot false
+                             :timestamp "2026-05-16T12:34:56Z"
+                             :text "ordinary slot prompt"}})
+                   (is (= 1 (count @sent*)))
+                   (is (str/includes? (:message (first @sent*)) "pi-matrix-relay extension error"))
+                   (is (str/includes? (:message (first @sent*)) "source: broker-event"))
+                   (is (str/includes? (:message (first @sent*)) "eventId: $event:example.org"))
+                   (is (str/includes? (:message (first @sent*)) "error: idle check failed"))
+                   (is (= {:deliverAs "followUp"} (:options (first @sent*))))
+                   (is (some #(= "broker-event-error" (:type %))
+                             (:events @diagnostics*)))
                    (done)))
           (.catch (fn [err]
                     (is false (.-stack err))
@@ -1008,10 +1074,13 @@
     (is (str/includes? (:message (first @acks*)) "context: 50000 tokens (25%/200k)"))
     (is (str/includes? (:message (first @acks*)) "usage: ↑0 ↓0 $0.000"))))
 
-(deftest matrix-remote-command-error-sends-room-ack
+(deftest matrix-remote-command-error-sends-room-ack-and-debug-context
   (let [acks* (atom [])
+        sent* (atom [])
         thrown* (atom nil)
-        pi #js {:sendUserMessage (fn [_message _options])}
+        pi #js {:sendUserMessage (fn [message options]
+                                   (swap! sent* conj {:message message
+                                                      :options (some-> options (js->clj :keywordize-keys true))}))}
         ctx #js {:cwd "/work/project"
                  :abort (fn []
                           (throw (js/Error. "abort failed")))}
@@ -1043,7 +1112,49 @@
     (is (str/includes? (:message (first @acks*)) "Remote command /abort failed: abort failed"))
     (is (= {:clientId "client-1"
             :replyToEventId "$abort:example.org"}
-           (:opts (first @acks*))))))
+           (:opts (first @acks*))))
+    (is (= 1 (count @sent*)))
+    (is (str/includes? (:message (first @sent*)) "pi-matrix-relay extension error"))
+    (is (str/includes? (:message (first @sent*)) "source: remote-command"))
+    (is (str/includes? (:message (first @sent*)) "command: /abort"))
+    (is (str/includes? (:message (first @sent*)) "eventId: $abort:example.org"))
+    (is (str/includes? (:message (first @sent*)) "error: abort failed"))
+    (is (str/includes? (:message (first @sent*)) "matrix_relay_diagnostics"))
+    (is (= {:deliverAs "followUp"} (:options (first @sent*))))
+    (is (some? (:stack (first (:events @(:diagnostics* deps))))))))
+
+(deftest matrix-remote-command-error-debug-context-can-be-disabled
+  (let [acks* (atom [])
+        sent* (atom [])
+        pi #js {:sendUserMessage (fn [message options]
+                                   (swap! sent* conj {:message message
+                                                      :options (some-> options (js->clj :keywordize-keys true))}))}
+        ctx #js {:cwd "/work/project"
+                 :abort (fn []
+                          (throw (js/Error. "abort failed")))}
+        relay-state {:client-id "client-1"
+                     :project-config {:debug {:enabled false}}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"
+                     :slot "A"
+                     :room-id "!slot:example.org"
+                     :room-name "project-A"}
+        deps {:diagnostics* (atom {})
+              :send-message! (fn [room-id message opts]
+                              (swap! acks* conj {:room-id room-id
+                                                 :message message
+                                                 :opts opts})
+                              (js/Promise.resolve {:eventId "$ack:example.org"}))}
+        event {:type "matrix.message"
+               :room {:roomId "!slot:example.org"}
+               :event {:eventId "$abort:example.org"
+                       :sender "@alice:example.org"
+                       :timestamp "2026-05-16T12:34:56Z"
+                       :text "/abort"}}]
+    (extension/handle-broker-event! deps pi ctx relay-state event)
+    (is (= 1 (count @acks*)))
+    (is (str/includes? (:message (first @acks*)) "Remote command /abort failed: abort failed"))
+    (is (= [] @sent*))))
 
 (deftest matrix-steer-command-injects-steering-prompt-and-sends-ack
   (let [sent* (atom [])
