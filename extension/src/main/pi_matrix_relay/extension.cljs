@@ -49,7 +49,7 @@
   [^js ctx status]
   (when-let [ui (.-ui ctx)]
     (when-let [set-status (.-setStatus ui)]
-      (set-status "pi-matrix-relay" status))))
+      (set-status "pi-matrix-relay" (if (nil? status) js/undefined status)))))
 
 (defn- rooms-map
   [project-config]

@@ -330,7 +330,7 @@
                        :stream #js {:close (fn []
                                              (swap! calls* conj [:close-stream]))}}
           ctx #js {:ui #js {:setStatus (fn [id status]
-                                         (swap! statuses* conj [id status]))}}]
+                                         (swap! statuses* conj [id (undefined? status)]))}}]
       (-> (js/Promise.resolve (extension/stop-relay! deps ctx relay-state))
           (.then (fn [_]
                    (is (= [[:close-stream]
@@ -339,7 +339,7 @@
                            [:release-slot "client-1" "!slot:example.org" "A"]
                            [:unregister-client "client-1" "shutdown"]]
                           @calls*))
-                   (is (= [["pi-matrix-relay" nil]] @statuses*))
+                   (is (= [["pi-matrix-relay" true]] @statuses*))
                    (done)))
           (.catch (fn [err]
                     (is false (.-stack err))
