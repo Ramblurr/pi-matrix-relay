@@ -6,10 +6,19 @@
         ring/ring-core {:mvn/version "1.15.2"}
         com.cnuernber/charred {:mvn/version "1.037"}
         missionary/missionary {:mvn/version "b.47"}
+        org.replikativ/datahike {:mvn/version "0.8.1686"
+                                 :exclusions [org.clojure/clojurescript]}
         com.outskirtslabs/dirs  {:mvn/version "0.1.0"}
+        com.outskirtslabs/datahike-sqlite {:git/url "https://github.com/outskirtslabs/datahike-sqlite.git"
+                                           :git/sha "62172aa45c062c836db9c58f3223645a6a0058b6"
+                                           :exclusions [org.suskalo/coffi
+                                                        andersmurphy/sqlite4clj]}
+        andersmurphy/sqlite4clj {:git/url "https://github.com/ramblurr/sqlite4clj"
+                                 :git/sha "edc74075f784c890ac2a878ee7244b31f2d5881f"}
         com.outskirtslabs/trixnity-clj {:git/url "https://github.com/outskirtslabs/trixnity-clj.git"
                                         :git/sha "516ca10001314d790c7df0e70a582562b58190f3"
-                                        :exclusions [org.suskalo/coffi]}
+                                        :exclusions [org.suskalo/coffi
+                                                     andersmurphy/sqlite4clj]}
         org.suskalo/coffi {:git/url "https://github.com/ramblurr/coffi"
                            :git/sha "ae3e38a449c88b998db98b0d4bffa9908dea1c79"}}
  :aliases

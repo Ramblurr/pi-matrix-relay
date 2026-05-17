@@ -20,8 +20,10 @@
 (deftest broker-system-starts-http-server-through-donut
   (testing "donut lifecycle starts the fake Matrix gateway, Ring app, and http-kit server"
     (let [gateway (tu/fake-gateway)
-          running (system/start! {:paths {:runtime-dir "/tmp/pi-matrix-relay-system-test"
-                                          :socket-path "/tmp/pi-matrix-relay-system-test/broker.sock"}
+          runtime-dir (str "/tmp/pi-matrix-relay-system-test-" (random-uuid))
+          running (system/start! {:paths {:runtime-dir runtime-dir
+                                          :state-dir (str runtime-dir "/state")
+                                          :socket-path (str runtime-dir "/broker.sock")}
                                   :http {:transport :tcp :port 0}
                                   :matrix-gateway gateway})]
       (try
@@ -47,12 +49,14 @@
     (let [runtime-dir (str "/tmp/pi-matrix-relay-system-test-lock-" (random-uuid))
           socket-path (str runtime-dir "/broker.sock")
           running (system/start! {:paths {:runtime-dir runtime-dir
+                                          :state-dir (str runtime-dir "/state")
                                           :socket-path socket-path}
                                   :http {:transport :tcp :port 0}
                                   :matrix-gateway (tu/fake-gateway)})]
       (try
         (let [ex (try
                    (system/start! {:paths {:runtime-dir runtime-dir
+                                           :state-dir (str runtime-dir "/state")
                                            :socket-path socket-path}
                                    :http {:transport :tcp :port 0}
                                    :matrix-gateway (tu/fake-gateway)})
@@ -67,8 +71,10 @@
 
 (deftest broker-system-can-bind-a-unix-domain-socket
   (testing "the default local transport creates the configured broker socket"
-    (let [socket-path "/tmp/pi-matrix-relay-system-test-uds/broker.sock"
-          running (system/start! {:paths {:runtime-dir "/tmp/pi-matrix-relay-system-test-uds"
+    (let [runtime-dir (str "/tmp/pi-matrix-relay-system-test-uds-" (random-uuid))
+          socket-path (str runtime-dir "/broker.sock")
+          running (system/start! {:paths {:runtime-dir runtime-dir
+                                          :state-dir (str runtime-dir "/state")
                                           :socket-path socket-path}
                                   :matrix-gateway (tu/fake-gateway)})]
       (try

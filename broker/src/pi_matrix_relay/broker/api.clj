@@ -2,6 +2,7 @@
   (:require [org.httpkit.server :as hk]
             [reitit.ring :as ring]
             [ring.middleware.params :refer [wrap-params]]
+            [pi-matrix-relay.broker.db :as broker-db]
             [pi-matrix-relay.broker.events :as events]
             [pi-matrix-relay.broker.json :as json]
             [pi-matrix-relay.broker.matrix :as matrix]
@@ -300,7 +301,7 @@
 (defn list-slots-handler
   [{:keys [state*]}]
   (fn [request]
-    (json/ok-response (state/list-slots @state* (get-in request [:query-params "projectId" ])))))
+    (json/ok-response (state/list-slots @state* (get-in request [:query-params "projectId"])))))
 
 (defn release-slot-handler
   [{:keys [state*]}]
@@ -354,7 +355,7 @@
     ["/matrix/media/transcribe" {:post (transcribe-media-handler env)}]
     ["/matrix/rooms/resolve" {:post (resolve-room-handler env)}]
     ["/matrix/rooms" {:get (list-rooms-handler env)
-                       :post (create-room-handler env)}]
+                      :post (create-room-handler env)}]
     ["/verification/start" {:post (verification-start-handler env)}]
     ["/verification/:verificationId/confirm" {:post (verification-confirm-handler env)}]
     ["/verification/:verificationId/cancel" {:post (verification-cancel-handler env)}]
@@ -362,12 +363,13 @@
 
 (defn app
   [env]
-  (wrap-errors
-   (wrap-json-body
-    (wrap-params
-     (ring/ring-handler
-      (ring/router (routes env))
-      (ring/create-default-handler
-       {:not-found (constantly (json/error-response 404 :not_found "Route not found" {}))
-        :method-not-allowed (constantly (json/error-response 405 :method_not_allowed "Method not allowed" {}))
-        :not-acceptable (constantly (json/error-response 406 :not_acceptable "Not acceptable" {}))}))))))
+  (let [handler (ring/ring-handler
+                 (ring/router (routes env))
+                 (ring/create-default-handler
+                  {:not-found (constantly (json/error-response 404 :not_found "Route not found" {}))
+                   :method-not-allowed (constantly (json/error-response 405 :method_not_allowed "Method not allowed" {}))
+                   :not-acceptable (constantly (json/error-response 406 :not_acceptable "Not acceptable" {}))}))]
+    (wrap-errors
+     (wrap-json-body
+      (wrap-params
+       (broker-db/wrap-db handler (:db-conn env)))))))

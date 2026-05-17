@@ -27,6 +27,7 @@
      :crypto-dir (path-str state-dir "crypto")
      :media-dir (path-str state-dir "media")
      :database-path (path-str state-dir "trixnity.sqlite")
+     :broker-db-path (path-str state-dir "broker.sqlite")
      :runtime-dir runtime-dir
      :socket-path (path-str runtime-dir "broker.sock")
      :lock-path (path-str runtime-dir "broker.lock")}))
