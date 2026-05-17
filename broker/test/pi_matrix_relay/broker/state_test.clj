@@ -62,7 +62,12 @@
         :global-operators []}
        {:clientInstanceId "instance-stale"
         :protocolVersion 1
-        :project {:id "project"}})
+        :project {:id "project"}
+        :subscriptions {:rooms ["!project:example.org"]}})
+      (state/update-subscriptions!
+       state*
+       "client-stale"
+       ["!project:example.org" "!slot-stale:example.org"])
       (state/acquire-slot!
        state*
        {:now 1000}
@@ -72,9 +77,11 @@
         :room-name "project-A"})
       (let [stale (state/mark-stale-leases! state* 100000 30 3)]
         (is (= {:stale-slots ["A"]
+                :known-project-room? true
                 :known-slot-room? false
                 :slot-state "released"}
                {:stale-slots (mapv :slot stale)
+                :known-project-room? (state/known-room-for-client? @state* "client-stale" "!project:example.org")
                 :known-slot-room? (state/known-room-for-client? @state* "client-stale" "!slot-stale:example.org")
                 :slot-state (get-in (state/list-slots @state* "project") [:slots 0 :state])}))))))
 

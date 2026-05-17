@@ -269,7 +269,9 @@
                                                        leases)]))
                                          slots-by-project)))]
                (reduce (fn [state {:keys [client-id room-id]}]
-                         (update-in state [:clients client-id :acquired-rooms] disj room-id))
+                         (-> state
+                             (update-in [:clients client-id :acquired-rooms] disj room-id)
+                             (update-in [:clients client-id :subscriptions] disj room-id)))
                        state
                        @stale*))))
     @stale*))
