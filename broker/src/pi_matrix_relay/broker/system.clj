@@ -8,7 +8,8 @@
             [pi-matrix-relay.broker.paths :as paths]
             [pi-matrix-relay.broker.state :as state])
   (:import [java.io File RandomAccessFile]
-           [java.nio.channels OverlappingFileLockException]))
+           [java.nio.channels OverlappingFileLockException]
+           [java.time Instant]))
 
 (defn- close-quietly!
   [resource]
@@ -63,20 +64,40 @@
       (catch Throwable _
         nil))))
 
+(defn stale-client-notice
+  [lease]
+  (str "pi-matrix-relay slot " (:slot lease)
+       " client disconnected unexpectedly. Last heartbeat: "
+       (str (Instant/ofEpochMilli (:last-heartbeat-at lease)))
+       ". Slot lease released."))
+
+(defn sweep-stale-leases!
+  [{:keys [state* config matrix-gateway now]}]
+  (let [heartbeat-seconds (get-in config [:leases :heartbeat-seconds] 30)
+        stale-after-missed (get-in config [:leases :stale-after-missed] 3)
+        stale (state/mark-stale-leases! state*
+                                         (or now (System/currentTimeMillis))
+                                         heartbeat-seconds
+                                         stale-after-missed)]
+    (doseq [lease stale]
+      (try
+        (matrix/send-message! matrix-gateway
+                              {:target {:roomId (:room-id lease)}
+                               :body (stale-client-notice lease)})
+        (catch Throwable _
+          nil)))
+    stale))
+
 (defn- start-sweeper!
-  [{:keys [state* config]}]
+  [{:keys [config] :as sweep-config}]
   (let [running? (atom true)
         heartbeat-seconds (get-in config [:leases :heartbeat-seconds] 30)
-        stale-after-missed (get-in config [:leases :stale-after-missed] 3)
         thread (Thread/startVirtualThread
                 (fn []
                   (while @running?
                     (try
                       (Thread/sleep (* heartbeat-seconds 1000))
-                      (state/mark-stale-leases! state*
-                                                (System/currentTimeMillis)
-                                                heartbeat-seconds
-                                                stale-after-missed)
+                      (sweep-stale-leases! sweep-config)
                       (catch InterruptedException _
                         (reset! running? false))
                       (catch Throwable _
@@ -175,6 +196,7 @@
                           :stop (fn [{::ds/keys [instance]}]
                                   (stop-sweeper! instance))
                           :config {:state* (ds/ref [:broker :state])
+                                   :matrix-gateway (ds/ref [:broker :matrix-gateway])
                                    :config (ds/ref [:broker :config])}}}}}))
 
 (defn start!

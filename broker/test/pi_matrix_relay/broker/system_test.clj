@@ -3,6 +3,7 @@
             [clojure.test :refer [deftest is testing]]
             [donut.system :as ds]
             [pi-matrix-relay.broker.json :as json]
+            [pi-matrix-relay.broker.state :as state]
             [pi-matrix-relay.broker.system :as system]
             [pi-matrix-relay.broker.test-util :as tu])
   (:import [java.net URI]
@@ -79,3 +80,43 @@
                 :socket-exists? (.exists (io/file socket-path))}))
         (finally
           (system/stop! running))))))
+
+(deftest stale-lease-sweep-sends-one-minimal-operational-notice
+  (testing "the broker releases stale leases without pretending the Pi session ended cleanly"
+    (let [gateway (tu/fake-gateway)
+          state* (atom (state/empty-state))]
+      (state/register-client!
+       state*
+       {:client-id-fn (constantly "client-stale")
+        :now 1000
+        :heartbeat-seconds 30
+        :global-operators []}
+       {:clientInstanceId "instance-stale"
+        :protocolVersion 1
+        :project {:id "project"}})
+      (state/acquire-slot!
+       state*
+       {:now 1000}
+       {:client-id "client-stale"
+        :project {:id "project"}
+        :room-id "!slot-stale:example.org"
+        :room-name "project-A"})
+      (let [stale (system/sweep-stale-leases! {:state* state*
+                                               :matrix-gateway gateway
+                                               :config {:leases {:heartbeat-seconds 30
+                                                                 :stale-after-missed 3}}
+                                               :now 100000})
+            send-request (second (first (filter #(= :send-message (first %))
+                                                (tu/calls gateway))))]
+        (is (= {:stale-slots ["A"]
+                :slot-state "released"
+                :send-target {:roomId "!slot-stale:example.org"}
+                :send-count 1}
+               {:stale-slots (mapv :slot stale)
+                :slot-state (get-in (state/list-slots @state* "project") [:slots 0 :state])
+                :send-target (:target send-request)
+                :send-count (count (filter #(= :send-message (first %))
+                                           (tu/calls gateway)))}))
+        (is (re-find #"slot A client disconnected unexpectedly" (:body send-request)))
+        (is (re-find #"Last heartbeat: 1970-01-01T00:00:01Z" (:body send-request)))
+        (is (not (re-find #"ended cleanly|tombstone|session ended" (:body send-request))))))))
