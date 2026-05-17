@@ -5,6 +5,7 @@
   []
   {:clients {}
    :slots {}
+   :slot-rooms {}
    :events []
    :next-event-id 0
    :joined-rooms {}
@@ -109,6 +110,18 @@
 (defn joined-room
   [state room-id]
   (get-in state [:joined-rooms room-id]))
+
+(defn slot-room
+  [state project-id slot]
+  (get-in state [:slot-rooms project-id slot]))
+
+(defn remember-slot-room!
+  [state* project-id slot room]
+  (let [room (assoc room
+                    :project-id project-id
+                    :slot slot)]
+    (swap! state* assoc-in [:slot-rooms project-id slot] room)
+    room))
 
 (defn acquire-slot!
   [state* {:keys [now]} {:keys [client-id project room-id room-name]}]

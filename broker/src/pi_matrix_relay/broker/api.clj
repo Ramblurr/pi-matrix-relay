@@ -227,14 +227,21 @@
                active-leases (into {} (filter (comp slots/active-lease? val) leases))
                slot (slots/first-free-slot active-leases)
                room-name (str project-id "-" slot)
-               create-result (matrix/create-room! matrix-gateway {:name room-name
-                                                                  :invite (:invite body)
-                                                                  :encrypted true})
+               slot-room (or (state/slot-room @state* project-id slot)
+                             (let [create-result (matrix/create-room! matrix-gateway {:name room-name
+                                                                                      :invite (:invite body)
+                                                                                      :encrypted true})]
+                               (state/remember-slot-room!
+                                state*
+                                project-id
+                                slot
+                                {:roomId (:roomId create-result)
+                                 :name (or (:name create-result) room-name)})))
                lease (state/acquire-slot! state* {:now (System/currentTimeMillis)}
                                           {:client-id (:clientId body)
                                            :project project
-                                           :room-id (:roomId create-result)
-                                           :room-name (:name create-result)})]
+                                           :room-id (:roomId slot-room)
+                                           :room-name (:name slot-room)})]
            {:slot (:slot lease)
             :roomId (:room-id lease)
             :roomName (:room-name lease)}))))))
@@ -247,7 +254,13 @@
 (defn release-slot-handler
   [{:keys [state*]}]
   (fn [request]
-    (json/ok-response (state/release-slot! state* (body-params request)))))
+    (let [body (body-params request)]
+      (json/ok-response
+       (state/release-slot!
+        state*
+        {:client-id (or (:client-id body) (:clientId body))
+         :room-id (or (:room-id body) (:roomId body))
+         :slot (:slot body)})))))
 
 (defn verification-start-handler
   [{:keys [matrix-gateway] :as env}]

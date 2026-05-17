@@ -240,3 +240,50 @@
               :create-room-names (mapv (comp :name second)
                                        (filter #(= :create-room (first %))
                                                (tu/calls gateway)))})))))
+
+(deftest released-slot-room-is-reused-for-the-next-client
+  (testing "slot rooms are broker-managed reusable rooms, not one Matrix room per acquire"
+    (let [gateway (tu/fake-gateway)
+          env (tu/test-env gateway)
+          app (api/app env)
+          client-1 (get-in (tu/json-request app :post "/v1/clients"
+                                            {:requestId "register-slot-reuse-1"
+                                             :clientInstanceId "instance-slot-reuse-1"
+                                             :protocolVersion 1
+                                             :project {:id "project"}})
+                           [:data :clientId])
+          client-2 (get-in (tu/json-request app :post "/v1/clients"
+                                            {:requestId "register-slot-reuse-2"
+                                             :clientInstanceId "instance-slot-reuse-2"
+                                             :protocolVersion 1
+                                             :project {:id "project"}})
+                           [:data :clientId])
+          first-acquire (tu/json-request app :post "/v1/slots/acquire"
+                                         {:requestId "acquire-reusable-1"
+                                          :clientId client-1
+                                          :project {:id "project"}})
+          release (tu/json-request app :post "/v1/slots/release"
+                                   {:requestId "release-reusable-1"
+                                    :clientId client-1
+                                    :slot "A"})
+          second-acquire (tu/json-request app :post "/v1/slots/acquire"
+                                          {:requestId "acquire-reusable-2"
+                                           :clientId client-2
+                                           :project {:id "project"}})]
+      (is (= {:first {:ok true
+                      :data {:slot "A"
+                             :roomId "!project-A:example.org"
+                             :roomName "project-A"}}
+              :release {:ok true
+                        :data {:released true}}
+              :second {:ok true
+                       :data {:slot "A"
+                              :roomId "!project-A:example.org"
+                              :roomName "project-A"}}
+              :create-room-names ["project-A"]}
+             {:first first-acquire
+              :release release
+              :second second-acquire
+              :create-room-names (mapv (comp :name second)
+                                       (filter #(= :create-room (first %))
+                                               (tu/calls gateway)))})))))
