@@ -49,12 +49,19 @@
   (let [rooms (:rooms project-config)]
     (cond
       (map? rooms) rooms
-      (sequential? rooms) (into {} (map (juxt :alias identity)) rooms)
+      (sequential? rooms) (into {} (keep (fn [binding]
+                                           (when-let [alias (:alias binding)]
+                                             [alias binding])))
+                                  rooms)
       :else {})))
 
 (defn- room-bindings
   [project-config]
-  (vals (rooms-map project-config)))
+  (let [rooms (:rooms project-config)]
+    (cond
+      (map? rooms) (vals rooms)
+      (sequential? rooms) rooms
+      :else [])))
 
 (defn- project-room-ids
   [project-config]
@@ -79,9 +86,10 @@
 
 (defn- short-time
   [timestamp]
-  (if (and (string? timestamp) (<= 16 (count timestamp)))
-    (subs timestamp 11 16)
-    "??:??"))
+  (if-let [[_ time zone] (and (string? timestamp)
+                              (re-find #"T(\d\d:\d\d:\d\d)(?:\.\d+)?(Z|[+-]\d\d:\d\d)?" timestamp))]
+    (str time (or zone ""))
+    "??:??:??"))
 
 (defn- localpart
   [mxid]
@@ -103,31 +111,60 @@
     "commands-only" (str/starts-with? (str/trim (str text)) "/")
     false))
 
+(defn- room-label
+  ([binding]
+   (room-label binding nil))
+  ([binding room]
+   (or (:alias binding)
+       (:name binding)
+       (:canonicalAlias binding)
+       (:name room)
+       (:canonicalAlias room)
+       (:roomId binding)
+       (:roomId room))))
+
+(defn- ambiguous-room-label?
+  [project-config binding room]
+  (let [label (room-label binding room)]
+    (< 1 (count (filter #(= label (room-label %))
+                        (room-bindings project-config))))))
+
+(defn- metadata-lines
+  [base-lines include-room-id? room-id]
+  (cond-> base-lines
+    include-room-id? (conj (str "roomId: " room-id))))
+
 (defn- matrix-message-prompt
-  [binding {:keys [room event]}]
-  (let [alias (or (:alias binding) (:name binding) (get room :name) (get room :roomId))
+  [project-config binding {:keys [room event]}]
+  (let [label (room-label binding room)
         sender (or (:sender event) "unknown sender")
         timestamp (short-time (:timestamp event))
-        text (or (:text event) "")]
-    (str "Matrix " alias " from " sender " at " timestamp "\n"
+        text (or (:text event) "")
+        include-room-id? (ambiguous-room-label? project-config binding room)
+        metadata (metadata-lines [(str "eventId: " (:eventId event))]
+                                 include-room-id?
+                                 (get room :roomId))]
+    (str "Matrix " label " from " sender " at " timestamp "\n"
          text "\n\n"
          "Matrix metadata:\n"
-         "roomId: " (get room :roomId) "\n"
-         "eventId: " (:eventId event)
-         (when-let [reply-to (:replyToEventId event)]
-           (str "\nreplyToEventId: " reply-to)))))
+         (str/join "\n" (cond-> metadata
+                           (:replyToEventId event)
+                           (conj (str "replyToEventId: " (:replyToEventId event))))))))
 
 (defn- matrix-reaction-prompt
-  [binding {:keys [room event]}]
-  (let [alias (or (:alias binding) (:name binding) (get room :name) (get room :roomId))
+  [project-config binding {:keys [room event]}]
+  (let [label (room-label binding room)
         sender (or (:sender event) "unknown sender")
-        timestamp (short-time (:timestamp event))]
-    (str "Matrix reaction in " alias " from " sender " at " timestamp "\n"
+        timestamp (short-time (:timestamp event))
+        include-room-id? (ambiguous-room-label? project-config binding room)
+        metadata (metadata-lines [(str "eventId: " (:eventId event))
+                                  (str "reactsToEventId: " (:reactsToEventId event))]
+                                 include-room-id?
+                                 (get room :roomId))]
+    (str "Matrix reaction in " label " from " sender " at " timestamp "\n"
          "reacted " (:key event) " to event " (:reactsToEventId event) "\n\n"
          "Matrix metadata:\n"
-         "roomId: " (get room :roomId) "\n"
-         "eventId: " (:eventId event) "\n"
-         "reactsToEventId: " (:reactsToEventId event))))
+         (str/join "\n" metadata))))
 
 (defn- idle?
   [^js ctx]
@@ -155,7 +192,7 @@
                  (not (:senderIsBot message))
                  (authorized-sender? relay-state (:sender message))
                  (message-allowed-by-mode? binding (:text message) (:bot-user-id relay-state)))
-        (deliver-user-message! pi ctx binding (matrix-message-prompt binding event))))
+        (deliver-user-message! pi ctx binding (matrix-message-prompt (:project-config relay-state) binding event))))
 
     "matrix.reaction"
     (let [room-id (get-in event [:room :roomId])
@@ -164,7 +201,7 @@
       (when (and binding
                  (not (:senderIsBot reaction))
                  (authorized-sender? relay-state (:sender reaction)))
-        (deliver-user-message! pi ctx binding (matrix-reaction-prompt binding event))))
+        (deliver-user-message! pi ctx binding (matrix-reaction-prompt (:project-config relay-state) binding event))))
 
     "broker.notice"
     (notify! ctx (:message event) (or (:level event) "info"))

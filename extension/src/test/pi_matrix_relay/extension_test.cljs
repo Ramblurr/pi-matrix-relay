@@ -243,9 +243,9 @@
                        :text "please check status"}}]
     (extension/handle-broker-event! {} pi ctx relay-state event)
     (is (= 1 (count @sent*)))
-    (is (str/includes? (:message (first @sent*)) "Matrix ops from @alice:example.org at 12:34"))
+    (is (str/includes? (:message (first @sent*)) "Matrix ops from @alice:example.org at 12:34:56Z"))
     (is (str/includes? (:message (first @sent*)) "please check status"))
-    (is (str/includes? (:message (first @sent*)) "roomId: !room:example.org"))
+    (is (not (str/includes? (:message (first @sent*)) "roomId: !room:example.org")))
     (is (str/includes? (:message (first @sent*)) "eventId: $event:example.org"))
     (is (nil? (:options (first @sent*))))
     (is (= [] @notifications*))))
@@ -271,8 +271,34 @@
                        :key "👍"}}]
     (extension/handle-broker-event! {} pi ctx relay-state event)
     (is (= 1 (count @sent*)))
-    (is (str/includes? (:message (first @sent*)) "Matrix reaction in ops from @alice:example.org at 12:34"))
-    (is (str/includes? (:message (first @sent*)) "reacted 👍 to event $event:example.org"))))
+    (is (str/includes? (:message (first @sent*)) "Matrix reaction in ops from @alice:example.org at 12:34:56Z"))
+    (is (str/includes? (:message (first @sent*)) "reacted 👍 to event $event:example.org"))
+    (is (not (str/includes? (:message (first @sent*)) "roomId: !room:example.org")))))
+
+(deftest matrix-message-includes-room-id-when-room-label-is-ambiguous
+  (let [sent* (atom [])
+        pi #js {:sendUserMessage (fn [message]
+                                   (swap! sent* conj message))}
+        ctx #js {:cwd "/work/project"
+                 :isIdle (fn [] true)}
+        relay-state {:project-config {:rooms [{:name "Shared"
+                                               :roomId "!first:example.org"
+                                               :mode "all"}
+                                              {:name "Shared"
+                                               :roomId "!second:example.org"
+                                               :mode "all"}]}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"}
+        event {:type "matrix.message"
+               :room {:roomId "!first:example.org"}
+               :event {:eventId "$event:example.org"
+                       :sender "@alice:example.org"
+                       :timestamp "2026-05-16T12:34:56+02:00"
+                       :text "hello from ambiguous room"}}]
+    (extension/handle-broker-event! {} pi ctx relay-state event)
+    (is (= 1 (count @sent*)))
+    (is (str/includes? (first @sent*) "Matrix Shared from @alice:example.org at 12:34:56+02:00"))
+    (is (str/includes? (first @sent*) "roomId: !first:example.org"))))
 
 (deftest unauthorized-matrix-message-is-ignored
   (let [sent* (atom [])
