@@ -797,6 +797,19 @@
                                    (swap! sent* conj {:message message
                                                       :options (some-> options (js->clj :keywordize-keys true))}))}
         ctx #js {:cwd "/work/project"
+                 :model #js {:provider "openai-codex"
+                             :id "gpt-5.5"
+                             :contextWindow 272000}
+                 :getContextUsage (fn []
+                                    #js {:tokens 123456
+                                         :contextWindow 272000
+                                         :percent 45.4})
+                 :sessionManager #js {:getBranch (fn []
+                                                   #js [#js {:type "message"
+                                                            :message #js {:role "assistant"
+                                                                          :usage #js {:input 360000
+                                                                                      :output 14000
+                                                                                      :cost #js {:total 4.591}}}}])}
                  :isIdle (fn [] true)}
         relay-state {:client-id "client-1"
                      :project-config {}
@@ -826,7 +839,10 @@
             :replyToEventId "$status:example.org"}
            (:opts (first @acks*))))
     (is (str/includes? (:message (first @acks*)) "pi-matrix-relay status"))
-    (is (str/includes? (:message (first @acks*)) "slot: A project-A"))))
+    (is (str/includes? (:message (first @acks*)) "slot: A project-A"))
+    (is (str/includes? (:message (first @acks*)) "model: openai-codex/gpt-5.5"))
+    (is (str/includes? (:message (first @acks*)) "context: 123456 tokens (45%/272k)"))
+    (is (str/includes? (:message (first @acks*)) "usage: ↑360.0k ↓14.0k $4.591"))))
 
 (deftest matrix-steer-command-injects-steering-prompt-and-sends-ack
   (let [sent* (atom [])
@@ -985,6 +1001,165 @@
     (extension/handle-broker-event! deps pi ctx relay-state prompt-event)
     (is (= 1 (count @sent*)))
     (is (= {:deliverAs "followUp"} (:options (first @sent*))))))
+
+(deftest matrix-abort-command-aborts-current-turn-and-sends-ack
+  (let [aborted? (atom false)
+        acks* (atom [])
+        pi #js {:sendUserMessage (fn [_message _options])}
+        ctx #js {:cwd "/work/project"
+                 :abort (fn []
+                          (reset! aborted? true))}
+        relay-state {:client-id "client-1"
+                     :project-config {}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"
+                     :slot "A"
+                     :room-id "!slot:example.org"
+                     :room-name "project-A"}
+        deps {:send-message! (fn [room-id message opts]
+                              (swap! acks* conj {:room-id room-id
+                                                 :message message
+                                                 :opts opts})
+                              (js/Promise.resolve {:eventId "$ack:example.org"}))}
+        event {:type "matrix.message"
+               :room {:roomId "!slot:example.org"}
+               :event {:eventId "$abort:example.org"
+                       :sender "@alice:example.org"
+                       :timestamp "2026-05-16T12:34:56Z"
+                       :text "/abort"}}]
+    (extension/handle-broker-event! deps pi ctx relay-state event)
+    (is (true? @aborted?))
+    (is (str/includes? (:message (first @acks*)) "Abort requested"))
+    (is (= {:clientId "client-1"
+            :replyToEventId "$abort:example.org"}
+           (:opts (first @acks*))))))
+
+(deftest matrix-compact-command-starts-compaction-and-reports-completion
+  (let [compact-options* (atom nil)
+        acks* (atom [])
+        pi #js {:sendUserMessage (fn [_message _options])}
+        ctx #js {:cwd "/work/project"
+                 :sessionManager #js {:getEntries (fn []
+                                                    #js [#js {:type "message"}
+                                                         #js {:type "message"}])}
+                 :compact (fn [options]
+                            (reset! compact-options* options))}
+        relay-state {:client-id "client-1"
+                     :project-config {}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"
+                     :slot "A"
+                     :room-id "!slot:example.org"
+                     :room-name "project-A"}
+        deps {:send-message! (fn [room-id message opts]
+                              (swap! acks* conj {:room-id room-id
+                                                 :message message
+                                                 :opts opts})
+                              (js/Promise.resolve {:eventId "$ack:example.org"}))}
+        event {:type "matrix.message"
+               :room {:roomId "!slot:example.org"}
+               :event {:eventId "$compact:example.org"
+                       :sender "@alice:example.org"
+                       :timestamp "2026-05-16T12:34:56Z"
+                       :text "/compact focus on matrix relay changes"}}]
+    (extension/handle-broker-event! deps pi ctx relay-state event)
+    (is (some? @compact-options*))
+    (is (= "focus on matrix relay changes" (.-customInstructions ^js @compact-options*)))
+    (is (str/includes? (:message (first @acks*)) "Compaction started"))
+    ((.-onComplete ^js @compact-options*) #js {:tokensBefore 12345})
+    (is (str/includes? (:message (last @acks*)) "Compaction completed"))
+    (is (str/includes? (:message (last @acks*)) "12345"))))
+
+(deftest matrix-compact-command-rejects-when-there-is-nothing-to-compact
+  (let [compact-called? (atom false)
+        acks* (atom [])
+        pi #js {:sendUserMessage (fn [_message _options])}
+        ctx #js {:cwd "/work/project"
+                 :sessionManager #js {:getEntries (fn []
+                                                    #js [#js {:type "message"}])}
+                 :compact (fn [_options]
+                            (reset! compact-called? true))}
+        relay-state {:client-id "client-1"
+                     :project-config {}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"
+                     :slot "A"
+                     :room-id "!slot:example.org"
+                     :room-name "project-A"}
+        deps {:send-message! (fn [room-id message opts]
+                              (swap! acks* conj {:room-id room-id
+                                                 :message message
+                                                 :opts opts})
+                              (js/Promise.resolve {:eventId "$ack:example.org"}))}
+        event {:type "matrix.message"
+               :room {:roomId "!slot:example.org"}
+               :event {:eventId "$compact:example.org"
+                       :sender "@alice:example.org"
+                       :timestamp "2026-05-16T12:34:56Z"
+                       :text "/compact"}}]
+    (extension/handle-broker-event! deps pi ctx relay-state event)
+    (is (false? @compact-called?))
+    (is (str/includes? (:message (first @acks*)) "Nothing to compact"))))
+
+(deftest matrix-new-command-starts-new-session-when-command-context-supports-it
+  (async done
+    (let [new-session-called? (atom false)
+          acks* (atom [])
+          pi #js {:sendUserMessage (fn [_message _options])}
+          ctx #js {:cwd "/work/project"
+                   :newSession (fn []
+                                 (reset! new-session-called? true)
+                                 (js/Promise.resolve #js {:cancelled false}))}
+          relay-state {:client-id "client-1"
+                       :project-config {}
+                       :global-operators #{"@alice:example.org"}
+                       :bot-user-id "@bot:example.org"
+                       :slot "A"
+                       :room-id "!slot:example.org"
+                       :room-name "project-A"}
+          deps {:send-message! (fn [room-id message opts]
+                                (swap! acks* conj {:room-id room-id
+                                                   :message message
+                                                   :opts opts})
+                                (js/Promise.resolve {:eventId "$ack:example.org"}))}
+          event {:type "matrix.message"
+                 :room {:roomId "!slot:example.org"}
+                 :event {:eventId "$new:example.org"
+                         :sender "@alice:example.org"
+                         :timestamp "2026-05-16T12:34:56Z"
+                         :text "/new"}}]
+      (extension/handle-broker-event! deps pi ctx relay-state event)
+      (js/setTimeout
+       (fn []
+         (is (true? @new-session-called?))
+         (is (str/includes? (:message (first @acks*)) "New session started"))
+         (done))
+       0))))
+
+(deftest matrix-new-command-reports-when-new-session-is-unavailable
+  (let [acks* (atom [])
+        pi #js {:sendUserMessage (fn [_message _options])}
+        ctx #js {:cwd "/work/project"}
+        relay-state {:client-id "client-1"
+                     :project-config {}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"
+                     :slot "A"
+                     :room-id "!slot:example.org"
+                     :room-name "project-A"}
+        deps {:send-message! (fn [room-id message opts]
+                              (swap! acks* conj {:room-id room-id
+                                                 :message message
+                                                 :opts opts})
+                              (js/Promise.resolve {:eventId "$ack:example.org"}))}
+        event {:type "matrix.message"
+               :room {:roomId "!slot:example.org"}
+               :event {:eventId "$new:example.org"
+                       :sender "@alice:example.org"
+                       :timestamp "2026-05-16T12:34:56Z"
+                       :text "/new"}}]
+    (extension/handle-broker-event! deps pi ctx relay-state event)
+    (is (str/includes? (:message (first @acks*)) "New session is not available"))))
 
 (deftest agent-end-sends-automatic-reply-for-pending-slot-prompt
   (async done

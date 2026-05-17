@@ -337,15 +337,82 @@
                   (record-diagnostic! diagnostics* :remote-command-ack-error (error-summary err))
                   nil)))))
 
+(defn- js->clj-safe
+  [value]
+  (cond
+    (nil? value) nil
+    (or (map? value) (sequential? value)) value
+    :else (js->clj value :keywordize-keys true)))
+
+(defn- format-count
+  [n]
+  (cond
+    (nil? n) "?"
+    (< n 1000) (str n)
+    :else (str (.toFixed (/ n 1000) 1) "k")))
+
+(defn- format-currency
+  [n]
+  (if (number? n)
+    (str "$" (.toFixed n 3))
+    "$0.000"))
+
+(defn- ctx-model-line
+  [^js ctx]
+  (if-let [model (js->clj-safe (.-model ctx))]
+    (str "model: " (:provider model) "/" (:id model))
+    "model: none"))
+
+(defn- ctx-context-line
+  [^js ctx]
+  (let [get-usage (.-getContextUsage ctx)
+        usage (when get-usage
+                (js->clj-safe (get-usage)))
+        model (js->clj-safe (.-model ctx))
+        tokens (:tokens usage)
+        context-window (or (:contextWindow usage) (:contextWindow model))
+        percent (:percent usage)]
+    (if (and tokens context-window (some? percent))
+      (str "context: " tokens " tokens (" (js/Math.round percent) "%/" (.toFixed (/ context-window 1000) 0) "k)")
+      "context: ?")))
+
+(defn- assistant-usage
+  [entry]
+  (let [entry (js->clj-safe entry)
+        message (:message entry)]
+    (when (and (= "message" (:type entry))
+               (= "assistant" (:role message)))
+      (:usage message))))
+
+(defn- branch-usage
+  [^js ctx]
+  (when-let [session-manager (.-sessionManager ctx)]
+    (when-let [get-branch (.-getBranch session-manager)]
+      (reduce (fn [acc usage]
+                (-> acc
+                    (update :input + (or (:input usage) 0))
+                    (update :output + (or (:output usage) 0))
+                    (update :cost + (or (get-in usage [:cost :total]) 0))))
+              {:input 0 :output 0 :cost 0}
+              (keep assistant-usage (js->clj-safe (get-branch)))))))
+
+(defn- ctx-usage-line
+  [^js ctx]
+  (let [{:keys [input output cost]} (or (branch-usage ctx) {:input 0 :output 0 :cost 0})]
+    (str "usage: ↑" (format-count input) " ↓" (format-count output) " " (format-currency cost))))
+
 (defn- remote-status-message
-  [relay-state binding room-id]
+  [relay-state binding room-id ctx]
   (str "pi-matrix-relay status\n"
        "project: " (or (get-in relay-state [:project :id]) "unknown") "\n"
        "slot: " (or (:slot relay-state) "?") " " (or (:room-name relay-state) "unknown") "\n"
        "room: " room-id "\n"
        "default message behavior: " (or (:busy binding) config/default-busy-behavior) "\n"
        "heartbeat: " (if (:heartbeat-id relay-state) "active" "inactive") "\n"
-       "stream: " (if (:stream relay-state) "active" "inactive")))
+       "stream: " (if (:stream relay-state) "active" "inactive") "\n"
+       (ctx-model-line ctx) "\n"
+       (ctx-context-line ctx) "\n"
+       (ctx-usage-line ctx)))
 
 (defn- set-room-behavior!
   [relay-state room-id behavior]
@@ -359,14 +426,87 @@
     "steer" :steer
     "follow-up" :follow-up
     "followup" :follow-up
+    "abort" :abort
+    "compact" :compact
+    "new" :new
     nil))
 
 (defn- command-prompt-event
   [event text]
   (assoc-in event [:event :text] text))
 
+(defn- message-entry-count
+  [^js ctx]
+  (if-let [session-manager (.-sessionManager ctx)]
+    (if-let [get-entries (.-getEntries session-manager)]
+      (count (filter #(= "message" (:type %))
+                     (js->clj-safe (get-entries))))
+      0)
+    0))
+
+(defn- handle-abort-command!
+  [deps ctx relay-state room-id event-id]
+  (if-let [abort (.-abort ctx)]
+    (do
+      (abort)
+      (send-room-ack! deps relay-state room-id event-id "Abort requested.")
+      true)
+    (do
+      (send-room-ack! deps relay-state room-id event-id "Abort is not available in this Pi context.")
+      true)))
+
+(defn- compact-complete-message
+  [result]
+  (let [result (js->clj-safe result)]
+    (str "Compaction completed."
+         (when-let [tokens-before (:tokensBefore result)]
+           (str " Tokens before: " tokens-before ".")))))
+
+(defn- handle-compact-command!
+  [deps ctx relay-state room-id event-id args]
+  (cond
+    (< (message-entry-count ctx) 2)
+    (do
+      (send-room-ack! deps relay-state room-id event-id "Nothing to compact (no messages yet).")
+      true)
+
+    (not (.-compact ctx))
+    (do
+      (send-room-ack! deps relay-state room-id event-id "Compaction is not available in this Pi context.")
+      true)
+
+    :else
+    (do
+      ((.-compact ctx)
+       #js {:customInstructions (when-not (str/blank? args) args)
+            :onComplete (fn [result]
+                          (send-room-ack! deps relay-state room-id event-id (compact-complete-message result)))
+            :onError (fn [err]
+                       (send-room-ack! deps relay-state room-id event-id
+                                       (str "Compaction failed: " (or (.-message err) (str err)))))} )
+      (send-room-ack! deps relay-state room-id event-id "Compaction started.")
+      true)))
+
+(defn- handle-new-command!
+  [deps ^js ctx relay-state room-id event-id]
+  (if-let [new-session (.-newSession ctx)]
+    (do
+      (-> (promise (new-session))
+          (.then (fn [result]
+                   (if (:cancelled (js->clj-safe result))
+                     (send-room-ack! deps relay-state room-id event-id "New session cancelled.")
+                     (send-room-ack! deps relay-state room-id event-id "New session started."))))
+          (.catch (fn [err]
+                    (send-room-ack! deps relay-state room-id event-id
+                                    (str "New session failed: " (or (.-message err) (str err)))))))
+      true)
+    (do
+      (send-room-ack! deps relay-state room-id event-id
+                      "New session is not available from Matrix in this Pi event context.")
+      true)))
+
 (defn- handle-remote-command!
-  [deps pi _ctx relay-state binding {:keys [room event] :as matrix-event}]
+  [deps pi ctx relay-state binding {:keys [room event] :as matrix-event}]
   (let [room-id (:roomId room)
         event-id (:eventId event)
         {:keys [name args]} (parse-remote-command (:text event))
@@ -374,8 +514,17 @@
     (case command
       :status
       (do
-        (send-room-ack! deps relay-state room-id event-id (remote-status-message relay-state binding room-id))
+        (send-room-ack! deps relay-state room-id event-id (remote-status-message relay-state binding room-id ctx))
         true)
+
+      :abort
+      (handle-abort-command! deps ctx relay-state room-id event-id)
+
+      :compact
+      (handle-compact-command! deps ctx relay-state room-id event-id args)
+
+      :new
+      (handle-new-command! deps ctx relay-state room-id event-id)
 
       :steer
       (if (str/blank? args)
