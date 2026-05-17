@@ -6,7 +6,8 @@ account serve multiple concurrent Pi sessions.
 
 It consists of a broker and an extension.
 
-The broker owns Matrix connectivity. It runs as a systemd user service.
+The broker owns Matrix connectivity. In normal use it runs as a systemd user service.
+During `pi-matrix-relay` development/debugging, do not use the systemd user service; stop it and run the broker manually from the JVM nREPL so broker state is inspectable with eval.
 
 The extension runs in process with pi instances and connects to the broker over local UDS socket.
 
