@@ -77,3 +77,53 @@
                {:stale-slots (mapv :slot stale)
                 :known-slot-room? (state/known-room-for-client? @state* "client-stale" "!slot-stale:example.org")
                 :slot-state (get-in (state/list-slots @state* "project") [:slots 0 :state])}))))))
+
+(deftest suspecting-a-client-only-touches-that-clients-active-leases
+  (testing "unexpected disconnects mark the disconnected client's active leases suspect"
+    (let [state* (atom (state/empty-state))]
+      (doseq [client-id ["client-1" "client-2"]]
+        (state/register-client!
+         state*
+         {:client-id-fn (constantly client-id)
+          :now 1000
+          :heartbeat-seconds 30
+          :global-operators []}
+         {:clientInstanceId client-id
+          :protocolVersion 1
+          :project {:id "project"}}))
+      (state/acquire-slot! state* {:now 1000}
+                           {:client-id "client-1"
+                            :project {:id "project"}
+                            :room-id "!slot-a:example.org"
+                            :room-name "project-A"})
+      (state/acquire-slot! state* {:now 1000}
+                           {:client-id "client-2"
+                            :project {:id "project"}
+                            :room-id "!slot-b:example.org"
+                            :room-name "project-B"})
+      (state/mark-client-suspect! state* "client-1" 2000)
+      (is (= [{:slot "A" :state "suspect"}
+              {:slot "B" :state "leased"}]
+             (mapv #(select-keys % [:slot :state])
+                   (:slots (state/list-slots @state* "project")))))))
+  (testing "released leases are not moved back to suspect"
+    (let [state* (atom (state/empty-state))]
+      (state/register-client!
+       state*
+       {:client-id-fn (constantly "client-1")
+        :now 1000
+        :heartbeat-seconds 30
+        :global-operators []}
+       {:clientInstanceId "client-1"
+        :protocolVersion 1
+        :project {:id "project"}})
+      (state/acquire-slot! state* {:now 1000}
+                           {:client-id "client-1"
+                            :project {:id "project"}
+                            :room-id "!slot-a:example.org"
+                            :room-name "project-A"})
+      (state/release-slot! state* {:client-id "client-1" :slot "A"})
+      (state/mark-client-suspect! state* "client-1" 2000)
+      (is (= [{:slot "A" :state "released"}]
+             (mapv #(select-keys % [:slot :state])
+                   (:slots (state/list-slots @state* "project"))))))))

@@ -130,7 +130,8 @@
                    (doseq [event (state/replay-events-after @state* last-event-id client-id)]
                      (hk/send! channel (events/format-sse event) false)))
         :on-close (fn [channel _]
-                    (events/unsubscribe! subscribers* client-id channel))}))))
+                    (events/unsubscribe! subscribers* client-id channel)
+                    (state/mark-client-suspect! state* client-id (System/currentTimeMillis)))}))))
 
 (defn resolve-room-handler
   [{:keys [state* matrix-gateway] :as env}]

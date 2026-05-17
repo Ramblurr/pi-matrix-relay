@@ -193,6 +193,26 @@
               (:slots state))))
     {:released @released?}))
 
+(defn mark-client-suspect!
+  [state* client-id now]
+  (swap! state*
+         (fn [state]
+           (require-client state client-id)
+           (update state :slots
+                   (fn [slots-by-project]
+                     (into {}
+                           (map (fn [[project-id leases]]
+                                  [project-id
+                                   (into {}
+                                         (map (fn [[slot lease]]
+                                                [slot (cond-> lease
+                                                        (and (= client-id (:client-id lease))
+                                                             (slots/active-lease? lease))
+                                                        (assoc :state :suspect
+                                                               :suspect-at now))]))
+                                         leases)]))
+                           slots-by-project))))))
+
 (defn append-event!
   [state* event]
   (let [result* (atom nil)]

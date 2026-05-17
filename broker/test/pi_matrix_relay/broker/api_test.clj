@@ -40,6 +40,12 @@
                                      :heartbeat-seconds 30
                                      :global-operators []}
                                     {:subscriptions {:rooms ["!room:example.org"]}})
+          _ (state/acquire-slot! state*
+                                 {:now 1000}
+                                 {:client-id "client-1"
+                                  :project {:id "project"}
+                                  :room-id "!slot:example.org"
+                                  :room-name "project-A"})
           _ (state/append-event! state* {:event "matrix.message"
                                          :data {:room {:roomId "!room:example.org"}
                                                 :text "first"}})
@@ -75,7 +81,11 @@
                            (string? payload)
                            (str/includes? payload "id: evt-1")
                            (false? close?)))
-                    @sends*)))))))
+                    @sends*))
+          ((-> @as-channel* second :on-close) :channel nil)
+          (is (= [{:slot "A" :state "suspect"}]
+                 (mapv #(select-keys % [:slot :state])
+                       (:slots (state/list-slots @state* "project"))))))))))
 
 (deftest matrix-send-requires-known-room
   (testing "a client can send only to subscribed or acquired rooms"
