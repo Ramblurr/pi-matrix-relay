@@ -27,6 +27,14 @@
   [runtime client-id]
   (get @(:subscribers* runtime) client-id))
 
+(defn subscribed-client-ids
+  [runtime]
+  (->> @(:subscribers* runtime)
+       (keep (fn [[client-id channels]]
+               (when (seq channels)
+                 client-id)))
+       set))
+
 (defn append-event!
   [runtime event]
   (let [[_old new] (swap-vals!

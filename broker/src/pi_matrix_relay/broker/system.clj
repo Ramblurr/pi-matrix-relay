@@ -74,13 +74,16 @@
        ". Slot lease released."))
 
 (defn sweep-stale-leases!
-  [{:keys [db-conn config matrix-gateway now]}]
+  [{:keys [db-conn config matrix-gateway now runtime]}]
   (let [heartbeat-seconds (get-in config [:leases :heartbeat-seconds] 30)
         stale-after-missed (get-in config [:leases :stale-after-missed] 3)
+        active-stream-clients (when runtime
+                                (runtime/subscribed-client-ids runtime))
         stale (store/mark-stale-leases! db-conn
                                         (or now (System/currentTimeMillis))
                                         heartbeat-seconds
-                                        stale-after-missed)]
+                                        stale-after-missed
+                                        {:exclude-client-ids active-stream-clients})]
     (doseq [lease stale]
       (try
         (matrix/send-message! matrix-gateway
@@ -215,6 +218,7 @@
                            :stop (fn [{::ds/keys [instance]}]
                                    (stop-sweeper! instance))
                            :config {:db-conn (ds/ref [:broker :db-conn])
+                                    :runtime (ds/ref [:broker :runtime])
                                     :matrix-gateway (ds/ref [:broker :matrix-gateway])
                                     :config (ds/ref [:broker :config])}}}}}))
 

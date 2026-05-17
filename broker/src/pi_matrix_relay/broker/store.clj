@@ -514,20 +514,24 @@
              db)))
 
 (defn mark-stale-leases!
-  [conn now-ms heartbeat-seconds stale-after-missed]
-  (let [cutoff (- now-ms (* heartbeat-seconds stale-after-missed 1000))
-        stale (->> (active-leases @conn)
-                   (filter #(< (or (:last-heartbeat-at %) 0) cutoff))
-                   vec)
-        now (now-date now-ms)]
-    (doseq [{:keys [lease-id state]} stale]
-      (try
-        (d/transact conn [[:db/cas [:lease/id lease-id] :lease/state state :released]
-                          [:db/add [:lease/id lease-id] :lease/released-at now]
-                          [:db/add [:lease/id lease-id] :lease/release-reason :stale]])
-        (catch clojure.lang.ExceptionInfo _
-          nil)))
-    stale))
+  ([conn now-ms heartbeat-seconds stale-after-missed]
+   (mark-stale-leases! conn now-ms heartbeat-seconds stale-after-missed {}))
+  ([conn now-ms heartbeat-seconds stale-after-missed {:keys [exclude-client-ids]}]
+   (let [exclude-client-ids (set exclude-client-ids)
+         cutoff (- now-ms (* heartbeat-seconds stale-after-missed 1000))
+         stale (->> (active-leases @conn)
+                    (remove #(contains? exclude-client-ids (:client-id %)))
+                    (filter #(< (or (:last-heartbeat-at %) 0) cutoff))
+                    vec)
+         now (now-date now-ms)]
+     (doseq [{:keys [lease-id state]} stale]
+       (try
+         (d/transact conn [[:db/cas [:lease/id lease-id] :lease/state state :released]
+                           [:db/add [:lease/id lease-id] :lease/released-at now]
+                           [:db/add [:lease/id lease-id] :lease/release-reason :stale]])
+         (catch clojure.lang.ExceptionInfo _
+           nil)))
+     stale)))
 
 (defn known-room-for-client?
   [db client-id room-id]

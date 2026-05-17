@@ -1,5 +1,6 @@
 (ns pi-matrix-relay.broker.api
-  (:require [org.httpkit.server :as hk]
+  (:require [clojure.string :as str]
+            [org.httpkit.server :as hk]
             [reitit.ring :as ring]
             [ring.middleware.params :refer [wrap-params]]
             [pi-matrix-relay.broker.api.presenters :as present]
@@ -372,6 +373,72 @@
   (fn [_]
     (json/ok-response (matrix/verification-status matrix-gateway))))
 
+(defn- strip-suffix
+  [s suffix]
+  (when (and s (str/ends-with? s suffix))
+    (subs s 0 (- (count s) (count suffix)))))
+
+(defn- with-client-id
+  [request client-id]
+  (assoc-in request [:path-params :clientId] client-id))
+
+(defn legacy-client-path-handler
+  "Route client endpoints for legacy extensions that embedded slash-containing
+  client IDs directly into the URL path instead of percent-encoding them."
+  [env]
+  (fn [request]
+    (let [client-path (get-in request [:path-params :clientPath])
+          method (:request-method request)]
+      (cond
+        (and (= :get method) (strip-suffix client-path "/events"))
+        ((event-stream-handler env)
+         (with-client-id request (strip-suffix client-path "/events")))
+
+        (and (= :post method) (strip-suffix client-path "/heartbeat"))
+        ((heartbeat-handler env)
+         (with-client-id request (strip-suffix client-path "/heartbeat")))
+
+        (and (= :patch method) (strip-suffix client-path "/subscriptions"))
+        ((update-subscriptions-handler env)
+         (with-client-id request (strip-suffix client-path "/subscriptions")))
+
+        (and (= :post method) (strip-suffix client-path "/acks"))
+        ((acks-handler env)
+         (with-client-id request (strip-suffix client-path "/acks")))
+
+        (= :delete method)
+        ((unregister-client-handler env)
+         (with-client-id request client-path))
+
+        :else
+        (json/error-response 404 :not_found "Route not found" {})))))
+
+(defn- slashful-client-id?
+  [client-id]
+  (boolean (and client-id (str/includes? client-id "/"))))
+
+(defn- legacy-client-path?
+  [method client-path]
+  (case method
+    :get (slashful-client-id? (strip-suffix client-path "/events"))
+    :post (or (slashful-client-id? (strip-suffix client-path "/heartbeat"))
+              (slashful-client-id? (strip-suffix client-path "/acks")))
+    :patch (slashful-client-id? (strip-suffix client-path "/subscriptions"))
+    :delete (slashful-client-id? client-path)
+    false))
+
+(defn wrap-legacy-client-paths
+  [handler env]
+  (let [legacy-handler (legacy-client-path-handler env)
+        prefix "/v1/clients/"]
+    (fn [request]
+      (let [uri (:uri request)
+            client-path (when (and uri (str/starts-with? uri prefix))
+                          (subs uri (count prefix)))]
+        (if (legacy-client-path? (:request-method request) client-path)
+          (legacy-handler (assoc-in request [:path-params :clientPath] client-path))
+          (handler request))))))
+
 (defn routes
   [env]
   [["/v1"
@@ -410,4 +477,6 @@
     (wrap-errors
      (wrap-json-body
       (wrap-params
-       (broker-db/wrap-db handler (:db-conn env)))))))
+       (broker-db/wrap-db
+        (wrap-legacy-client-paths handler env)
+        (:db-conn env)))))))

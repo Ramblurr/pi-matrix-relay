@@ -4,6 +4,7 @@
             [donut.system :as ds]
             [pi-matrix-relay.broker.db :as db]
             [pi-matrix-relay.broker.json :as json]
+            [pi-matrix-relay.broker.runtime :as runtime]
             [pi-matrix-relay.broker.store :as store]
             [pi-matrix-relay.broker.system :as system]
             [pi-matrix-relay.broker.test-util :as tu])
@@ -131,5 +132,43 @@
           (is (re-find #"slot A client disconnected unexpectedly" (:body send-request)))
           (is (re-find #"Last heartbeat: 1970-01-01T00:00:01Z" (:body send-request)))
           (is (not (re-find #"ended cleanly|tombstone|session ended" (:body send-request)))))
+        (finally
+          (db/release-conn! conn))))))
+
+(deftest stale-lease-sweep-keeps-clients-with-open-event-streams
+  (testing "an active SSE subscription is broker-visible liveness even if the extension heartbeat timer is delayed"
+    (let [conn (tu/test-db-conn)
+          gateway (tu/fake-gateway)
+          runtime (runtime/create-runtime)]
+      (try
+        (store/register-client! conn {:now-ms 1000}
+                                {:instanceId "instance-streaming"
+                                 :protocolVersion 1
+                                 :project {:id "project"}})
+        (let [reservation (store/reserve-slot! conn {:now-ms 1000}
+                                               {:client-id "instance-streaming"
+                                                :project {:id "project"}})]
+          (store/complete-slot-reservation!
+           conn
+           {:now-ms 1000
+            :lease-id (:lease-id reservation)
+            :reservation-id (:reservation-id reservation)
+            :client-id "instance-streaming"
+            :room-id "!slot-streaming:example.org"
+            :room-name "project-A"}))
+        (runtime/subscribe! runtime "instance-streaming" ::channel)
+        (let [stale (system/sweep-stale-leases! {:db-conn conn
+                                                 :runtime runtime
+                                                 :matrix-gateway gateway
+                                                 :config {:leases {:heartbeat-seconds 30
+                                                                   :stale-after-missed 3}}
+                                                 :now 100000})]
+          (is (= {:stale []
+                  :slot-state :leased
+                  :send-count 0}
+                 {:stale (mapv :slot stale)
+                  :slot-state (get-in (store/list-slots @conn "project") [:slots 0 :state])
+                  :send-count (count (filter #(= :send-message (first %))
+                                             (tu/calls gateway)))})))
         (finally
           (db/release-conn! conn))))))

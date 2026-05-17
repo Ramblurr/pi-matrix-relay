@@ -46,6 +46,51 @@
                   :registration registration
                   :stored-client (:client-id (store/client @conn "instance-1"))})))))))
 
+(deftest legacy-unencoded-client-paths-still-route-for-slashful-client-ids
+  (testing "older extension builds embedded slash-containing client ids directly in route paths"
+    (with-env
+      (fn [env conn]
+        (let [app (api/app env)
+              client-id "matrix-relay-/work/project"
+              raw-client-path "/v1/clients/matrix-relay-/work/project"
+              _ (tu/json-request app :post "/v1/clients"
+                                 {:requestId "register-legacy-path"
+                                  :instanceId client-id
+                                  :protocolVersion 1
+                                  :project {:id "project"}})
+              acquire (tu/json-request app :post "/v1/slots/acquire"
+                                       {:requestId "acquire-legacy-path"
+                                        :clientId client-id
+                                        :project {:id "project"}})
+              before (get-in (store/list-slots @conn "project") [:slots 0 :last-heartbeat-at])
+              subscriptions (tu/json-request app :patch (str raw-client-path "/subscriptions")
+                                             {:rooms ["!room:example.org"]})
+              heartbeat (tu/json-request app :post (str raw-client-path "/heartbeat") {})
+              as-channel* (atom nil)]
+          (is (= {:ok true
+                  :data {:slot "A" :roomId "!project-A:example.org" :roomName "project-A"}}
+                 acquire))
+          (with-redefs [hk/as-channel (fn [request opts]
+                                        (reset! as-channel* [request opts])
+                                        {:body :async-channel})
+                        hk/send! (fn
+                                   ([_channel _data] true)
+                                   ([_channel _data _close-after-send?] true))]
+            (is (= {:body :async-channel}
+                   (tu/request app :get (str raw-client-path "/events"))))
+            ((-> @as-channel* second :on-open) :channel))
+          (is (= {:subscriptions {:ok true
+                                  :data {:rooms ["!room:example.org"]}}
+                  :heartbeat {:ok true
+                              :data {:heartbeatSeconds 30}}
+                  :last-heartbeat-advanced? true
+                  :subscribers #{:channel}}
+                 {:subscriptions subscriptions
+                  :heartbeat heartbeat
+                  :last-heartbeat-advanced? (< before (get-in (store/list-slots @conn "project")
+                                                              [:slots 0 :last-heartbeat-at]))
+                  :subscribers (get @(:subscribers* (:runtime env)) client-id)})))))))
+
 (deftest event-stream-handler-returns-the-http-kit-async-response
   (testing "SSE handlers use Datahike clients/subscriptions and runtime subscriber channels"
     (with-env
