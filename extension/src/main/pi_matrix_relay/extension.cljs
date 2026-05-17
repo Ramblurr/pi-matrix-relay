@@ -339,10 +339,29 @@
 
 (defn- js->clj-safe
   [value]
-  (cond
-    (nil? value) nil
-    (or (map? value) (sequential? value)) value
-    :else (js->clj value :keywordize-keys true)))
+  (try
+    (cond
+      (nil? value) nil
+      (or (map? value) (sequential? value)) value
+      :else (js->clj value :keywordize-keys true))
+    (catch js/Error _
+      nil)))
+
+(defn- safe-invoke0
+  [f]
+  (try
+    (when f
+      (f))
+    (catch js/Error _
+      nil)))
+
+(defn- safe-method0
+  [obj method-name]
+  (try
+    (when-let [f (and obj (aget obj method-name))]
+      (.call f obj))
+    (catch js/Error _
+      nil)))
 
 (defn- format-count
   [n]
@@ -366,8 +385,7 @@
 (defn- ctx-context-line
   [^js ctx]
   (let [get-usage (.-getContextUsage ctx)
-        usage (when get-usage
-                (js->clj-safe (get-usage)))
+        usage (js->clj-safe (safe-invoke0 get-usage))
         model (js->clj-safe (.-model ctx))
         tokens (:tokens usage)
         context-window (or (:contextWindow usage) (:contextWindow model))
@@ -387,14 +405,14 @@
 (defn- branch-usage
   [^js ctx]
   (when-let [session-manager (.-sessionManager ctx)]
-    (when-let [get-branch (.-getBranch session-manager)]
+    (when-let [branch (js->clj-safe (safe-method0 session-manager "getBranch"))]
       (reduce (fn [acc usage]
                 (-> acc
                     (update :input + (or (:input usage) 0))
                     (update :output + (or (:output usage) 0))
                     (update :cost + (or (get-in usage [:cost :total]) 0))))
               {:input 0 :output 0 :cost 0}
-              (keep assistant-usage (js->clj-safe (get-branch)))))))
+              (keep assistant-usage branch)))))
 
 (defn- ctx-usage-line
   [^js ctx]
@@ -438,10 +456,8 @@
 (defn- message-entry-count
   [^js ctx]
   (if-let [session-manager (.-sessionManager ctx)]
-    (if-let [get-entries (.-getEntries session-manager)]
-      (count (filter #(= "message" (:type %))
-                     (js->clj-safe (get-entries))))
-      0)
+    (count (filter #(= "message" (:type %))
+                   (js->clj-safe (safe-method0 session-manager "getEntries"))))
     0))
 
 (defn- handle-abort-command!
@@ -511,49 +527,60 @@
         event-id (:eventId event)
         {:keys [name args]} (parse-remote-command (:text event))
         command (remote-command-name name)]
-    (case command
-      :status
-      (do
-        (send-room-ack! deps relay-state room-id event-id (remote-status-message relay-state binding room-id ctx))
-        true)
+    (if command
+      (try
+        (case command
+          :status
+          (do
+            (send-room-ack! deps relay-state room-id event-id (remote-status-message relay-state binding room-id ctx))
+            true)
 
-      :abort
-      (handle-abort-command! deps ctx relay-state room-id event-id)
+          :abort
+          (handle-abort-command! deps ctx relay-state room-id event-id)
 
-      :compact
-      (handle-compact-command! deps ctx relay-state room-id event-id args)
+          :compact
+          (handle-compact-command! deps ctx relay-state room-id event-id args)
 
-      :new
-      (handle-new-command! deps ctx relay-state room-id event-id)
+          :new
+          (handle-new-command! deps ctx relay-state room-id event-id)
 
-      :steer
-      (if (str/blank? args)
-        (do
-          (set-room-behavior! relay-state room-id "steer")
+          :steer
+          (if (str/blank? args)
+            (do
+              (set-room-behavior! relay-state room-id "steer")
+              (send-room-ack! deps relay-state room-id event-id
+                              "Default Matrix message behavior for this room is now steer.")
+              true)
+            (let [prompt-event (command-prompt-event matrix-event args)
+                  prompt (matrix-message-prompt (:project-config relay-state) binding prompt-event)]
+              (deliver-command-message! pi prompt "steer")
+              (record-pending-auto-reply! relay-state binding room-id event-id)
+              (send-room-ack! deps relay-state room-id event-id "Steering message sent.")
+              true))
+
+          :follow-up
+          (if (str/blank? args)
+            (do
+              (set-room-behavior! relay-state room-id "follow-up")
+              (send-room-ack! deps relay-state room-id event-id
+                              "Default Matrix message behavior for this room is now follow-up.")
+              true)
+            (let [prompt-event (command-prompt-event matrix-event args)
+                  prompt (matrix-message-prompt (:project-config relay-state) binding prompt-event)]
+              (deliver-command-message! pi prompt "follow-up")
+              (record-pending-auto-reply! relay-state binding room-id event-id)
+              (send-room-ack! deps relay-state room-id event-id "Follow-up message queued.")
+              true)))
+        (catch js/Error err
+          (record-diagnostic! (:diagnostics* deps)
+                              :remote-command-error
+                              (merge {:command name
+                                      :roomId room-id
+                                      :eventId event-id}
+                                     (error-summary err)))
           (send-room-ack! deps relay-state room-id event-id
-                          "Default Matrix message behavior for this room is now steer.")
-          true)
-        (let [prompt-event (command-prompt-event matrix-event args)
-              prompt (matrix-message-prompt (:project-config relay-state) binding prompt-event)]
-          (deliver-command-message! pi prompt "steer")
-          (record-pending-auto-reply! relay-state binding room-id event-id)
-          (send-room-ack! deps relay-state room-id event-id "Steering message sent.")
+                          (str "Remote command /" name " failed: " (or (.-message err) (str err))))
           true))
-
-      :follow-up
-      (if (str/blank? args)
-        (do
-          (set-room-behavior! relay-state room-id "follow-up")
-          (send-room-ack! deps relay-state room-id event-id
-                          "Default Matrix message behavior for this room is now follow-up.")
-          true)
-        (let [prompt-event (command-prompt-event matrix-event args)
-              prompt (matrix-message-prompt (:project-config relay-state) binding prompt-event)]
-          (deliver-command-message! pi prompt "follow-up")
-          (record-pending-auto-reply! relay-state binding room-id event-id)
-          (send-room-ack! deps relay-state room-id event-id "Follow-up message queued.")
-          true))
-
       false)))
 
 (defn handle-broker-event!
@@ -655,15 +682,18 @@
                                                                 :pending-auto-replies* (atom [])
                                                                 :last-start-banner banner
                                                                 :heartbeat-id heartbeat-id}
+                                                   relay-state* (atom relay-state)
                                                    stream (open-event-stream!
                                                            {:on-error (fn [err]
                                                                         (record-diagnostic! diagnostics* :event-stream-error (error-summary err))
                                                                         (notify! ctx (str "Matrix relay event stream failed: " (.-message err)) "warning"))}
                                                            client-id
-                                                           #(handle-broker-event! deps pi ctx relay-state %))]
+                                                           #(handle-broker-event! deps pi ctx @relay-state* %))
+                                                   relay-state (assoc relay-state :stream stream)]
+                                               (reset! relay-state* relay-state)
                                                (record-diagnostic! diagnostics* :event-stream-opened {:clientId client-id})
                                                (set-status! ctx (status-text project-config slot))
-                                               (assoc relay-state :stream stream))))))))))))))))))))))
+                                               relay-state)))))))))))))))))))))
 
 (defn- ignore-errors
   [thunk]

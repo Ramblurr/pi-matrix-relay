@@ -559,6 +559,56 @@
                     (is false (.-stack err))
                     (done)))))))
 
+(deftest session-start-event-handler-reports-stream-active-in-remote-status
+  (async done
+    (let [sent* (atom [])
+          stream* (atom nil)
+          deps {:read-project-config! (fn [_cwd] {})
+                :health! (fn []
+                           (js/Promise.resolve {:matrix {:connected true
+                                                         :userId "@bot:example.org"}}))
+                :register-client! (fn [_request]
+                                    (js/Promise.resolve {:clientId "client-1"
+                                                         :heartbeatSeconds 30
+                                                         :globalOperators ["@alice:example.org"]}))
+                :acquire-slot! (fn [_client-id _project _invite]
+                                 (js/Promise.resolve {:slot "A"
+                                                      :roomId "!slot:example.org"
+                                                      :roomName "project-A"}))
+                :update-subscriptions! (fn [_client-id rooms]
+                                         (js/Promise.resolve {:rooms rooms}))
+                :send-message! (fn [room-id message opts]
+                                (swap! sent* conj {:room-id room-id
+                                                   :message message
+                                                   :opts opts})
+                                (js/Promise.resolve {:eventId "$sent:example.org"}))
+                :heartbeat! (fn [_client-id]
+                              (js/Promise.resolve {:heartbeatSeconds 30}))
+                :set-interval! (fn [_f _ms] :interval-1)
+                :open-event-stream! (fn [_opts _client-id on-event]
+                                      (reset! stream* {:on-event on-event})
+                                      #js {:close (fn [])})}
+          pi #js {:sendUserMessage (fn [_message _options])}
+          ctx #js {:cwd "/work/project"
+                   :model #js {:provider "anthropic"
+                               :id "claude-sonnet"}
+                   :ui #js {:setStatus (fn [_id _status])}}]
+      (-> (extension/start-relay! deps pi ctx)
+          (.then (fn [_relay-state]
+                   ((:on-event @stream*)
+                    {:type "matrix.message"
+                     :room {:roomId "!slot:example.org"}
+                     :event {:eventId "$status:example.org"
+                             :sender "@alice:example.org"
+                             :senderIsBot false
+                             :timestamp "2026-05-16T12:34:56Z"
+                             :text "/status"}})
+                   (is (str/includes? (:message (last @sent*)) "stream: active"))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
 (deftest session-start-acquires-slot-without-project-rooms
   (async done
     (let [calls* (atom [])
@@ -796,6 +846,17 @@
         pi #js {:sendUserMessage (fn [message options]
                                    (swap! sent* conj {:message message
                                                       :options (some-> options (js->clj :keywordize-keys true))}))}
+        branch #js [#js {:type "message"
+                         :message #js {:role "assistant"
+                                       :usage #js {:input 360000
+                                                   :output 14000
+                                                   :cost #js {:total 4.591}}}}]
+        session-manager (let [sm (js-obj)]
+                          (aset sm "branch" branch)
+                          (aset sm "getBranch" (fn []
+                                                  (this-as this
+                                                    (.-branch ^js this))))
+                          sm)
         ctx #js {:cwd "/work/project"
                  :model #js {:provider "openai-codex"
                              :id "gpt-5.5"
@@ -804,12 +865,7 @@
                                     #js {:tokens 123456
                                          :contextWindow 272000
                                          :percent 45.4})
-                 :sessionManager #js {:getBranch (fn []
-                                                   #js [#js {:type "message"
-                                                            :message #js {:role "assistant"
-                                                                          :usage #js {:input 360000
-                                                                                      :output 14000
-                                                                                      :cost #js {:total 4.591}}}}])}
+                 :sessionManager session-manager
                  :isIdle (fn [] true)}
         relay-state {:client-id "client-1"
                      :project-config {}
@@ -843,6 +899,151 @@
     (is (str/includes? (:message (first @acks*)) "model: openai-codex/gpt-5.5"))
     (is (str/includes? (:message (first @acks*)) "context: 123456 tokens (45%/272k)"))
     (is (str/includes? (:message (first @acks*)) "usage: ↑360.0k ↓14.0k $4.591"))))
+
+(deftest matrix-status-command-still-acks-when-context-usage-is-unavailable
+  (let [sent* (atom [])
+        acks* (atom [])
+        thrown* (atom nil)
+        pi #js {:sendUserMessage (fn [message options]
+                                   (swap! sent* conj {:message message
+                                                      :options (some-> options (js->clj :keywordize-keys true))}))}
+        branch #js [#js {:type "message"
+                         :message #js {:role "assistant"
+                                       :usage #js {:input 10
+                                                   :output 5
+                                                   :cost #js {:total 0.01}}}}]
+        session-manager (let [sm (js-obj)]
+                          (aset sm "branch" branch)
+                          (aset sm "getBranch" (fn []
+                                                  (this-as this
+                                                    (.-branch ^js this))))
+                          sm)
+        ctx #js {:cwd "/work/project"
+                 :model #js {:provider "anthropic"
+                             :id "claude-sonnet"
+                             :contextWindow 200000}
+                 :getContextUsage (fn []
+                                    (throw (js/Error. "Cannot read properties of null (reading 'leafId')")))
+                 :sessionManager session-manager
+                 :isIdle (fn [] true)}
+        relay-state {:client-id "client-1"
+                     :project-config {}
+                     :project {:id "project"}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"
+                     :slot "A"
+                     :room-id "!slot:example.org"
+                     :room-name "project-A"
+                     :heartbeat-id :heartbeat-1
+                     :stream #js {}}
+        deps {:send-message! (fn [room-id message opts]
+                              (swap! acks* conj {:room-id room-id
+                                                 :message message
+                                                 :opts opts})
+                              (js/Promise.resolve {:eventId "$ack:example.org"}))}
+        event {:type "matrix.message"
+               :room {:roomId "!slot:example.org"}
+               :event {:eventId "$status:example.org"
+                       :sender "@alice:example.org"
+                       :timestamp "2026-05-16T12:34:56Z"
+                       :text "/status"}}]
+    (try
+      (extension/handle-broker-event! deps pi ctx relay-state event)
+      (catch js/Error err
+        (reset! thrown* err)))
+    (is (nil? @thrown*) (some-> @thrown* .-message))
+    (is (= [] @sent*))
+    (is (= 1 (count @acks*)))
+    (is (str/includes? (:message (first @acks*)) "pi-matrix-relay status"))
+    (is (str/includes? (:message (first @acks*)) "model: anthropic/claude-sonnet"))
+    (is (str/includes? (:message (first @acks*)) "context: ?"))
+    (is (str/includes? (:message (first @acks*)) "usage: ↑10 ↓5 $0.010"))))
+
+(deftest matrix-status-command-still-acks-when-branch-usage-is-unavailable
+  (let [sent* (atom [])
+        acks* (atom [])
+        thrown* (atom nil)
+        pi #js {:sendUserMessage (fn [message options]
+                                   (swap! sent* conj {:message message
+                                                      :options (some-> options (js->clj :keywordize-keys true))}))}
+        ctx #js {:cwd "/work/project"
+                 :model #js {:provider "anthropic"
+                             :id "claude-sonnet"
+                             :contextWindow 200000}
+                 :getContextUsage (fn []
+                                    #js {:tokens 50000
+                                         :contextWindow 200000
+                                         :percent 25})
+                 :sessionManager #js {:getBranch (fn []
+                                                   (throw (js/Error. "branch is not available")))}
+                 :isIdle (fn [] true)}
+        relay-state {:client-id "client-1"
+                     :project-config {}
+                     :project {:id "project"}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"
+                     :slot "A"
+                     :room-id "!slot:example.org"
+                     :room-name "project-A"
+                     :heartbeat-id :heartbeat-1
+                     :stream #js {}}
+        deps {:send-message! (fn [room-id message opts]
+                              (swap! acks* conj {:room-id room-id
+                                                 :message message
+                                                 :opts opts})
+                              (js/Promise.resolve {:eventId "$ack:example.org"}))}
+        event {:type "matrix.message"
+               :room {:roomId "!slot:example.org"}
+               :event {:eventId "$status:example.org"
+                       :sender "@alice:example.org"
+                       :timestamp "2026-05-16T12:34:56Z"
+                       :text "/status"}}]
+    (try
+      (extension/handle-broker-event! deps pi ctx relay-state event)
+      (catch js/Error err
+        (reset! thrown* err)))
+    (is (nil? @thrown*) (some-> @thrown* .-message))
+    (is (= [] @sent*))
+    (is (= 1 (count @acks*)))
+    (is (str/includes? (:message (first @acks*)) "context: 50000 tokens (25%/200k)"))
+    (is (str/includes? (:message (first @acks*)) "usage: ↑0 ↓0 $0.000"))))
+
+(deftest matrix-remote-command-error-sends-room-ack
+  (let [acks* (atom [])
+        thrown* (atom nil)
+        pi #js {:sendUserMessage (fn [_message _options])}
+        ctx #js {:cwd "/work/project"
+                 :abort (fn []
+                          (throw (js/Error. "abort failed")))}
+        relay-state {:client-id "client-1"
+                     :project-config {}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"
+                     :slot "A"
+                     :room-id "!slot:example.org"
+                     :room-name "project-A"}
+        deps {:diagnostics* (atom {})
+              :send-message! (fn [room-id message opts]
+                              (swap! acks* conj {:room-id room-id
+                                                 :message message
+                                                 :opts opts})
+                              (js/Promise.resolve {:eventId "$ack:example.org"}))}
+        event {:type "matrix.message"
+               :room {:roomId "!slot:example.org"}
+               :event {:eventId "$abort:example.org"
+                       :sender "@alice:example.org"
+                       :timestamp "2026-05-16T12:34:56Z"
+                       :text "/abort"}}]
+    (try
+      (extension/handle-broker-event! deps pi ctx relay-state event)
+      (catch js/Error err
+        (reset! thrown* err)))
+    (is (nil? @thrown*) (some-> @thrown* .-message))
+    (is (= 1 (count @acks*)))
+    (is (str/includes? (:message (first @acks*)) "Remote command /abort failed: abort failed"))
+    (is (= {:clientId "client-1"
+            :replyToEventId "$abort:example.org"}
+           (:opts (first @acks*))))))
 
 (deftest matrix-steer-command-injects-steering-prompt-and-sends-ack
   (let [sent* (atom [])
@@ -1038,10 +1239,16 @@
   (let [compact-options* (atom nil)
         acks* (atom [])
         pi #js {:sendUserMessage (fn [_message _options])}
+        entries #js [#js {:type "message"}
+                     #js {:type "message"}]
+        session-manager (let [sm (js-obj)]
+                          (aset sm "entries" entries)
+                          (aset sm "getEntries" (fn []
+                                                   (this-as this
+                                                     (.-entries ^js this))))
+                          sm)
         ctx #js {:cwd "/work/project"
-                 :sessionManager #js {:getEntries (fn []
-                                                    #js [#js {:type "message"}
-                                                         #js {:type "message"}])}
+                 :sessionManager session-manager
                  :compact (fn [options]
                             (reset! compact-options* options))}
         relay-state {:client-id "client-1"
@@ -1074,9 +1281,15 @@
   (let [compact-called? (atom false)
         acks* (atom [])
         pi #js {:sendUserMessage (fn [_message _options])}
+        entries #js [#js {:type "message"}]
+        session-manager (let [sm (js-obj)]
+                          (aset sm "entries" entries)
+                          (aset sm "getEntries" (fn []
+                                                   (this-as this
+                                                     (.-entries ^js this))))
+                          sm)
         ctx #js {:cwd "/work/project"
-                 :sessionManager #js {:getEntries (fn []
-                                                    #js [#js {:type "message"}])}
+                 :sessionManager session-manager
                  :compact (fn [_options]
                             (reset! compact-called? true))}
         relay-state {:client-id "client-1"
