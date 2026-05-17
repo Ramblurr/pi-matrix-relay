@@ -7,17 +7,21 @@
 
 (def schema
   [{:db/ident :project/id
-    :db/valueType :db.type/string
+    :db/valueType :db.type/uuid
     :db/cardinality :db.cardinality/one
     :db/unique :db.unique/identity}
+   {:db/ident :project/key
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/index true}
    {:db/ident :project/root
     :db/valueType :db.type/string
     :db/cardinality :db.cardinality/one}
    {:db/ident :project/display-name
     :db/valueType :db.type/string
     :db/cardinality :db.cardinality/one}
-   {:db/ident :slot-room/project-id
-    :db/valueType :db.type/string
+   {:db/ident :slot-room/project
+    :db/valueType :db.type/ref
     :db/cardinality :db.cardinality/one
     :db/index true}
    {:db/ident :slot-room/slot
