@@ -379,6 +379,94 @@
                     (is false (.-stack err))
                     (done)))))))
 
+(deftest authorized-slot-room-message-is-injected-with-all-mode
+  (let [sent* (atom [])
+        pi #js {:sendUserMessage (fn [message options]
+                                   (swap! sent* conj {:message message
+                                                      :options (some-> options (js->clj :keywordize-keys true))}))}
+        ctx #js {:cwd "/work/project"
+                 :isIdle (fn [] true)}
+        relay-state {:project-config {}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"
+                     :slot "A"
+                     :room-id "!slot:example.org"
+                     :room-name "project-A"}
+        event {:type "matrix.message"
+               :room {:roomId "!slot:example.org"}
+               :event {:eventId "$slot-event:example.org"
+                       :sender "@alice:example.org"
+                       :timestamp "2026-05-16T12:34:56Z"
+                       :text "no bot mention needed in slot rooms"}}]
+    (extension/handle-broker-event! {} pi ctx relay-state event)
+    (is (= 1 (count @sent*)))
+    (is (str/includes? (:message (first @sent*)) "Matrix project-A from @alice:example.org at 12:34:56Z"))
+    (is (str/includes? (:message (first @sent*)) "no bot mention needed in slot rooms"))))
+
+(deftest slot-room-message-from-bot-or-unauthorized-sender-is-ignored
+  (let [sent* (atom [])
+        pi #js {:sendUserMessage (fn [message]
+                                   (swap! sent* conj message))}
+        ctx #js {:cwd "/work/project"
+                 :isIdle (fn [] true)}
+        relay-state {:project-config {}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"
+                     :slot "A"
+                     :room-id "!slot:example.org"
+                     :room-name "project-A"}]
+    (doseq [event [{:type "matrix.message"
+                    :room {:roomId "!slot:example.org"}
+                    :event {:eventId "$bot:example.org"
+                            :sender "@bot:example.org"
+                            :senderIsBot true
+                            :timestamp "2026-05-16T12:34:56Z"
+                            :text "bot echo"}}
+                   {:type "matrix.message"
+                    :room {:roomId "!slot:example.org"}
+                    :event {:eventId "$mallory:example.org"
+                            :sender "@mallory:example.org"
+                            :timestamp "2026-05-16T12:34:56Z"
+                            :text "unauthorized"}}]]
+      (extension/handle-broker-event! {} pi ctx relay-state event))
+    (is (= [] @sent*))))
+
+(deftest project-room-mentions-mode-still-requires-a-bot-mention
+  (let [sent* (atom [])
+        pi #js {:sendUserMessage (fn [message]
+                                   (swap! sent* conj message))}
+        ctx #js {:cwd "/work/project"
+                 :isIdle (fn [] true)}
+        relay-state {:project-config {:rooms {"ops" {:alias "ops"
+                                                      :roomId "!room:example.org"
+                                                      :mode "mentions"}}}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"}]
+    (extension/handle-broker-event!
+     {}
+     pi
+     ctx
+     relay-state
+     {:type "matrix.message"
+      :room {:roomId "!room:example.org"}
+      :event {:eventId "$ignored:example.org"
+              :sender "@alice:example.org"
+              :timestamp "2026-05-16T12:34:56Z"
+              :text "ordinary project chatter"}})
+    (extension/handle-broker-event!
+     {}
+     pi
+     ctx
+     relay-state
+     {:type "matrix.message"
+      :room {:roomId "!room:example.org"}
+      :event {:eventId "$mentioned:example.org"
+              :sender "@alice:example.org"
+              :timestamp "2026-05-16T12:34:57Z"
+              :text "@bot please inspect this"}})
+    (is (= 1 (count @sent*)))
+    (is (str/includes? (first @sent*) "@bot please inspect this"))))
+
 (deftest authorized-matrix-message-from-bound-room-is-injected-as-user-message
   (let [sent* (atom [])
         notifications* (atom [])

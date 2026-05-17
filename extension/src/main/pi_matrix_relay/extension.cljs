@@ -127,6 +127,24 @@
             binding))
         (room-bindings project-config)))
 
+(defn- slot-binding-for-room-id
+  [relay-state room-id]
+  (when (and (:room-id relay-state)
+             (= room-id (:room-id relay-state)))
+    {:alias (:room-name relay-state)
+     :name (:room-name relay-state)
+     :roomId (:room-id relay-state)
+     :roomClass "slot"
+     :mode "all"
+     :busy config/default-busy-behavior
+     :autoReply true
+     :slot (:slot relay-state)}))
+
+(defn- binding-for-relay-room
+  [relay-state room-id]
+  (or (slot-binding-for-room-id relay-state room-id)
+      (binding-for-room-id (:project-config relay-state) room-id)))
+
 (defn- authorized-sender?
   [{:keys [project-config global-operators]} sender]
   (let [global-operators (set global-operators)
@@ -237,7 +255,7 @@
     "matrix.message"
     (let [room-id (get-in event [:room :roomId])
           message (:event event)
-          binding (binding-for-room-id (:project-config relay-state) room-id)]
+          binding (binding-for-relay-room relay-state room-id)]
       (when (and binding
                  (not (:senderIsBot message))
                  (authorized-sender? relay-state (:sender message))
@@ -247,7 +265,7 @@
     "matrix.reaction"
     (let [room-id (get-in event [:room :roomId])
           reaction (:event event)
-          binding (binding-for-room-id (:project-config relay-state) room-id)]
+          binding (binding-for-relay-room relay-state room-id)]
       (when (and binding
                  (not (:senderIsBot reaction))
                  (authorized-sender? relay-state (:sender reaction)))
