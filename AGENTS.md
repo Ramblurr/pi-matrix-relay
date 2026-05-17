@@ -18,6 +18,11 @@ charred for JSON, ol.dirs for XDG paths, and trixnity-clj for Matrix.
 The extension runs in process with Pi and is written in ClojureScript with
 shadow-cljs.
 
+## Development rules
+
+- Always acknowledge Matrix/user messages before long development or research stretches so the operator knows the relay is alive and work has started.
+- Do not ship best-effort placeholders, fake implementations, or degraded fallbacks as if they are complete. If a feature cannot be implemented properly with the available Pi/broker APIs, stop and raise the limitation for discussion before proceeding.
+
 ## Clojure and broker resources
 
 - trixnity-clj src: ~/src/github.com/outskirtslabs/trixnity-clj
