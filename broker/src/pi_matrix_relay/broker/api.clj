@@ -29,6 +29,8 @@
                  :media_download_unavailable 501
                  :transcription_unavailable 501
                  :verification_unavailable 501
+                 :slot_room_ambiguous 409
+                 :matrix_http_failed 502
                  500)]
     (json/error-response status code (ex-message throwable) (dissoc data :code))))
 
@@ -149,6 +151,17 @@
       (state/joined-room! state* result)
       (json/ok-response result))))
 
+(defn- joined-room?
+  [room]
+  (= "join" (:membership room)))
+
+(defn list-rooms-handler
+  [{:keys [matrix-gateway]}]
+  (fn [_]
+    (json/ok-response {:rooms (->> (matrix/list-rooms! matrix-gateway)
+                                   (filter joined-room?)
+                                   vec)})))
+
 (defn ensure-send-authorized!
   [state client-id room-id]
   (when-not (if client-id
@@ -215,6 +228,51 @@
       (json/ok-response
        (idempotent! env request #(matrix/transcribe-media! matrix-gateway body))))))
 
+(defn- room-display-name
+  [room]
+  (or (:name room) (:roomName room)))
+
+(defn- remember-slot-room-from-matrix-room!
+  [state* project-id slot room-name room]
+  (state/remember-slot-room!
+   state*
+   project-id
+   slot
+   {:roomId (:roomId room)
+    :name (or (room-display-name room) room-name)}))
+
+(defn- matching-joined-slot-rooms
+  [matrix-gateway room-name]
+  (->> (matrix/list-rooms! matrix-gateway)
+       (filter joined-room?)
+       (filter #(= room-name (room-display-name %)))
+       (sort-by :roomId)
+       vec))
+
+(defn- ensure-slot-room!
+  [state* matrix-gateway project-id slot room-name invite]
+  (let [slot-room (or (state/slot-room @state* project-id slot)
+                      (let [matches (matching-joined-slot-rooms matrix-gateway room-name)]
+                        (case (count matches)
+                          0 (let [create-result (matrix/create-room! matrix-gateway {:name room-name
+                                                                                     :invite invite
+                                                                                     :encrypted true})]
+                              (remember-slot-room-from-matrix-room!
+                               state* project-id slot room-name create-result))
+                          1 (remember-slot-room-from-matrix-room!
+                             state* project-id slot room-name (first matches))
+                          (throw (ex-info "Multiple joined Matrix rooms match the requested slot room name."
+                                          {:code :slot_room_ambiguous
+                                           :project-id project-id
+                                           :slot slot
+                                           :room-name room-name
+                                           :room-ids (mapv :roomId matches)})))))]
+    (when (seq invite)
+      (matrix/ensure-users-power-level! matrix-gateway {:roomId (:roomId slot-room)
+                                                        :users (vec invite)
+                                                        :level 100}))
+    slot-room))
+
 (defn acquire-slot-handler
   [{:keys [state* matrix-gateway] :as env}]
   (fn [request]
@@ -228,16 +286,8 @@
                active-leases (into {} (filter (comp slots/active-lease? val) leases))
                slot (slots/first-free-slot active-leases)
                room-name (str project-id "-" slot)
-               slot-room (or (state/slot-room @state* project-id slot)
-                             (let [create-result (matrix/create-room! matrix-gateway {:name room-name
-                                                                                      :invite (:invite body)
-                                                                                      :encrypted true})]
-                               (state/remember-slot-room!
-                                state*
-                                project-id
-                                slot
-                                {:roomId (:roomId create-result)
-                                 :name (or (:name create-result) room-name)})))
+               invite (:invite body)
+               slot-room (ensure-slot-room! state* matrix-gateway project-id slot room-name invite)
                lease (state/acquire-slot! state* {:now (System/currentTimeMillis)}
                                           {:client-id (:clientId body)
                                            :project project
@@ -303,7 +353,8 @@
     ["/matrix/media/download" {:post (download-media-handler env)}]
     ["/matrix/media/transcribe" {:post (transcribe-media-handler env)}]
     ["/matrix/rooms/resolve" {:post (resolve-room-handler env)}]
-    ["/matrix/rooms" {:post (create-room-handler env)}]
+    ["/matrix/rooms" {:get (list-rooms-handler env)
+                       :post (create-room-handler env)}]
     ["/verification/start" {:post (verification-start-handler env)}]
     ["/verification/:verificationId/confirm" {:post (verification-confirm-handler env)}]
     ["/verification/:verificationId/cancel" {:post (verification-cancel-handler env)}]

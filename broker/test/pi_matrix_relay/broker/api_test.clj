@@ -206,6 +206,93 @@
                                                  (tu/calls gateway))))
                           [:target :body :replyTo]))))))
 
+(deftest matrix-rooms-list-returns-joined-rooms
+  (testing "broker can inspect Matrix rooms joined by the bot"
+    (let [gateway (tu/fake-gateway {:rooms [{:roomId "!joined:example.org"
+                                             :name "joined room"
+                                             :membership "join"}
+                                            {:roomId "!left:example.org"
+                                             :name "left room"
+                                             :membership "leave"}]})
+          env (tu/test-env gateway)
+          app (api/app env)]
+      (is (= {:ok true
+              :data {:rooms [{:roomId "!joined:example.org"
+                              :name "joined room"
+                              :membership "join"}]}}
+             (tu/response-json (tu/request app :get "/v1/matrix/rooms")))))))
+
+(deftest slot-acquire-discovers-existing-joined-room-before-creating
+  (testing "empty in-memory slot-room state is reconciled from joined Matrix rooms"
+    (let [gateway (tu/fake-gateway {:rooms [{:roomId "!project-A-old:example.org"
+                                             :name "project-A"
+                                             :membership "leave"}
+                                            {:roomId "!project-A-existing:example.org"
+                                             :name "project-A"
+                                             :membership "join"}]})
+          env (tu/test-env gateway)
+          app (api/app env)
+          client-id (get-in (tu/json-request app :post "/v1/clients"
+                                             {:requestId "register-discover-slot"
+                                              :clientInstanceId "instance-discover-slot"
+                                              :protocolVersion 1
+                                              :project {:id "project"}})
+                            [:data :clientId])
+          acquire (tu/json-request app :post "/v1/slots/acquire"
+                                   {:requestId "acquire-discovered-slot"
+                                    :clientId client-id
+                                    :project {:id "project"}
+                                    :invite ["@operator:example.org"]})
+          calls (tu/calls gateway)]
+      (is (= {:acquire {:ok true
+                        :data {:slot "A"
+                               :roomId "!project-A-existing:example.org"
+                               :roomName "project-A"}}
+              :created []
+              :ensured [{:roomId "!project-A-existing:example.org"
+                         :users ["@operator:example.org"]
+                         :level 100}]
+              :remembered {:roomId "!project-A-existing:example.org"
+                           :name "project-A"
+                           :project-id "project"
+                           :slot "A"}}
+             {:acquire acquire
+              :created (filterv #(= :create-room (first %)) calls)
+              :ensured (mapv second (filter #(= :ensure-users-power-level (first %)) calls))
+              :remembered (get-in @(:state* env) [:slot-rooms "project" "A"])})))))
+
+(deftest slot-acquire-refuses-ambiguous-joined-slot-rooms
+  (testing "broker does not create a fourth room when multiple joined rooms match the slot name"
+    (let [gateway (tu/fake-gateway {:rooms [{:roomId "!project-A-1:example.org"
+                                             :name "project-A"
+                                             :membership "join"}
+                                            {:roomId "!project-A-2:example.org"
+                                             :name "project-A"
+                                             :membership "join"}]})
+          env (tu/test-env gateway)
+          app (api/app env)
+          client-id (get-in (tu/json-request app :post "/v1/clients"
+                                             {:requestId "register-ambiguous-slot"
+                                              :clientInstanceId "instance-ambiguous-slot"
+                                              :protocolVersion 1
+                                              :project {:id "project"}})
+                            [:data :clientId])
+          acquire (tu/json-request app :post "/v1/slots/acquire"
+                                   {:requestId "acquire-ambiguous-slot"
+                                    :clientId client-id
+                                    :project {:id "project"}})]
+      (is (= {:acquire {:ok false
+                        :error {:code "slot_room_ambiguous"
+                                :message "Multiple joined Matrix rooms match the requested slot room name."
+                                :details {:project-id "project"
+                                          :slot "A"
+                                          :room-name "project-A"
+                                          :room-ids ["!project-A-1:example.org"
+                                                     "!project-A-2:example.org"]}}}
+              :created []}
+             {:acquire acquire
+              :created (filterv #(= :create-room (first %)) (tu/calls gateway))})))))
+
 (deftest slot-acquire-is-idempotent-and-allocates-next-free-slot
   (testing "slot leases are coordinated by the broker and mutating requestIds are replay-safe"
     (let [gateway (tu/fake-gateway)

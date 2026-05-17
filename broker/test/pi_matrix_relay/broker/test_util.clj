@@ -4,18 +4,30 @@
             [pi-matrix-relay.broker.matrix :as matrix]
             [pi-matrix-relay.broker.state :as state]))
 
-(defrecord FakeGateway [calls*]
+(defrecord FakeGateway [calls* rooms]
   matrix/MatrixGateway
   (start! [this] this)
   (stop! [_] (swap! calls* conj [:stop]) nil)
   (health [_]
     {:status "ok" :matrix {:connected true :userId "@bot:example.org" :encrypted true}})
+  (list-rooms! [_]
+    (swap! calls* conj [:list-rooms])
+    (or rooms []))
   (resolve-room! [_ room]
     (swap! calls* conj [:resolve-room room])
     {:roomId room :canonicalAlias (when (.startsWith (str room) "#") room) :name room})
   (create-room! [_ request]
     (swap! calls* conj [:create-room request])
     {:roomId (str "!" (:name request) ":example.org") :name (:name request)})
+  (ensure-users-power-level! [_ request]
+    (swap! calls* conj [:ensure-users-power-level request])
+    {:roomId (:roomId request)
+     :users (:users request)
+     :level (:level request)})
+  (leave-room! [_ request]
+    (swap! calls* conj [:leave-room request])
+    {:roomId (:roomId request)
+     :left true})
   (send-message! [_ request]
     (swap! calls* conj [:send-message request])
     {:roomId (get-in request [:target :roomId]) :eventId "$message:example.org"})
@@ -50,8 +62,10 @@
     {:verifications []}))
 
 (defn fake-gateway
-  []
-  (->FakeGateway (atom [])))
+  ([]
+   (fake-gateway {}))
+  ([{:keys [rooms]}]
+   (->FakeGateway (atom []) rooms)))
 
 (defn calls
   [gateway]

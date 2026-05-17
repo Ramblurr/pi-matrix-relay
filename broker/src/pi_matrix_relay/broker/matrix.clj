@@ -5,8 +5,11 @@
   (start! [gateway])
   (stop! [gateway])
   (health [gateway])
+  (list-rooms! [gateway])
   (resolve-room! [gateway room])
   (create-room! [gateway request])
+  (ensure-users-power-level! [gateway request])
+  (leave-room! [gateway request])
   (send-message! [gateway request])
   (set-typing! [gateway request])
   (send-reaction! [gateway request])
@@ -35,9 +38,15 @@
      :matrix {:connected false
               :encrypted true
               :reason reason}})
+  (list-rooms! [_]
+    (unavailable :matrix_not_configured "Matrix client is not configured." {}))
   (resolve-room! [_ room]
     (unavailable :matrix_not_configured "Matrix client is not configured." {:room room}))
   (create-room! [_ request]
+    (unavailable :matrix_not_configured "Matrix client is not configured." {:request request}))
+  (ensure-users-power-level! [_ request]
+    (unavailable :matrix_not_configured "Matrix client is not configured." {:request request}))
+  (leave-room! [_ request]
     (unavailable :matrix_not_configured "Matrix client is not configured." {:request request}))
   (send-message! [_ request]
     (unavailable :matrix_not_configured "Matrix client is not configured." {:request request}))

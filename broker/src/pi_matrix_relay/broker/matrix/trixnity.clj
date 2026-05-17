@@ -1,6 +1,8 @@
 (ns pi-matrix-relay.broker.matrix.trixnity
-  (:require [clojure.string :as str]
+  (:require [charred.api :as charred]
+            [clojure.string :as str]
             [missionary.core :as m]
+            [org.httpkit.client :as http]
             [ol.trixnity.client :as client]
             [ol.trixnity.event :as event]
             [ol.trixnity.repo :as repo]
@@ -8,7 +10,8 @@
             [ol.trixnity.room.message :as msg]
             [ol.trixnity.schemas :as mx]
             [pi-matrix-relay.broker.matrix :as matrix])
-  (:import [java.time Duration Instant]))
+  (:import [java.net URLEncoder]
+           [java.time Duration Instant]))
 
 (defn- require-nonblank
   [config k]
@@ -41,6 +44,101 @@
 
 (defn- now-iso []
   (str (Instant/now)))
+
+(defn- flow-value
+  [flow]
+  (m/? (->> flow
+            (m/eduction (take 1))
+            (m/reduce (fn [_ value] value) nil))))
+
+(defn- normalized-room
+  [room]
+  {:roomId (::mx/room-id room)
+   :name (::mx/room-name room)
+   :membership (::mx/membership room)
+   :isDirect (::mx/is-direct room)})
+
+(defn- read-matrix-json
+  [body]
+  (when-not (str/blank? (str body))
+    (charred/read-json body)))
+
+(defn- matrix-json-request!
+  [{:keys [homeserver token method path body allow-not-found?]}]
+  (let [response @(http/request (cond-> {:method method
+                                         :url (str (str/replace homeserver #"/$" "") path)
+                                         :headers (cond-> {"Accept" "application/json"}
+                                                    token (assoc "Authorization" (str "Bearer " token))
+                                                    body (assoc "Content-Type" "application/json"))
+                                         :timeout 20000}
+                                  body (assoc :body (charred/write-json-str body))))
+        status (:status response)]
+    (cond
+      (and allow-not-found? (= 404 status))
+      nil
+
+      (>= status 400)
+      (throw (matrix/ex :matrix_http_failed
+                        "Matrix HTTP request failed."
+                        {:status status
+                         :path path
+                         :body (:body response)}))
+
+      :else
+      (read-matrix-json (:body response)))))
+
+(defn- matrix-login-token!
+  [matrix-config]
+  (let [password (:password matrix-config)]
+    (when (str/blank? (str password))
+      (throw (matrix/ex :matrix_config_missing
+                        "Matrix password is required for broker-side room administration."
+                        {})))
+    (get (matrix-json-request!
+          {:homeserver (:homeserver-url matrix-config)
+           :method :post
+           :path "/_matrix/client/v3/login"
+           :body {"type" "m.login.password"
+                  "identifier" {"type" "m.id.user"
+                                "user" (:user-id matrix-config)}
+                  "password" password}})
+         "access_token")))
+
+(defn- matrix-http-token!
+  [config runtime*]
+  (or (get-in config [:matrix :access-token])
+      (:matrix-http-token @runtime*)
+      (let [token (matrix-login-token! (:matrix config))]
+        (swap! runtime* assoc :matrix-http-token token)
+        token)))
+
+(defn- encode-path-segment
+  [value]
+  (URLEncoder/encode (str value) "UTF-8"))
+
+(defn- room-state-path
+  [room-id event-type]
+  (str "/_matrix/client/v3/rooms/" (encode-path-segment room-id)
+       "/state/" event-type))
+
+(defn- power-level-content!
+  [config runtime* room-id]
+  (or (matrix-json-request!
+       {:homeserver (get-in config [:matrix :homeserver-url])
+        :token (matrix-http-token! config runtime*)
+        :method :get
+        :path (room-state-path room-id "m.room.power_levels")
+        :allow-not-found? true})
+      {}))
+
+(defn- put-power-level-content!
+  [config runtime* room-id content]
+  (matrix-json-request!
+   {:homeserver (get-in config [:matrix :homeserver-url])
+    :token (matrix-http-token! config runtime*)
+    :method :put
+    :path (room-state-path room-id "m.room.power_levels")
+    :body content}))
 
 (defn- attachment
   [ev]
@@ -155,6 +253,10 @@
       {:status "degraded"
        :matrix {:connected false
                 :encrypted (get-in config [:matrix :encrypted?] true)}}))
+  (list-rooms! [_]
+    (let [c (:client @runtime*)]
+      (->> (or (flow-value (room/get-all-flat c)) [])
+           (mapv normalized-room))))
   (resolve-room! [_ room-id-or-alias]
     (let [c (:client @runtime*)
           room-id (m/? (room/join-room c room-id-or-alias {::mx/timeout (Duration/ofSeconds 15)}))]
@@ -170,6 +272,23 @@
                                              (seq invite) (assoc ::mx/invite invite))))]
       {:roomId (str room-id)
        :name (room-name-from-request request)}))
+  (ensure-users-power-level! [_ {:keys [roomId users level]}]
+    (let [level (long (or level 100))
+          users (vec users)
+          content (power-level-content! config runtime* roomId)
+          current-users (or (get content "users") {})
+          updated-content (assoc content "users" (reduce #(assoc %1 %2 level) current-users users))]
+      (when (not= content updated-content)
+        (put-power-level-content! config runtime* roomId updated-content))
+      {:roomId roomId
+       :users users
+       :level level}))
+  (leave-room! [_ {:keys [roomId reason]}]
+    (let [c (:client @runtime*)]
+      (m/? (room/leave-room c roomId (cond-> {}
+                                       reason (assoc ::mx/reason reason))))
+      {:roomId roomId
+       :left true}))
   (send-message! [_ {:keys [target replyTo] :as request}]
     (let [c (:client @runtime*)
           room-id (:roomId target)
