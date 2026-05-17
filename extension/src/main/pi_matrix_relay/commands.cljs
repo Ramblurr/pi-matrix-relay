@@ -24,12 +24,15 @@
       {:op :status}
 
       :else
-      (if-let [[_ room alias] (re-matches #"room\s+bind\s+(\S+)(?:\s+(\S+))?" args)]
-        (cond-> {:op :room-bind
-                 :room room}
-          alias (assoc :alias alias))
-        (if-let [[_ target message] (re-matches #"send\s+(\S+)\s+([\s\S]+)" args)]
-          {:op :send
-           :target target
-           :message message}
-          (error (str "Unknown matrix-relay command: " args)))))))
+      (if-let [[_ request-id] (re-matches #"__new-session\s+(\S+)" args)]
+        {:op :internal-new-session
+         :request-id request-id}
+        (if-let [[_ room alias] (re-matches #"room\s+bind\s+(\S+)(?:\s+(\S+))?" args)]
+          (cond-> {:op :room-bind
+                   :room room}
+            alias (assoc :alias alias))
+          (if-let [[_ target message] (re-matches #"send\s+(\S+)\s+([\s\S]+)" args)]
+            {:op :send
+             :target target
+             :message message}
+            (error (str "Unknown matrix-relay command: " args))))))))

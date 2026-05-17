@@ -537,23 +537,91 @@
       (send-room-ack! deps relay-state room-id event-id "Compaction started.")
       true)))
 
-(defn- handle-new-command!
-  [deps ^js ctx relay-state room-id event-id]
-  (if-let [new-session (.-newSession ctx)]
-    (do
-      (-> (promise (new-session))
+(def internal-new-session-command "__new-session")
+
+(defn- new-session-request-id
+  []
+  (str (random-uuid)))
+
+(defn- queue-new-session-command!
+  [deps ^js pi relay-state room-id event-id]
+  (let [{:keys [pending-new-sessions*]} deps]
+    (cond
+      (nil? pending-new-sessions*)
+      (do
+        (send-room-ack! deps relay-state room-id event-id
+                        "New session cannot be queued: command bridge is not initialized.")
+        true)
+
+      (not (.-sendUserMessage pi))
+      (do
+        (send-room-ack! deps relay-state room-id event-id
+                        "New session cannot be queued: Pi message injection is not available.")
+        true)
+
+      :else
+      (let [request-id (new-session-request-id)
+            request {:room-id room-id
+                     :event-id event-id
+                     :requested-at (now-iso)}]
+        (try
+          (swap! pending-new-sessions* assoc request-id request)
+          (.sendUserMessage pi
+                            (str "/matrix-relay " internal-new-session-command " " request-id)
+                            #js {:deliverAs "followUp"})
+          (send-room-ack! deps relay-state room-id event-id
+                          "New session requested. It will start after the current turn is idle.")
+          true
+          (catch js/Error err
+            (swap! pending-new-sessions* dissoc request-id)
+            (send-room-ack! deps relay-state room-id event-id
+                            (str "New session could not be queued: " (or (.-message err) (str err))))
+            true))))))
+
+(defn- pop-pending-new-session!
+  [pending-new-sessions* request-id]
+  (let [request (get @pending-new-sessions* request-id)]
+    (swap! pending-new-sessions* dissoc request-id)
+    request))
+
+(defn handle-internal-new-session-command!
+  [{:keys [pending-new-sessions*] :as deps} request-id ^js ctx]
+  (let [request (when pending-new-sessions*
+                  (pop-pending-new-session! pending-new-sessions* request-id))]
+    (cond
+      (nil? request)
+      (do
+        (notify! ctx (str "No pending Matrix /new request for " request-id) "warning")
+        (promise nil))
+
+      (not (.-newSession ctx))
+      (do
+        (send-room-ack! deps nil (:room-id request) (:event-id request)
+                        "New session is not available in this Pi command context.")
+        (promise nil))
+
+      :else
+      (-> (promise (when-let [wait-for-idle (.-waitForIdle ctx)]
+                     (wait-for-idle)))
+          (.then (fn [_]
+                   ((.-newSession ctx)
+                    #js {:withSession (fn [_new-ctx]
+                                         (send-room-ack! deps nil (:room-id request) (:event-id request)
+                                                         "New session started."))})))
           (.then (fn [result]
-                   (if (:cancelled (js->clj-safe result))
-                     (send-room-ack! deps relay-state room-id event-id "New session cancelled.")
-                     (send-room-ack! deps relay-state room-id event-id "New session started."))))
+                   (when (:cancelled (js->clj-safe result))
+                     (send-room-ack! deps nil (:room-id request) (:event-id request)
+                                     "New session cancelled."))
+                   nil))
           (.catch (fn [err]
-                    (send-room-ack! deps relay-state room-id event-id
-                                    (str "New session failed: " (or (.-message err) (str err)))))))
-      true)
-    (do
-      (send-room-ack! deps relay-state room-id event-id
-                      "New session is not available from Matrix in this Pi event context.")
-      true)))
+                    (record-diagnostic! (:diagnostics* deps) :new-session-error (error-summary err))
+                    (send-room-ack! deps nil (:room-id request) (:event-id request)
+                                    (str "New session failed: " (or (.-message err) (str err))))
+                    nil))))))
+
+(defn- handle-new-command!
+  [deps pi relay-state room-id event-id]
+  (queue-new-session-command! deps pi relay-state room-id event-id))
 
 (defn- handle-remote-command!
   [deps pi ctx relay-state binding {:keys [room event] :as matrix-event}]
@@ -576,7 +644,7 @@
           (handle-compact-command! deps ctx relay-state room-id event-id args)
 
           :new
-          (handle-new-command! deps ctx relay-state room-id event-id)
+          (handle-new-command! deps pi relay-state room-id event-id)
 
           :steer
           (if (str/blank? args)
@@ -1126,6 +1194,7 @@
        :status (handle-status! deps ctx)
        :room-bind (handle-room-bind! deps command ctx)
        :send (handle-send! deps command ctx)
+       :internal-new-session (handle-internal-new-session-command! deps (:request-id command) ctx)
        :error (do
                 (notify-error! ctx message)
                 (promise nil))))))
@@ -1339,8 +1408,10 @@
   ([^js pi deps]
    (let [relay-state* (atom nil)
          diagnostics* (atom {})
+         pending-new-sessions* (atom {})
          deps (merge default-deps deps {:relay-state* relay-state*
                                         :diagnostics* diagnostics*
+                                        :pending-new-sessions* pending-new-sessions*
                                         :pi pi})]
      (doseq [command-name ["matrix-relay" "mr"]]
        (.registerCommand pi command-name

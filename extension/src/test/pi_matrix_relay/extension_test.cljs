@@ -1425,44 +1425,13 @@
     (is (false? @compact-called?))
     (is (str/includes? (:message (first @acks*)) "Nothing to compact"))))
 
-(deftest matrix-new-command-starts-new-session-when-command-context-supports-it
-  (async done
-    (let [new-session-called? (atom false)
-          acks* (atom [])
-          pi #js {:sendUserMessage (fn [_message _options])}
-          ctx #js {:cwd "/work/project"
-                   :newSession (fn []
-                                 (reset! new-session-called? true)
-                                 (js/Promise.resolve #js {:cancelled false}))}
-          relay-state {:client-id "client-1"
-                       :project-config {}
-                       :global-operators #{"@alice:example.org"}
-                       :bot-user-id "@bot:example.org"
-                       :slot "A"
-                       :room-id "!slot:example.org"
-                       :room-name "project-A"}
-          deps {:send-message! (fn [room-id message opts]
-                                (swap! acks* conj {:room-id room-id
-                                                   :message message
-                                                   :opts opts})
-                                (js/Promise.resolve {:eventId "$ack:example.org"}))}
-          event {:type "matrix.message"
-                 :room {:roomId "!slot:example.org"}
-                 :event {:eventId "$new:example.org"
-                         :sender "@alice:example.org"
-                         :timestamp "2026-05-16T12:34:56Z"
-                         :text "/new"}}]
-      (extension/handle-broker-event! deps pi ctx relay-state event)
-      (js/setTimeout
-       (fn []
-         (is (true? @new-session-called?))
-         (is (str/includes? (:message (first @acks*)) "New session started"))
-         (done))
-       0))))
-
-(deftest matrix-new-command-reports-when-new-session-is-unavailable
+(deftest matrix-new-command-queues-command-context-bridge
   (let [acks* (atom [])
-        pi #js {:sendUserMessage (fn [_message _options])}
+        sent* (atom [])
+        pending* (atom {})
+        pi #js {:sendUserMessage (fn [message options]
+                                   (swap! sent* conj {:message message
+                                                      :options (some-> options (js->clj :keywordize-keys true))}))}
         ctx #js {:cwd "/work/project"}
         relay-state {:client-id "client-1"
                      :project-config {}
@@ -1471,7 +1440,8 @@
                      :slot "A"
                      :room-id "!slot:example.org"
                      :room-name "project-A"}
-        deps {:send-message! (fn [room-id message opts]
+        deps {:pending-new-sessions* pending*
+              :send-message! (fn [room-id message opts]
                               (swap! acks* conj {:room-id room-id
                                                  :message message
                                                  :opts opts})
@@ -1483,7 +1453,107 @@
                        :timestamp "2026-05-16T12:34:56Z"
                        :text "/new"}}]
     (extension/handle-broker-event! deps pi ctx relay-state event)
-    (is (str/includes? (:message (first @acks*)) "New session is not available"))))
+    (is (= 1 (count @sent*)))
+    (is (str/starts-with? (:message (first @sent*)) "/matrix-relay __new-session "))
+    (is (= {:deliverAs "followUp"} (:options (first @sent*))))
+    (let [request-id (last (str/split (:message (first @sent*)) #"\s+"))]
+      (is (= {:room-id "!slot:example.org"
+              :event-id "$new:example.org"}
+             (select-keys (get @pending* request-id) [:room-id :event-id]))))
+    (is (= 1 (count @acks*)))
+    (is (str/includes? (:message (first @acks*)) "New session requested"))
+    (is (= {:clientId "client-1"
+            :replyToEventId "$new:example.org"}
+           (:opts (first @acks*))))))
+
+(deftest matrix-new-command-reports-when-command-bridge-is-unavailable
+  (let [acks* (atom [])
+        pi #js {}
+        ctx #js {:cwd "/work/project"}
+        relay-state {:client-id "client-1"
+                     :project-config {}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"
+                     :slot "A"
+                     :room-id "!slot:example.org"
+                     :room-name "project-A"}
+        deps {:pending-new-sessions* (atom {})
+              :send-message! (fn [room-id message opts]
+                              (swap! acks* conj {:room-id room-id
+                                                 :message message
+                                                 :opts opts})
+                              (js/Promise.resolve {:eventId "$ack:example.org"}))}
+        event {:type "matrix.message"
+               :room {:roomId "!slot:example.org"}
+               :event {:eventId "$new:example.org"
+                       :sender "@alice:example.org"
+                       :timestamp "2026-05-16T12:34:56Z"
+                       :text "/new"}}]
+    (extension/handle-broker-event! deps pi ctx relay-state event)
+    (is (str/includes? (:message (first @acks*)) "New session cannot be queued"))))
+
+(deftest internal-new-session-command-uses-command-context-and-sends-result-ack
+  (async done
+    (let [new-session-called? (atom false)
+          wait-called? (atom false)
+          acks* (atom [])
+          pending* (atom {"req-1" {:room-id "!slot:example.org"
+                                   :event-id "$new:example.org"}})
+          deps {:pending-new-sessions* pending*
+                :send-message! (fn [room-id message opts]
+                                (swap! acks* conj {:room-id room-id
+                                                   :message message
+                                                   :opts opts})
+                                (js/Promise.resolve {:eventId "$ack:example.org"}))}
+          ctx #js {:cwd "/work/project"
+                   :waitForIdle (fn []
+                                  (reset! wait-called? true)
+                                  (js/Promise.resolve nil))
+                   :newSession (fn [options]
+                                 (reset! new-session-called? true)
+                                 (-> ((.-withSession ^js options) #js {})
+                                     (.then (fn [_]
+                                              #js {:cancelled false}))))}]
+      (-> (extension/handle-command! deps "__new-session req-1" ctx)
+          (.then (fn [_]
+                   (is (true? @wait-called?))
+                   (is (true? @new-session-called?))
+                   (is (= {} @pending*))
+                   (is (= [{:room-id "!slot:example.org"
+                            :message "New session started."
+                            :opts {:replyToEventId "$new:example.org"}}]
+                          @acks*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest internal-new-session-command-reports-cancelled-session
+  (async done
+    (let [acks* (atom [])
+          pending* (atom {"req-1" {:room-id "!slot:example.org"
+                                   :event-id "$new:example.org"}})
+          deps {:pending-new-sessions* pending*
+                :send-message! (fn [room-id message opts]
+                                (swap! acks* conj {:room-id room-id
+                                                   :message message
+                                                   :opts opts})
+                                (js/Promise.resolve {:eventId "$ack:example.org"}))}
+          ctx #js {:cwd "/work/project"
+                   :waitForIdle (fn []
+                                  (js/Promise.resolve nil))
+                   :newSession (fn [_options]
+                                 (js/Promise.resolve #js {:cancelled true}))}]
+      (-> (extension/handle-command! deps "__new-session req-1" ctx)
+          (.then (fn [_]
+                   (is (= [{:room-id "!slot:example.org"
+                            :message "New session cancelled."
+                            :opts {:replyToEventId "$new:example.org"}}]
+                          @acks*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
 
 (deftest agent-end-sends-automatic-reply-for-pending-slot-prompt
   (async done
