@@ -132,6 +132,36 @@
    (request-json! opts "PATCH" (str "/v1/clients/" client-id "/subscriptions")
                   {:rooms rooms})))
 
+(defn heartbeat!
+  ([client-id]
+   (heartbeat! {} client-id))
+  ([opts client-id]
+   (request-json! opts "POST" (str "/v1/clients/" client-id "/heartbeat") {})))
+
+(defn unregister-client!
+  ([client-id reason]
+   (unregister-client! {} client-id reason))
+  ([opts client-id reason]
+   (request-json! opts "DELETE" (str "/v1/clients/" client-id) {:reason reason})))
+
+(defn acquire-slot!
+  ([client-id project invite]
+   (acquire-slot! {} client-id project invite))
+  ([opts client-id project invite]
+   (request-json! opts "POST" "/v1/slots/acquire"
+                  (cond-> {:clientId client-id
+                           :project project}
+                    (seq invite) (assoc :invite invite)))))
+
+(defn release-slot!
+  ([client-id room-id slot]
+   (release-slot! {} client-id room-id slot))
+  ([opts client-id room-id slot]
+   (request-json! opts "POST" "/v1/slots/release"
+                  {:clientId client-id
+                   :roomId room-id
+                   :slot slot})))
+
 (defn open-event-stream!
   ([client-id on-event]
    (open-event-stream! {:env (.-env js/process)} client-id on-event))
