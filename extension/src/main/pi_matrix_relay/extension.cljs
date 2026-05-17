@@ -243,11 +243,19 @@
 (defn- deliver-user-message!
   [^js pi ^js ctx binding prompt]
   (if (idle? ctx)
-    (.sendUserMessage pi prompt)
+    (do
+      (.sendUserMessage pi prompt)
+      true)
     (case (or (:busy binding) config/default-busy-behavior)
-      "steer" (.sendUserMessage pi prompt #js {:deliverAs "steer"})
-      "reject" (notify! ctx "Matrix message ignored because the agent is busy." "warning")
-      (.sendUserMessage pi prompt #js {:deliverAs "followUp"}))))
+      "steer" (do
+                 (.sendUserMessage pi prompt #js {:deliverAs "steer"})
+                 true)
+      "reject" (do
+                  (notify! ctx "Matrix message ignored because the agent is busy." "warning")
+                  false)
+      (do
+        (.sendUserMessage pi prompt #js {:deliverAs "followUp"})
+        true))))
 
 (defn handle-broker-event!
   [_deps pi ctx relay-state event]
@@ -260,7 +268,10 @@
                  (not (:senderIsBot message))
                  (authorized-sender? relay-state (:sender message))
                  (message-allowed-by-mode? binding (:text message) (:bot-user-id relay-state)))
-        (deliver-user-message! pi ctx binding (matrix-message-prompt (:project-config relay-state) binding event))))
+        (let [delivered? (deliver-user-message! pi ctx binding (matrix-message-prompt (:project-config relay-state) binding event))]
+          (when (and delivered? (:autoReply binding) (:pending-auto-replies* relay-state))
+            (swap! (:pending-auto-replies* relay-state) conj {:room-id room-id
+                                                              :event-id (:eventId message)})))))
 
     "matrix.reaction"
     (let [room-id (get-in event [:room :roomId])
@@ -330,6 +341,7 @@
                                                                 :slot (:slot slot)
                                                                 :room-id slot-room-id
                                                                 :room-name (:roomName slot)
+                                                                :pending-auto-replies* (atom [])
                                                                 :last-start-banner banner
                                                                 :heartbeat-id heartbeat-id}
                                                    stream (open-event-stream!
@@ -373,6 +385,55 @@
                 (when ctx
                   (set-status! ctx nil))
                 nil)))))
+
+(defn- message-role
+  [message]
+  (or (:role message)
+      (when (map? message) (get message "role"))))
+
+(defn- message-stop-reason
+  [message]
+  (or (:stopReason message)
+      (:stop-reason message)
+      (when (map? message) (get message "stopReason"))))
+
+(defn- content-text
+  [content]
+  (cond
+    (string? content) content
+    (sequential? content) (->> content
+                               (keep (fn [part]
+                                       (when (= "text" (or (:type part) (get part "type")))
+                                         (or (:text part) (get part "text")))))
+                               (str/join "\n"))
+    :else ""))
+
+(defn- assistant-final-text
+  [event]
+  (let [assistant (->> (:messages event)
+                       (filter #(= "assistant" (message-role %)))
+                       last)
+        stop-reason (message-stop-reason assistant)
+        text (some-> assistant :content content-text str/trim)]
+    (when (and assistant
+               (not (contains? #{"aborted" "error"} stop-reason))
+               (not (str/blank? text)))
+      text)))
+
+(defn handle-agent-end!
+  [{:keys [send-message!]} relay-state event]
+  (let [pending* (:pending-auto-replies* relay-state)
+        target (first @pending*)
+        text (assistant-final-text event)]
+    (if (and send-message! target text)
+      (-> (promise (send-message! (:room-id target)
+                                  text
+                                  {:clientId (:client-id relay-state)
+                                   :replyToEventId (:event-id target)}))
+          (.then (fn [_]
+                   (swap! pending* #(vec (rest %)))
+                   nil)))
+      (promise nil))))
 
 (defn- handle-help!
   [ctx]
@@ -577,6 +638,10 @@
                  (.then #(reset! relay-state* %))
                  (.catch (fn [err]
                            (notify! ctx (str "Matrix relay receive disabled: " (.-message err)) "warning"))))))
+       (on "agent_end"
+           (fn [event _ctx]
+             (when-let [relay-state @relay-state*]
+               (handle-agent-end! deps relay-state (js->clj event :keywordize-keys true)))))
        (on "session_shutdown"
            (fn [_event ctx]
              (-> (stop-relay! deps ctx @relay-state*)

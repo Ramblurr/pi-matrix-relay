@@ -1,6 +1,7 @@
 (ns pi-matrix-relay.extension-test
   (:require [cljs.test :refer [async deftest is testing]]
             [clojure.string :as str]
+            [pi-matrix-relay.config :as config]
             [pi-matrix-relay.extension :as extension]))
 
 (deftest greeting-includes-target
@@ -402,6 +403,131 @@
     (is (= 1 (count @sent*)))
     (is (str/includes? (:message (first @sent*)) "Matrix project-A from @alice:example.org at 12:34:56Z"))
     (is (str/includes? (:message (first @sent*)) "no bot mention needed in slot rooms"))))
+
+(deftest slot-room-message-records-auto-reply-target-after-delivery
+  (let [sent* (atom [])
+        pending* (atom [])
+        pi #js {:sendUserMessage (fn [message]
+                                   (swap! sent* conj message))}
+        ctx #js {:cwd "/work/project"
+                 :isIdle (fn [] true)}
+        relay-state {:project-config {}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"
+                     :slot "A"
+                     :room-id "!slot:example.org"
+                     :room-name "project-A"
+                     :pending-auto-replies* pending*}
+        event {:type "matrix.message"
+               :room {:roomId "!slot:example.org"}
+               :event {:eventId "$slot-event:example.org"
+                       :sender "@alice:example.org"
+                       :timestamp "2026-05-16T12:34:56Z"
+                       :text "please respond"}}]
+    (extension/handle-broker-event! {} pi ctx relay-state event)
+    (is (= 1 (count @sent*)))
+    (is (= [{:room-id "!slot:example.org"
+             :event-id "$slot-event:example.org"}]
+           @pending*))))
+
+(deftest project-room-message-does-not-record-auto-reply-target
+  (let [sent* (atom [])
+        pending* (atom [])
+        pi #js {:sendUserMessage (fn [message]
+                                   (swap! sent* conj message))}
+        ctx #js {:cwd "/work/project"
+                 :isIdle (fn [] true)}
+        relay-state {:project-config {:rooms {"ops" {:alias "ops"
+                                                      :roomId "!room:example.org"
+                                                      :mode "all"}}}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"
+                     :pending-auto-replies* pending*}
+        event {:type "matrix.message"
+               :room {:roomId "!room:example.org"}
+               :event {:eventId "$project-event:example.org"
+                       :sender "@alice:example.org"
+                       :timestamp "2026-05-16T12:34:56Z"
+                       :text "project prompt"}}]
+    (extension/handle-broker-event! {} pi ctx relay-state event)
+    (is (= 1 (count @sent*)))
+    (is (= [] @pending*))))
+
+(deftest rejected-slot-room-message-does-not-record-auto-reply-target
+  (let [sent* (atom [])
+        pending* (atom [])
+        notifications* (atom [])
+        pi #js {:sendUserMessage (fn [message]
+                                   (swap! sent* conj message))}
+        ctx #js {:cwd "/work/project"
+                 :isIdle (fn [] false)
+                 :ui #js {:notify (fn [message level]
+                                    (swap! notifications* conj [message level]))}}
+        relay-state {:project-config {}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"
+                     :slot "A"
+                     :room-id "!slot:example.org"
+                     :room-name "project-A"
+                     :pending-auto-replies* pending*}
+        event {:type "matrix.message"
+               :room {:roomId "!slot:example.org"}
+               :event {:eventId "$slot-event:example.org"
+                       :sender "@alice:example.org"
+                       :timestamp "2026-05-16T12:34:56Z"
+                       :text "please respond"}}]
+    (with-redefs [config/default-busy-behavior "reject"]
+      (extension/handle-broker-event! {} pi ctx relay-state event))
+    (is (= [] @sent*))
+    (is (= [] @pending*))))
+
+(deftest agent-end-sends-automatic-reply-for-pending-slot-prompt
+  (async done
+    (let [sent* (atom [])
+          pending* (atom [{:room-id "!slot:example.org"
+                           :event-id "$slot-event:example.org"}])
+          deps {:send-message! (fn [room-id message opts]
+                                (swap! sent* conj {:room-id room-id
+                                                   :message message
+                                                   :opts opts})
+                                (js/Promise.resolve {:eventId "$reply:example.org"}))}
+          relay-state {:client-id "client-1"
+                       :pending-auto-replies* pending*}
+          event {:messages [{:role "user" :content "prompt"}
+                            {:role "assistant"
+                             :stopReason "stop"
+                             :content [{:type "text" :text "Final answer"}]}]}]
+      (-> (extension/handle-agent-end! deps relay-state event)
+          (.then (fn [_]
+                   (is (= [{:room-id "!slot:example.org"
+                            :message "Final answer"
+                            :opts {:clientId "client-1"
+                                   :replyToEventId "$slot-event:example.org"}}]
+                          @sent*))
+                   (is (= [] @pending*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest agent-end-does-not-send-automatic-reply-without-pending-slot-prompt
+  (async done
+    (let [sent* (atom [])
+          deps {:send-message! (fn [room-id message opts]
+                                (swap! sent* conj [room-id message opts])
+                                (js/Promise.resolve {}))}
+          relay-state {:client-id "client-1"
+                       :pending-auto-replies* (atom [])}
+          event {:messages [{:role "assistant"
+                             :stopReason "stop"
+                             :content [{:type "text" :text "Project answer"}]}]}]
+      (-> (extension/handle-agent-end! deps relay-state event)
+          (.then (fn [_]
+                   (is (= [] @sent*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
 
 (deftest slot-room-message-from-bot-or-unauthorized-sender-is-ignored
   (let [sent* (atom [])
