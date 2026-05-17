@@ -231,21 +231,25 @@
         stale* (atom [])]
     (swap! state*
            (fn [state]
-             (update state :slots
-                     (fn [slots-by-project]
-                       (into {}
-                             (map (fn [[project-id leases]]
-                                    [project-id
-                                     (into {}
-                                           (map (fn [[slot lease]]
-                                                  (if (and (slots/active-lease? lease)
-                                                           (< (:last-heartbeat-at lease) cutoff))
-                                                    (do
-                                                      (swap! stale* conj lease)
-                                                      [slot (assoc lease :state :released
-                                                                   :released-at now
-                                                                   :release-reason :stale)])
-                                                    [slot lease])))
-                                           leases)]))
-                             slots-by-project)))))
+             (let [state (update state :slots
+                                 (fn [slots-by-project]
+                                   (into {}
+                                         (map (fn [[project-id leases]]
+                                                [project-id
+                                                 (into {}
+                                                       (map (fn [[slot lease]]
+                                                              (if (and (slots/active-lease? lease)
+                                                                       (< (:last-heartbeat-at lease) cutoff))
+                                                                (do
+                                                                  (swap! stale* conj lease)
+                                                                  [slot (assoc lease :state :released
+                                                                               :released-at now
+                                                                               :release-reason :stale)])
+                                                                [slot lease])))
+                                                       leases)]))
+                                         slots-by-project)))]
+               (reduce (fn [state {:keys [client-id room-id]}]
+                         (update-in state [:clients client-id :acquired-rooms] disj room-id))
+                       state
+                       @stale*))))
     @stale*))

@@ -50,3 +50,30 @@
                 :known-slot-room? false}
                {:released (:released (state/release-slot! state* {:client-id "client-1" :slot "A"}))
                 :known-slot-room? (state/known-room-for-client? @state* "client-1" "!slot:example.org")}))))))
+
+(deftest stale-slot-release-removes-room-authorization
+  (testing "stale lease cleanup releases the slot and removes client send authorization"
+    (let [state* (atom (state/empty-state))]
+      (state/register-client!
+       state*
+       {:client-id-fn (constantly "client-stale")
+        :now 1000
+        :heartbeat-seconds 30
+        :global-operators []}
+       {:clientInstanceId "instance-stale"
+        :protocolVersion 1
+        :project {:id "project"}})
+      (state/acquire-slot!
+       state*
+       {:now 1000}
+       {:client-id "client-stale"
+        :project {:id "project"}
+        :room-id "!slot-stale:example.org"
+        :room-name "project-A"})
+      (let [stale (state/mark-stale-leases! state* 100000 30 3)]
+        (is (= {:stale-slots ["A"]
+                :known-slot-room? false
+                :slot-state "released"}
+               {:stale-slots (mapv :slot stale)
+                :known-slot-room? (state/known-room-for-client? @state* "client-stale" "!slot-stale:example.org")
+                :slot-state (get-in (state/list-slots @state* "project") [:slots 0 :state])}))))))
