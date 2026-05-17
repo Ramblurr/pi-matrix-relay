@@ -305,6 +305,80 @@
                     (is false (.-stack err))
                     (done)))))))
 
+(deftest stop-relay-sends-tombstone-and-releases-slot
+  (async done
+    (let [calls* (atom [])
+          statuses* (atom [])
+          deps {:clear-interval! (fn [heartbeat-id]
+                                   (swap! calls* conj [:clear-interval heartbeat-id]))
+                :send-message! (fn [room-id message opts]
+                                (swap! calls* conj [:send-message room-id (boolean (seq message)) opts])
+                                (js/Promise.resolve {:eventId "$end:example.org"}))
+                :release-slot! (fn [client-id room-id slot]
+                                 (swap! calls* conj [:release-slot client-id room-id slot])
+                                 (js/Promise.resolve {:released true}))
+                :unregister-client! (fn [client-id reason]
+                                      (swap! calls* conj [:unregister-client client-id reason])
+                                      (js/Promise.resolve {}))}
+          relay-state {:client-id "client-1"
+                       :project {:id "project"}
+                       :slot "A"
+                       :room-id "!slot:example.org"
+                       :room-name "project-A"
+                       :heartbeat-id :interval-1
+                       :stream #js {:close (fn []
+                                             (swap! calls* conj [:close-stream]))}}
+          ctx #js {:ui #js {:setStatus (fn [id status]
+                                         (swap! statuses* conj [id status]))}}]
+      (-> (js/Promise.resolve (extension/stop-relay! deps ctx relay-state))
+          (.then (fn [_]
+                   (is (= [[:close-stream]
+                           [:clear-interval :interval-1]
+                           [:send-message "!slot:example.org" true {:clientId "client-1"}]
+                           [:release-slot "client-1" "!slot:example.org" "A"]
+                           [:unregister-client "client-1" "shutdown"]]
+                          @calls*))
+                   (is (= [["pi-matrix-relay" nil]] @statuses*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest stop-relay-releases-slot-even-when-tombstone-send-fails
+  (async done
+    (let [calls* (atom [])
+          deps {:clear-interval! (fn [heartbeat-id]
+                                   (swap! calls* conj [:clear-interval heartbeat-id]))
+                :send-message! (fn [_room-id _message _opts]
+                                (swap! calls* conj [:send-message])
+                                (js/Promise.reject (js/Error. "send failed")))
+                :release-slot! (fn [client-id room-id slot]
+                                 (swap! calls* conj [:release-slot client-id room-id slot])
+                                 (js/Promise.resolve {:released true}))
+                :unregister-client! (fn [client-id reason]
+                                      (swap! calls* conj [:unregister-client client-id reason])
+                                      (js/Promise.resolve {}))}
+          relay-state {:client-id "client-1"
+                       :project {:id "project"}
+                       :slot "A"
+                       :room-id "!slot:example.org"
+                       :heartbeat-id :interval-1
+                       :stream #js {:close (fn []
+                                             (swap! calls* conj [:close-stream]))}}
+          ctx #js {:ui #js {:setStatus (fn [_id _status])}}]
+      (-> (js/Promise.resolve (extension/stop-relay! deps ctx relay-state))
+          (.then (fn [_]
+                   (is (= [[:close-stream]
+                           [:clear-interval :interval-1]
+                           [:send-message]
+                           [:release-slot "client-1" "!slot:example.org" "A"]
+                           [:unregister-client "client-1" "shutdown"]]
+                          @calls*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
 (deftest authorized-matrix-message-from-bound-room-is-injected-as-user-message
   (let [sent* (atom [])
         notifications* (atom [])

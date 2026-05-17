@@ -101,6 +101,13 @@
        "path: " cwd "\n"
        "time: " (now-iso)))
 
+(defn- end-banner
+  [relay-state]
+  (str "pi-matrix-relay session ended\n"
+       "project: " (get-in relay-state [:project :id]) "\n"
+       "slot: " (:slot relay-state) "\n"
+       "time: " (now-iso)))
+
 (defn- status-text
   [project-config slot]
   (let [room-aliases (->> (room-bindings project-config)
@@ -313,19 +320,41 @@
                                                (set-status! ctx (status-text project-config slot))
                                                (assoc relay-state :stream stream))))))))))))))))))))))
 
+(defn- ignore-errors
+  [thunk]
+  (try
+    (-> (promise (thunk))
+        (.catch (fn [_] nil)))
+    (catch js/Error _
+      (promise nil))))
+
 (defn stop-relay!
   ([relay-state]
    (stop-relay! {} nil relay-state))
-  ([{:keys [clear-interval!]} ctx relay-state]
+  ([{:keys [clear-interval! send-message! release-slot! unregister-client!]} ctx relay-state]
    (when-let [stream (:stream relay-state)]
      (when-let [close (.-close stream)]
        (close)))
    (when-let [heartbeat-id (:heartbeat-id relay-state)]
      (when clear-interval!
        (clear-interval! heartbeat-id)))
-   (when ctx
-     (set-status! ctx nil))
-   nil))
+   (-> (ignore-errors
+        #(when (and send-message! (:room-id relay-state) (:client-id relay-state))
+           (send-message! (:room-id relay-state)
+                          (end-banner relay-state)
+                          {:clientId (:client-id relay-state)})))
+       (.then (fn [_]
+                (ignore-errors
+                 #(when (and release-slot! (:client-id relay-state) (:room-id relay-state) (:slot relay-state))
+                    (release-slot! (:client-id relay-state) (:room-id relay-state) (:slot relay-state))))))
+       (.then (fn [_]
+                (ignore-errors
+                 #(when (and unregister-client! (:client-id relay-state))
+                    (unregister-client! (:client-id relay-state) "shutdown")))))
+       (.then (fn [_]
+                (when ctx
+                  (set-status! ctx nil))
+                nil)))))
 
 (defn- handle-help!
   [ctx]
@@ -532,5 +561,6 @@
                            (notify! ctx (str "Matrix relay receive disabled: " (.-message err)) "warning"))))))
        (on "session_shutdown"
            (fn [_event ctx]
-             (stop-relay! deps ctx @relay-state*)
-             (reset! relay-state* nil)))))))
+             (-> (stop-relay! deps ctx @relay-state*)
+                 (.finally (fn []
+                             (reset! relay-state* nil))))))))))
