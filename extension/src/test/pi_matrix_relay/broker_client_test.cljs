@@ -74,7 +74,8 @@
                        (broker-client/release-slot! opts "client-1" "!slot:example.org" "A")
                        (broker-client/heartbeat! opts "client-1")
                        (broker-client/unregister-client! opts "client-1" "shutdown")
-                       (broker-client/update-subscriptions! opts "client-1" ["!project:example.org" "!slot:example.org"])]))
+                       (broker-client/update-subscriptions! opts "client-1" ["!project:example.org" "!slot:example.org"])
+                       (broker-client/list-slots! opts "project")]))
             (.then (fn [_]
                      (is (= [["POST" "/v1/slots/acquire"
                               {:clientId "client-1"
@@ -87,8 +88,41 @@
                              ["POST" "/v1/clients/client-1/heartbeat" {}]
                              ["DELETE" "/v1/clients/client-1" {:reason "shutdown"}]
                              ["PATCH" "/v1/clients/client-1/subscriptions"
-                              {:rooms ["!project:example.org" "!slot:example.org"]}]]
+                              {:rooms ["!project:example.org" "!slot:example.org"]}]
+                             ["GET" "/v1/slots?projectId=project" nil]]
                             (mapv (fn [[_opts method uri body]] [method uri body]) @calls*)))
+                     (done)))
+            (.catch (fn [err]
+                      (is false (.-stack err))
+                      (done))))))))
+
+(deftest client-path-helpers-url-encode-client-ids
+  (async done
+    (let [calls* (atom [])
+          opts {:env #js {"XDG_RUNTIME_DIR" "/run/user/1000"}}
+          client-id "matrix-relay-/work/project"
+          encoded-client-id "matrix-relay-%2Fwork%2Fproject"]
+      (is (= (str "/v1/clients/" encoded-client-id "/events")
+             (:path (js->clj (broker-client/event-stream-options #js {"XDG_RUNTIME_DIR" "/run/user/1000"}
+                                                                  client-id)
+                             :keywordize-keys true))))
+      (with-redefs [broker-client/request-json! (fn
+                                                  ([method uri body]
+                                                   (swap! calls* conj [method uri body])
+                                                   (js/Promise.resolve {:ok true}))
+                                                  ([_opts method uri body]
+                                                   (swap! calls* conj [method uri body])
+                                                   (js/Promise.resolve {:ok true})))]
+        (-> (js/Promise.all
+             (clj->js [(broker-client/heartbeat! opts client-id)
+                       (broker-client/unregister-client! opts client-id "shutdown")
+                       (broker-client/update-subscriptions! opts client-id ["!slot:example.org"])]))
+            (.then (fn [_]
+                     (is (= [["POST" (str "/v1/clients/" encoded-client-id "/heartbeat") {}]
+                             ["DELETE" (str "/v1/clients/" encoded-client-id) {:reason "shutdown"}]
+                             ["PATCH" (str "/v1/clients/" encoded-client-id "/subscriptions")
+                              {:rooms ["!slot:example.org"]}]]
+                            @calls*))
                      (done)))
             (.catch (fn [err]
                       (is false (.-stack err))

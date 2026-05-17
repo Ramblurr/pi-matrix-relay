@@ -16,6 +16,8 @@
    :unregister-client! broker-client/unregister-client!
    :acquire-slot! broker-client/acquire-slot!
    :release-slot! broker-client/release-slot!
+   :list-slots! broker-client/list-slots!
+   :list-rooms! broker-client/list-rooms!
    :open-event-stream! broker-client/open-event-stream!
    :resolve-room! broker-client/resolve-room!
    :send-message! broker-client/send-message!
@@ -91,6 +93,26 @@
 
 (defn- now-iso []
   (.toISOString (js/Date.)))
+
+(defn- error-summary
+  [err]
+  (cond-> {:message (or (.-message err) (str err))}
+    (.-data err) (assoc :data (js->clj (.-data err) :keywordize-keys true))
+    (.-code err) (assoc :code (.-code err))))
+
+(defn- record-diagnostic!
+  ([diagnostics* type]
+   (record-diagnostic! diagnostics* type {}))
+  ([diagnostics* type details]
+   (when diagnostics*
+     (let [event (merge {:at (now-iso)
+                         :type (name type)}
+                        details)]
+       (swap! diagnostics* update :events
+              (fnil (fn [events]
+                      (vec (take-last 50 (conj (vec events) event))))
+                    []))))
+   nil))
 
 (defn- start-banner
   [cwd project slot]
@@ -289,26 +311,30 @@
   nil)
 
 (defn- start-heartbeat!
-  [{:keys [heartbeat! set-interval!]} ctx client-id heartbeat-seconds]
+  [{:keys [heartbeat! set-interval! diagnostics*]} ctx client-id heartbeat-seconds]
   (when (and heartbeat! set-interval!)
     (set-interval!
      (fn []
        (-> (promise (heartbeat! client-id))
            (.catch (fn [err]
+                     (record-diagnostic! diagnostics* :heartbeat-error (error-summary err))
                      (notify! ctx (str "Matrix relay heartbeat failed: " (.-message err)) "warning")))))
      (* 1000 (or heartbeat-seconds 30)))))
 
 (defn start-relay!
   [{:keys [read-project-config! health! register-client! acquire-slot!
-           update-subscriptions! send-message! open-event-stream!] :as deps}
+           update-subscriptions! send-message! open-event-stream! diagnostics*] :as deps}
    pi ctx]
   (let [cwd (ctx-cwd ctx)
         project-config (read-project-config! cwd)
         room-ids (project-room-ids project-config)
         project (project-summary cwd project-config)]
+    (record-diagnostic! diagnostics* :start {:cwd cwd
+                                             :projectId (:id project)})
     (-> (promise (health!))
         (.then
          (fn [health]
+           (record-diagnostic! diagnostics* :health-ok {:matrix (select-keys (:matrix health) [:connected :userId])})
            (let [request {:clientInstanceId (str "matrix-relay-" cwd)
                           :protocolVersion 1
                           :project (select-keys project [:root :id])
@@ -318,20 +344,27 @@
                   (fn [registration]
                     (let [client-id (:clientId registration)
                           global-operators (vec (:globalOperators registration))]
+                      (record-diagnostic! diagnostics* :client-registered {:clientId client-id})
                       (-> (promise (acquire-slot! client-id
                                                    (select-keys project [:id :displayName])
                                                    global-operators))
                           (.then
                            (fn [slot]
+                             (record-diagnostic! diagnostics* :slot-acquired {:slot (:slot slot)
+                                                                              :roomId (:roomId slot)
+                                                                              :roomName (:roomName slot)})
                              (let [slot-room-id (:roomId slot)
                                    subscriptions (vec (distinct (conj room-ids slot-room-id)))
                                    banner (start-banner cwd project slot)]
                                (-> (promise (update-subscriptions! client-id subscriptions))
                                    (.then
                                     (fn [_]
+                                      (record-diagnostic! diagnostics* :subscriptions-updated {:clientId client-id
+                                                                                               :rooms subscriptions})
                                       (-> (promise (send-message! slot-room-id banner {:clientId client-id}))
                                           (.then
                                            (fn [_]
+                                             (record-diagnostic! diagnostics* :start-banner-sent {:roomId slot-room-id})
                                              (let [heartbeat-id (start-heartbeat! deps ctx client-id (:heartbeatSeconds registration))
                                                    relay-state {:client-id client-id
                                                                 :project-config project-config
@@ -345,8 +378,12 @@
                                                                 :last-start-banner banner
                                                                 :heartbeat-id heartbeat-id}
                                                    stream (open-event-stream!
+                                                           {:on-error (fn [err]
+                                                                        (record-diagnostic! diagnostics* :event-stream-error (error-summary err))
+                                                                        (notify! ctx (str "Matrix relay event stream failed: " (.-message err)) "warning"))}
                                                            client-id
                                                            #(handle-broker-event! deps pi ctx relay-state %))]
+                                               (record-diagnostic! diagnostics* :event-stream-opened {:clientId client-id})
                                                (set-status! ctx (status-text project-config slot))
                                                (assoc relay-state :stream stream))))))))))))))))))))))
 
@@ -438,6 +475,195 @@
                     nil)))
       (promise nil))))
 
+(defn- safe-project-config
+  [{:keys [read-project-config!]} cwd]
+  (try
+    (if read-project-config!
+      (or (read-project-config! cwd) {})
+      {})
+    (catch js/Error err
+      {:error (error-summary err)})))
+
+(defn- stream-diagnostics
+  [relay-state]
+  (when-let [^js stream (:stream relay-state)]
+    (when-let [diagnostics (.-diagnostics stream)]
+      (js->clj (diagnostics) :keywordize-keys true))))
+
+(defn- relay-snapshot
+  [relay-state]
+  (if relay-state
+    (let [project-config (:project-config relay-state)
+          pending* (:pending-auto-replies* relay-state)]
+      (cond-> {:running true
+               :clientId (:client-id relay-state)
+               :project (:project relay-state)
+               :projectRooms (project-room-ids project-config)
+               :globalOperators (vec (sort (:global-operators relay-state)))
+               :botUserId (:bot-user-id relay-state)
+               :slot (:slot relay-state)
+               :roomId (:room-id relay-state)
+               :roomName (:room-name relay-state)
+               :statusText (status-text project-config {:slot (:slot relay-state)
+                                                         :roomName (:room-name relay-state)})
+               :heartbeatActive (boolean (:heartbeat-id relay-state))
+               :streamActive (boolean (:stream relay-state))
+               :pendingAutoReplies (if pending* (count @pending*) 0)}
+        (:last-start-banner relay-state)
+        (assoc :lastStartBanner (:last-start-banner relay-state))
+        (stream-diagnostics relay-state)
+        (assoc :streamDiagnostics (stream-diagnostics relay-state))))
+    {:running false}))
+
+(defn- settled
+  [thunk]
+  (try
+    (-> (promise (thunk))
+        (.then (fn [value]
+                 {:ok true :value value}))
+        (.catch (fn [err]
+                  {:ok false :error (error-summary err)})))
+    (catch js/Error err
+      (promise {:ok false :error (error-summary err)}))))
+
+(defn- settled-result
+  [result]
+  (if (:ok result)
+    (:value result)
+    {:error (:error result)}))
+
+(defn- broker-summary-line
+  [broker]
+  (let [matrix (get-in broker [:health :matrix])]
+    (cond
+      (:error (:health broker)) (str "broker: error " (get-in broker [:health :error :message]))
+      (:connected matrix) (str "broker: Matrix connected as " (:userId matrix))
+      matrix "broker: Matrix not connected"
+      :else "broker: not queried")))
+
+(defn- slots-summary-line
+  [broker]
+  (if-let [slots (seq (get-in broker [:slots :slots]))]
+    (str "slots: " (str/join ", " (map (fn [slot]
+                                           (str (:slot slot) " " (:state slot) " " (:roomName slot)))
+                                         slots)))
+    "slots: none visible"))
+
+(defn- diagnostics-summary
+  [{:keys [relay broker]}]
+  (str "pi-matrix-relay diagnostics\n"
+       (if (:running relay)
+         (str "extension: running slot " (:slot relay) " " (:roomName relay) "\n"
+              "client: " (:clientId relay) "\n"
+              "room: " (:roomId relay) "\n"
+              "heartbeat: " (if (:heartbeatActive relay) "active" "inactive") ", stream: "
+              (if (:streamActive relay) "active" "inactive") "\n")
+         "extension: not running\n")
+       (broker-summary-line broker) "\n"
+       (slots-summary-line broker)))
+
+(defn execute-matrix-relay-diagnostics!
+  [deps params ^js ctx]
+  (let [{:keys [health! list-slots! list-rooms! relay-state* diagnostics*]} deps
+        cwd (ctx-cwd ctx)
+        project-config (safe-project-config deps cwd)
+        project (project-summary cwd project-config)
+        relay (relay-snapshot (some-> relay-state* deref))
+        include-broker? (not= false (:includeBroker params))
+        include-rooms? (true? (:includeRooms params))
+        health-p (if (and include-broker? health!)
+                   (settled #(health!))
+                   (promise {:ok false :error {:message "broker health not queried"}}))
+        slots-p (if (and include-broker? list-slots!)
+                  (settled #(list-slots! (:id project)))
+                  (promise {:ok true :value {:projectId (:id project) :slots []}}))
+        rooms-p (if (and include-broker? include-rooms? list-rooms!)
+                  (settled #(list-rooms!))
+                  (promise {:ok true :value nil}))]
+    (-> (js/Promise.all (clj->js [health-p slots-p rooms-p]))
+        (.then (fn [results]
+                 (let [health-result (aget results 0)
+                       slots-result (aget results 1)
+                       rooms-result (aget results 2)
+                       broker (cond-> {:health (settled-result health-result)
+                                       :slots (settled-result slots-result)}
+                                (some? (settled-result rooms-result))
+                                (assoc :rooms (settled-result rooms-result)))
+                       details {:cwd cwd
+                                :project project
+                                :projectConfig {:rooms (vec (room-bindings project-config))
+                                                :allowedUsers (vec (:allowedUsers project-config))}
+                                :relay relay
+                                :diagnostics {:events (vec (:events (if diagnostics* @diagnostics* {})))}
+                                :broker broker}]
+                   {:content [{:type "text"
+                               :text (diagnostics-summary details)}]
+                    :details details}))))))
+
+(defn- control-diagnostics
+  [deps ctx]
+  (execute-matrix-relay-diagnostics! deps {:includeBroker true} ctx))
+
+(defn execute-matrix-relay-control!
+  [deps params pi ctx]
+  (let [{:keys [relay-state* diagnostics*]} deps
+        action (or (:action params) "status")]
+    (case action
+      "status"
+      (control-diagnostics deps ctx)
+
+      "start"
+      (if (and relay-state* @relay-state*)
+        (control-diagnostics deps ctx)
+        (-> (start-relay! deps pi ctx)
+            (.then (fn [relay-state]
+                     (when relay-state*
+                       (reset! relay-state* relay-state))
+                     (record-diagnostic! diagnostics* :control-started {:clientId (:client-id relay-state)})
+                     relay-state))
+            (.then (fn [_]
+                     (control-diagnostics deps ctx)))
+            (.catch (fn [err]
+                      (record-diagnostic! diagnostics* :control-start-error (error-summary err))
+                      (js/Promise.reject err)))))
+
+      "stop"
+      (if-let [relay-state (and relay-state* @relay-state*)]
+        (-> (stop-relay! deps ctx relay-state)
+            (.then (fn [_]
+                     (when relay-state*
+                       (reset! relay-state* nil))
+                     (record-diagnostic! diagnostics* :control-stopped)
+                     nil))
+            (.then (fn [_]
+                     (control-diagnostics deps ctx))))
+        (control-diagnostics deps ctx))
+
+      "restart"
+      (let [stop-promise (if-let [relay-state (and relay-state* @relay-state*)]
+                           (-> (stop-relay! deps ctx relay-state)
+                               (.then (fn [_]
+                                        (when relay-state*
+                                          (reset! relay-state* nil))
+                                        (record-diagnostic! diagnostics* :control-stopped)
+                                        nil)))
+                           (promise nil))]
+        (-> stop-promise
+            (.then (fn [_]
+                     (start-relay! deps pi ctx)))
+            (.then (fn [relay-state]
+                     (when relay-state*
+                       (reset! relay-state* relay-state))
+                     (record-diagnostic! diagnostics* :control-started {:clientId (:client-id relay-state)})
+                     relay-state))
+            (.then (fn [_]
+                     (control-diagnostics deps ctx)))
+            (.catch (fn [err]
+                      (record-diagnostic! diagnostics* :control-restart-error (error-summary err))
+                      (js/Promise.reject err)))))
+
+      (js/Promise.reject (js/Error. (str "Unknown matrix relay control action: " action))))))
+
 (defn- handle-help!
   [ctx]
   (notify! ctx (str "Matrix relay commands: setup, status, room bind <room> [alias], "
@@ -513,30 +739,63 @@
   [deps]
   (some-> (:relay-state* deps) deref :client-id))
 
+(def diagnostic-targets
+  #{"matrix-relay:diagnostics" "__matrix_relay_diagnostics__"})
+
+(def control-targets
+  #{"matrix-relay:control" "__matrix_relay_control__"})
+
+(defn- control-action
+  [message]
+  (let [action (str/trim (str message))]
+    (if (seq action) action "status")))
+
+(defn- matrix-room-id?
+  [target]
+  (and (string? target)
+       (str/starts-with? target "!")))
+
+(defn- resolve-send-target
+  [project-config target]
+  (or (config/resolve-target project-config target)
+      (when (matrix-room-id? target)
+        {:alias target
+         :roomId target})))
+
 (defn execute-send-matrix-message!
   [deps params ^js ctx]
-  (let [{:keys [read-project-config! send-message!]} deps
+  (let [{:keys [read-project-config! send-message! pi]} deps
         cwd (ctx-cwd ctx)
         target (:target params)
         message (:message params)
         reply-to-event-id (:replyToEventId params)
-        client-id (relay-client-id deps)
-        project-config (read-project-config! cwd)]
-    (if-let [binding (config/resolve-target project-config target)]
-      (-> (promise (send-message! (:roomId binding)
-                                  message
-                                  (cond-> {}
-                                    client-id (assoc :clientId client-id)
-                                    reply-to-event-id (assoc :replyToEventId reply-to-event-id))))
-          (.then (fn [result]
-                   {:content [{:type "text"
-                               :text (str "Sent Matrix message " (:eventId result)
-                                          " to " (:roomId binding))}]
-                    :details (cond-> {:roomId (:roomId binding)
-                                      :eventId (:eventId result)
-                                      :target target}
-                               reply-to-event-id (assoc :replyToEventId reply-to-event-id))})))
-      (js/Promise.reject (js/Error. (str "No Matrix room binding for target " target))))))
+        client-id (relay-client-id deps)]
+    (cond
+      (contains? diagnostic-targets target)
+      (execute-matrix-relay-diagnostics! deps {:includeBroker true
+                                               :includeRooms true}
+                                         ctx)
+
+      (contains? control-targets target)
+      (execute-matrix-relay-control! deps {:action (control-action message)} pi ctx)
+
+      :else
+      (let [project-config (read-project-config! cwd)]
+        (if-let [binding (resolve-send-target project-config target)]
+          (-> (promise (send-message! (:roomId binding)
+                                      message
+                                      (cond-> {}
+                                        client-id (assoc :clientId client-id)
+                                        reply-to-event-id (assoc :replyToEventId reply-to-event-id))))
+              (.then (fn [result]
+                       {:content [{:type "text"
+                                   :text (str "Sent Matrix message " (:eventId result)
+                                              " to " (:roomId binding))}]
+                        :details (cond-> {:roomId (:roomId binding)
+                                          :eventId (:eventId result)
+                                          :target target}
+                                   reply-to-event-id (assoc :replyToEventId reply-to-event-id))})))
+          (js/Promise.reject (js/Error. (str "No Matrix room binding for target " target))))))))
 
 (defn execute-send-matrix-reaction!
   [deps params ^js ctx]
@@ -547,7 +806,7 @@
         key (:key params)
         client-id (relay-client-id deps)
         project-config (read-project-config! cwd)]
-    (if-let [binding (config/resolve-target project-config target)]
+    (if-let [binding (resolve-send-target project-config target)]
       (-> (promise (send-reaction! (:roomId binding)
                                     event-id
                                     key
@@ -613,6 +872,64 @@
                     (-> (execute-send-matrix-reaction! deps (js->clj params :keywordize-keys true) ctx)
                         (.then clj->js)))}))
 
+(def matrix-relay-diagnostics-parameters
+  #js {:type "object"
+       :additionalProperties false
+       :properties #js {:includeBroker #js {:type "boolean"
+                                            :description "Also query broker health and slot state. Defaults to true."}
+                        :includeRooms #js {:type "boolean"
+                                           :description "Also list Matrix rooms known to the broker. Defaults to false because this can be verbose."}}})
+
+(defn register-diagnostics-tool!
+  [^js pi deps]
+  (.registerTool pi
+    #js {:name "matrix_relay_diagnostics"
+         :label "Matrix Relay Diagnostics"
+         :description "Inspect this Pi process' pi-matrix-relay extension state and optionally compare it with broker state."
+         :promptSnippet "Use matrix_relay_diagnostics to debug whether this Pi session is listening to Matrix rooms, which slot it has, and what the broker sees."
+         :promptGuidelines #js ["Use matrix_relay_diagnostics instead of /mr status when debugging Matrix relay state from an agent."
+                                "Do not rely on slash commands for relay troubleshooting; this tool returns the running extension internals."]
+         :parameters matrix-relay-diagnostics-parameters
+         :execute (fn [_tool-call-id params _signal _on-update ctx]
+                    (-> (execute-matrix-relay-diagnostics! deps (js->clj params :keywordize-keys true) ctx)
+                        (.then clj->js)))}))
+
+(def matrix-relay-control-parameters
+  #js {:type "object"
+       :additionalProperties false
+       :required #js ["action"]
+       :properties #js {:action #js {:type "string"
+                                     :enum #js ["status" "start" "stop" "restart"]
+                                     :description "Relay lifecycle action for this Pi process."}}})
+
+(defn register-control-tool!
+  [^js pi deps]
+  (.registerTool pi
+    #js {:name "matrix_relay_control"
+         :label "Matrix Relay Control"
+         :description "Start, stop, restart, or inspect this Pi process' Matrix relay without using slash commands."
+         :promptSnippet "Use matrix_relay_control when the relay needs to be started or restarted for this Pi session during debugging."
+         :promptGuidelines #js ["Use status or matrix_relay_diagnostics before mutating relay state."
+                                "Use restart only when the current relay state is stale or failed and the user is debugging the relay."]
+         :parameters matrix-relay-control-parameters
+         :execute (fn [_tool-call-id params _signal _on-update ctx]
+                    (-> (execute-matrix-relay-control! deps (js->clj params :keywordize-keys true) pi ctx)
+                        (.then clj->js)))}))
+
+(def relay-tool-names
+  ["send_matrix_message"
+   "send_matrix_reaction"
+   "matrix_relay_diagnostics"
+   "matrix_relay_control"])
+
+(defn activate-relay-tools!
+  [^js pi]
+  (when (and (.-getActiveTools pi)
+             (.-setActiveTools pi))
+    (let [active-tools (set (js->clj (.getActiveTools pi)))
+          next-tools (vec (distinct (concat active-tools relay-tool-names)))]
+      (.setActiveTools pi (clj->js next-tools)))))
+
 (defn hello-handler [args ^js ctx]
   (let [target (if (and (string? args)
                         (not= "" (.trim args)))
@@ -626,7 +943,10 @@
    (init pi default-deps))
   ([^js pi deps]
    (let [relay-state* (atom nil)
-         deps (merge default-deps deps {:relay-state* relay-state*})]
+         diagnostics* (atom {})
+         deps (merge default-deps deps {:relay-state* relay-state*
+                                        :diagnostics* diagnostics*
+                                        :pi pi})]
      (doseq [command-name ["matrix-relay" "mr"]]
        (.registerCommand pi command-name
          #js {:description "Control the Pi Matrix relay"
@@ -634,12 +954,16 @@
                          (handle-command! deps args ctx))}))
      (register-send-tool! pi deps)
      (register-reaction-tool! pi deps)
+     (register-diagnostics-tool! pi deps)
+     (register-control-tool! pi deps)
      (when-let [on (.-on pi)]
        (on "session_start"
            (fn [_event ctx]
+             (activate-relay-tools! pi)
              (-> (start-relay! deps pi ctx)
                  (.then #(reset! relay-state* %))
                  (.catch (fn [err]
+                           (record-diagnostic! diagnostics* :start-error (error-summary err))
                            (notify! ctx (str "Matrix relay receive disabled: " (.-message err)) "warning"))))))
        (on "agent_end"
            (fn [event _ctx]

@@ -27,10 +27,20 @@
               :method method
               :headers headers})))
 
+(defn encode-path-segment
+  [segment]
+  (js/encodeURIComponent (str segment)))
+
+(defn- client-path
+  ([client-id]
+   (client-path client-id nil))
+  ([client-id suffix]
+   (str "/v1/clients/" (encode-path-segment client-id) suffix)))
+
 (defn event-stream-options
   [env client-id]
   (clj->js {:socketPath (socket-path env)
-            :path (str "/v1/clients/" client-id "/events")
+            :path (client-path client-id "/events")
             :method "GET"
             :headers {"Accept" "text/event-stream"}}))
 
@@ -129,20 +139,20 @@
   ([client-id rooms]
    (update-subscriptions! {} client-id rooms))
   ([opts client-id rooms]
-   (request-json! opts "PATCH" (str "/v1/clients/" client-id "/subscriptions")
+   (request-json! opts "PATCH" (client-path client-id "/subscriptions")
                   {:rooms rooms})))
 
 (defn heartbeat!
   ([client-id]
    (heartbeat! {} client-id))
   ([opts client-id]
-   (request-json! opts "POST" (str "/v1/clients/" client-id "/heartbeat") {})))
+   (request-json! opts "POST" (client-path client-id "/heartbeat") {})))
 
 (defn unregister-client!
   ([client-id reason]
    (unregister-client! {} client-id reason))
   ([opts client-id reason]
-   (request-json! opts "DELETE" (str "/v1/clients/" client-id) {:reason reason})))
+   (request-json! opts "DELETE" (client-path client-id) {:reason reason})))
 
 (defn acquire-slot!
   ([client-id project invite]
@@ -162,32 +172,95 @@
                    :roomId room-id
                    :slot slot})))
 
+(defn list-slots!
+  ([project-id]
+   (list-slots! {} project-id))
+  ([opts project-id]
+   (request-json! opts "GET" (str "/v1/slots?projectId=" (encode-path-segment project-id)) nil)))
+
+(defn list-rooms!
+  ([]
+   (list-rooms! {}))
+  ([opts]
+   (request-json! opts "GET" "/v1/matrix/rooms" nil)))
+
+(defn- now-ms []
+  (.getTime (js/Date.)))
+
+(defn- error-data
+  [err]
+  (cond-> {:message (.-message err)}
+    (.-code err) (assoc :code (.-code err))))
+
 (defn open-event-stream!
   ([client-id on-event]
    (open-event-stream! {:env (.-env js/process)} client-id on-event))
   ([{:keys [env on-error]} client-id on-event]
    (let [env (or env (.-env js/process))
          buffer* (atom "")
+         state* (atom {:clientId client-id
+                       :startedAt (now-ms)
+                       :connected false
+                       :closed false
+                       :chunkCount 0
+                       :eventCount 0})
+         record-error! (fn [err]
+                         (swap! state* assoc
+                                :lastError (error-data err)
+                                :lastErrorAt (now-ms))
+                         (when on-error
+                           (on-error err)))
          req (.request http
                        (event-stream-options env client-id)
                        (fn [^js res]
-                         (.setEncoding res "utf8")
-                         (.on res "data"
-                              (fn [chunk]
-                                (try
-                                  (let [{:keys [events buffer]} (parse-sse-chunk @buffer* chunk)]
-                                    (reset! buffer* buffer)
-                                    (doseq [event events]
-                                      (on-event (:data event))))
-                                  (catch js/Error err
-                                    (when on-error
-                                      (on-error err))))))))]
-     (.on req "error" (fn [err]
-                        (when on-error
-                          (on-error err))))
+                         (let [status-code (.-statusCode res)]
+                           (swap! state* assoc
+                                  :statusCode status-code
+                                  :responseAt (now-ms)
+                                  :connected (= 200 status-code))
+                           (when (not= 200 status-code)
+                             (record-error! (js/Error. (str "Event stream HTTP " status-code))))
+                           (.setEncoding res "utf8")
+                           (.on res "data"
+                                (fn [chunk]
+                                  (swap! state* #(-> %
+                                                     (update :chunkCount (fnil inc 0))
+                                                     (assoc :lastChunkAt (now-ms))))
+                                  (try
+                                    (let [{:keys [events buffer]} (parse-sse-chunk @buffer* chunk)]
+                                      (reset! buffer* buffer)
+                                      (doseq [event events]
+                                        (swap! state* #(-> %
+                                                           (update :eventCount (fnil inc 0))
+                                                           (assoc :lastEventAt (now-ms)
+                                                                  :lastEventId (:id event)
+                                                                  :lastEventType (:event event))))
+                                        (on-event (:data event))))
+                                    (catch js/Error err
+                                      (record-error! err)))))
+                           (.on res "end"
+                                (fn []
+                                  (swap! state* assoc
+                                         :closed true
+                                         :closedAt (now-ms)
+                                         :closeReason "response-end")))
+                           (.on res "close"
+                                (fn []
+                                  (swap! state* assoc
+                                         :closed true
+                                         :closedAt (now-ms)
+                                         :closeReason "response-close"))))))]
+     (.on req "error" record-error!)
+     (.on req "close" (fn []
+                         (swap! state* assoc :requestClosedAt (now-ms))))
      (.end req)
      #js {:close (fn []
-                   (.destroy req))})))
+                   (swap! state* assoc
+                          :closeRequested true
+                          :closeRequestedAt (now-ms))
+                   (.destroy req))
+          :diagnostics (fn []
+                         (clj->js @state*))})))
 
 (defn resolve-room!
   ([room]
