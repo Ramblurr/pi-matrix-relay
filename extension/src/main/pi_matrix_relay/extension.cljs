@@ -162,10 +162,25 @@
      :autoReply true
      :slot (:slot relay-state)}))
 
+(defn- room-behavior
+  [relay-state room-id]
+  (when-let [behaviors* (:room-behaviors* relay-state)]
+    (get @behaviors* room-id)))
+
+(defn- with-room-behavior
+  [relay-state room-id binding]
+  (when binding
+    (if-let [behavior (room-behavior relay-state room-id)]
+      (assoc binding :busy behavior)
+      binding)))
+
 (defn- binding-for-relay-room
   [relay-state room-id]
-  (or (slot-binding-for-room-id relay-state room-id)
-      (binding-for-room-id (:project-config relay-state) room-id)))
+  (with-room-behavior
+    relay-state
+    room-id
+    (or (slot-binding-for-room-id relay-state room-id)
+        (binding-for-room-id (:project-config relay-state) room-id))))
 
 (defn- authorized-sender?
   [{:keys [project-config global-operators]} sender]
@@ -200,6 +215,21 @@
     "mentions" (mentions-bot? text bot-user-id)
     "commands-only" (str/starts-with? (str/trim (str text)) "/")
     false))
+
+(defn- parse-remote-command
+  [text]
+  (let [trimmed (str/trim (str text))
+        command-text (cond
+                       (str/starts-with? trimmed "//") (subs trimmed 2)
+                       (str/starts-with? trimmed "/") (subs trimmed 1)
+                       :else nil)]
+    (when (seq command-text)
+      (let [[name args] (str/split command-text #"\s+" 2)
+            name (some-> name str/lower-case)
+            args (str/trim (or args ""))]
+        (when (seq name)
+          {:name name
+           :args args})))))
 
 (defn- room-label
   ([binding]
@@ -279,8 +309,106 @@
         (.sendUserMessage pi prompt #js {:deliverAs "followUp"})
         true))))
 
+(defn- deliver-command-message!
+  [^js pi prompt behavior]
+  (.sendUserMessage pi prompt #js {:deliverAs (if (= "steer" behavior)
+                                                "steer"
+                                                "followUp")})
+  true)
+
+(defn- record-pending-auto-reply!
+  [relay-state binding room-id event-id]
+  (when (and (:autoReply binding) (:pending-auto-replies* relay-state))
+    (swap! (:pending-auto-replies* relay-state) conj {:room-id room-id
+                                                      :event-id event-id})))
+
+(defn- send-room-ack!
+  [{:keys [send-message! diagnostics*]} relay-state room-id event-id message]
+  (when send-message!
+    (-> (promise (send-message! room-id
+                                message
+                                (cond-> {}
+                                  (:client-id relay-state)
+                                  (assoc :clientId (:client-id relay-state))
+
+                                  event-id
+                                  (assoc :replyToEventId event-id))))
+        (.catch (fn [err]
+                  (record-diagnostic! diagnostics* :remote-command-ack-error (error-summary err))
+                  nil)))))
+
+(defn- remote-status-message
+  [relay-state binding room-id]
+  (str "pi-matrix-relay status\n"
+       "project: " (or (get-in relay-state [:project :id]) "unknown") "\n"
+       "slot: " (or (:slot relay-state) "?") " " (or (:room-name relay-state) "unknown") "\n"
+       "room: " room-id "\n"
+       "default message behavior: " (or (:busy binding) config/default-busy-behavior) "\n"
+       "heartbeat: " (if (:heartbeat-id relay-state) "active" "inactive") "\n"
+       "stream: " (if (:stream relay-state) "active" "inactive")))
+
+(defn- set-room-behavior!
+  [relay-state room-id behavior]
+  (when-let [behaviors* (:room-behaviors* relay-state)]
+    (swap! behaviors* assoc room-id behavior)))
+
+(defn- remote-command-name
+  [name]
+  (case name
+    "status" :status
+    "steer" :steer
+    "follow-up" :follow-up
+    "followup" :follow-up
+    nil))
+
+(defn- command-prompt-event
+  [event text]
+  (assoc-in event [:event :text] text))
+
+(defn- handle-remote-command!
+  [deps pi _ctx relay-state binding {:keys [room event] :as matrix-event}]
+  (let [room-id (:roomId room)
+        event-id (:eventId event)
+        {:keys [name args]} (parse-remote-command (:text event))
+        command (remote-command-name name)]
+    (case command
+      :status
+      (do
+        (send-room-ack! deps relay-state room-id event-id (remote-status-message relay-state binding room-id))
+        true)
+
+      :steer
+      (if (str/blank? args)
+        (do
+          (set-room-behavior! relay-state room-id "steer")
+          (send-room-ack! deps relay-state room-id event-id
+                          "Default Matrix message behavior for this room is now steer.")
+          true)
+        (let [prompt-event (command-prompt-event matrix-event args)
+              prompt (matrix-message-prompt (:project-config relay-state) binding prompt-event)]
+          (deliver-command-message! pi prompt "steer")
+          (record-pending-auto-reply! relay-state binding room-id event-id)
+          (send-room-ack! deps relay-state room-id event-id "Steering message sent.")
+          true))
+
+      :follow-up
+      (if (str/blank? args)
+        (do
+          (set-room-behavior! relay-state room-id "follow-up")
+          (send-room-ack! deps relay-state room-id event-id
+                          "Default Matrix message behavior for this room is now follow-up.")
+          true)
+        (let [prompt-event (command-prompt-event matrix-event args)
+              prompt (matrix-message-prompt (:project-config relay-state) binding prompt-event)]
+          (deliver-command-message! pi prompt "follow-up")
+          (record-pending-auto-reply! relay-state binding room-id event-id)
+          (send-room-ack! deps relay-state room-id event-id "Follow-up message queued.")
+          true))
+
+      false)))
+
 (defn handle-broker-event!
-  [_deps pi ctx relay-state event]
+  [deps pi ctx relay-state event]
   (case (:type event)
     "matrix.message"
     (let [room-id (get-in event [:room :roomId])
@@ -288,12 +416,12 @@
           binding (binding-for-relay-room relay-state room-id)]
       (when (and binding
                  (not (:senderIsBot message))
-                 (authorized-sender? relay-state (:sender message))
-                 (message-allowed-by-mode? binding (:text message) (:bot-user-id relay-state)))
-        (let [delivered? (deliver-user-message! pi ctx binding (matrix-message-prompt (:project-config relay-state) binding event))]
-          (when (and delivered? (:autoReply binding) (:pending-auto-replies* relay-state))
-            (swap! (:pending-auto-replies* relay-state) conj {:room-id room-id
-                                                              :event-id (:eventId message)})))))
+                 (authorized-sender? relay-state (:sender message)))
+        (when-not (handle-remote-command! deps pi ctx relay-state binding event)
+          (when (message-allowed-by-mode? binding (:text message) (:bot-user-id relay-state))
+            (let [delivered? (deliver-user-message! pi ctx binding (matrix-message-prompt (:project-config relay-state) binding event))]
+              (when delivered?
+                (record-pending-auto-reply! relay-state binding room-id (:eventId message))))))))
 
     "matrix.reaction"
     (let [room-id (get-in event [:room :roomId])
@@ -374,6 +502,7 @@
                                                                 :slot (:slot slot)
                                                                 :room-id slot-room-id
                                                                 :room-name (:roomName slot)
+                                                                :room-behaviors* (atom {})
                                                                 :pending-auto-replies* (atom [])
                                                                 :last-start-banner banner
                                                                 :heartbeat-id heartbeat-id}
