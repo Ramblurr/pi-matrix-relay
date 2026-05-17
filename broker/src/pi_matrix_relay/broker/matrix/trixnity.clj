@@ -38,8 +38,8 @@
 (defn- text-message
   [{:keys [body formattedBody replyTo]}]
   (cond-> (msg/text body (cond-> {}
-                            formattedBody (assoc ::mx/format "org.matrix.custom.html"
-                                                 ::mx/formatted-body formattedBody)))
+                           formattedBody (assoc ::mx/format "org.matrix.custom.html"
+                                                ::mx/formatted-body formattedBody)))
     replyTo (msg/reply-to (reply-target-event replyTo))))
 
 (defn- now-iso []

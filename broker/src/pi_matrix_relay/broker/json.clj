@@ -15,7 +15,7 @@
     (string? body) (when-not (empty? body)
                      (json/read-json body :key-fn keyword))
     (instance? InputStream body) (with-open [reader (PushbackReader. (InputStreamReader. ^InputStream body "UTF-8"))]
-                             (json/read-json reader :key-fn keyword))
+                                   (json/read-json reader :key-fn keyword))
     :else (json/read-json body :key-fn keyword)))
 
 (defn write-json

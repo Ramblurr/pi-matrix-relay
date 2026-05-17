@@ -30,11 +30,11 @@
     (case (first args)
       nil opts
       "--tcp-port" (recur (nnext args)
-                           (assoc opts :http {:transport :tcp
-                                              :port (parse-long-safe (second args))}))
+                          (assoc opts :http {:transport :tcp
+                                             :port (parse-long-safe (second args))}))
       "--uds" (recur (next args) (assoc opts :http {:transport :uds}))
       "--socket" (recur (nnext args)
-                         (assoc-in opts [:paths :socket-path] (second args)))
+                        (assoc-in opts [:paths :socket-path] (second args)))
       (throw (ex-info "Unknown broker argument." {:arg (first args)})))))
 
 (defn -main

@@ -109,15 +109,15 @@
                                             :room-id "!other:example.org"}}}
               :send-calls 1}
              {:allowed (tu/json-request app :post "/v1/matrix/messages"
-                                       {:requestId "send-allowed"
-                                        :clientId client-id
-                                        :target {:roomId "!project:example.org"}
-                                        :body "hello"})
+                                        {:requestId "send-allowed"
+                                         :clientId client-id
+                                         :target {:roomId "!project:example.org"}
+                                         :body "hello"})
               :forbidden (tu/json-request app :post "/v1/matrix/messages"
-                                         {:requestId "send-forbidden"
-                                          :clientId client-id
-                                          :target {:roomId "!other:example.org"}
-                                          :body "nope"})
+                                          {:requestId "send-forbidden"
+                                           :clientId client-id
+                                           :target {:roomId "!other:example.org"}
+                                           :body "nope"})
               :send-calls (count (filter #(= :send-message (first %))
                                          (tu/calls gateway)))})))))
 
@@ -138,13 +138,13 @@
                                   :details {:client-id nil
                                             :room-id "!missing:example.org"}}}}
              {:allowed (tu/json-request app :post "/v1/matrix/messages"
-                                       {:requestId "send-local-command"
-                                        :target {:roomId "!joined:example.org"}
-                                        :body "hello from local command"})
+                                        {:requestId "send-local-command"
+                                         :target {:roomId "!joined:example.org"}
+                                         :body "hello from local command"})
               :forbidden (tu/json-request app :post "/v1/matrix/messages"
-                                         {:requestId "send-local-command-forbidden"
-                                          :target {:roomId "!missing:example.org"}
-                                          :body "nope"})})))))
+                                          {:requestId "send-local-command-forbidden"
+                                           :target {:roomId "!missing:example.org"}
+                                           :body "nope"})})))))
 
 (deftest matrix-reaction-requires-known-room
   (testing "a client can react only in subscribed or acquired rooms"
@@ -170,17 +170,17 @@
                                             :room-id "!other:example.org"}}}
               :reaction-calls 1}
              {:allowed (tu/json-request app :post "/v1/matrix/reactions"
-                                       {:requestId "react-allowed"
-                                        :clientId client-id
-                                        :roomId "!project:example.org"
-                                        :eventId "$message:example.org"
-                                        :key "👍"})
+                                        {:requestId "react-allowed"
+                                         :clientId client-id
+                                         :roomId "!project:example.org"
+                                         :eventId "$message:example.org"
+                                         :key "👍"})
               :forbidden (tu/json-request app :post "/v1/matrix/reactions"
-                                         {:requestId "react-forbidden"
-                                          :clientId client-id
-                                          :roomId "!other:example.org"
-                                          :eventId "$message:example.org"
-                                          :key "👍"})
+                                          {:requestId "react-forbidden"
+                                           :clientId client-id
+                                           :roomId "!other:example.org"
+                                           :eventId "$message:example.org"
+                                           :key "👍"})
               :reaction-calls (count (filter #(= :send-reaction (first %))
                                              (tu/calls gateway)))})))))
 
