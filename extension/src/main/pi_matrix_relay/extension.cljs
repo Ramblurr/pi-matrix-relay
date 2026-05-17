@@ -11,10 +11,17 @@
 (def default-deps
   {:health! broker-client/health!
    :register-client! broker-client/register-client!
+   :update-subscriptions! broker-client/update-subscriptions!
+   :heartbeat! broker-client/heartbeat!
+   :unregister-client! broker-client/unregister-client!
+   :acquire-slot! broker-client/acquire-slot!
+   :release-slot! broker-client/release-slot!
    :open-event-stream! broker-client/open-event-stream!
    :resolve-room! broker-client/resolve-room!
    :send-message! broker-client/send-message!
    :send-reaction! broker-client/send-reaction!
+   :set-interval! js/setInterval
+   :clear-interval! js/clearInterval
    :read-project-config! config/read-project-config!
    :write-project-config! config/write-project-config!
    :run-setup! setup/run-setup!})
@@ -69,6 +76,42 @@
        (keep :roomId)
        distinct
        vec))
+
+(defn- effective-project-id
+  [cwd project-config]
+  (or (get-in project-config [:project :id])
+      (config/project-id cwd)))
+
+(defn- project-summary
+  [cwd project-config]
+  (let [project-id (effective-project-id cwd project-config)]
+    {:root cwd
+     :id project-id
+     :displayName (or (get-in project-config [:project :displayName]) project-id)}))
+
+(defn- now-iso []
+  (.toISOString (js/Date.)))
+
+(defn- start-banner
+  [cwd project slot]
+  (str "pi-matrix-relay session started\n"
+       "project: " (:id project) "\n"
+       "slot: " (:slot slot) "\n"
+       "room: " (:roomName slot) "\n"
+       "path: " cwd "\n"
+       "time: " (now-iso)))
+
+(defn- status-text
+  [project-config slot]
+  (let [room-aliases (->> (room-bindings project-config)
+                          (map :alias)
+                          (remove str/blank?)
+                          distinct
+                          vec)
+        base (str "matrix: slot " (:slot slot) " " (:roomName slot))]
+    (if (seq room-aliases)
+      (str base "; rooms: " (str/join ", " room-aliases))
+      base)))
 
 (defn- binding-for-room-id
   [project-config room-id]
@@ -209,43 +252,80 @@
     nil)
   nil)
 
+(defn- start-heartbeat!
+  [{:keys [heartbeat! set-interval!]} ctx client-id heartbeat-seconds]
+  (when (and heartbeat! set-interval!)
+    (set-interval!
+     (fn []
+       (-> (promise (heartbeat! client-id))
+           (.catch (fn [err]
+                     (notify! ctx (str "Matrix relay heartbeat failed: " (.-message err)) "warning")))))
+     (* 1000 (or heartbeat-seconds 30)))))
+
 (defn start-relay!
-  [{:keys [read-project-config! health! register-client! open-event-stream!] :as deps} pi ctx]
+  [{:keys [read-project-config! health! register-client! acquire-slot!
+           update-subscriptions! send-message! open-event-stream!] :as deps}
+   pi ctx]
   (let [cwd (ctx-cwd ctx)
         project-config (read-project-config! cwd)
-        room-ids (project-room-ids project-config)]
-    (if (empty? room-ids)
-      (do
-        (set-status! ctx "matrix: no rooms")
-        (promise nil))
-      (-> (promise (health!))
-          (.then
-           (fn [health]
-             (let [request {:clientInstanceId (str "matrix-relay-" cwd)
-                            :protocolVersion 1
-                            :project {:root cwd
-                                      :id (config/project-id cwd)}
-                            :subscriptions {:rooms room-ids}}]
-               (-> (promise (register-client! request))
-                   (.then
-                    (fn [registration]
-                      (let [relay-state {:client-id (:clientId registration)
-                                         :project-config project-config
-                                         :global-operators (set (:globalOperators registration))
-                                         :bot-user-id (get-in health [:matrix :userId])}
-                            stream (open-event-stream!
-                                    (:clientId registration)
-                                    #(handle-broker-event! deps pi ctx relay-state %))]
-                        (set-status! ctx (str "matrix: listening to "
-                                              (str/join ", " (map :alias (room-bindings project-config)))))
-                        (assoc relay-state :stream stream))))))))))))
+        room-ids (project-room-ids project-config)
+        project (project-summary cwd project-config)]
+    (-> (promise (health!))
+        (.then
+         (fn [health]
+           (let [request {:clientInstanceId (str "matrix-relay-" cwd)
+                          :protocolVersion 1
+                          :project (select-keys project [:root :id])
+                          :subscriptions {:rooms room-ids}}]
+             (-> (promise (register-client! request))
+                 (.then
+                  (fn [registration]
+                    (let [client-id (:clientId registration)
+                          global-operators (vec (:globalOperators registration))]
+                      (-> (promise (acquire-slot! client-id
+                                                   (select-keys project [:id :displayName])
+                                                   global-operators))
+                          (.then
+                           (fn [slot]
+                             (let [slot-room-id (:roomId slot)
+                                   subscriptions (vec (distinct (conj room-ids slot-room-id)))
+                                   banner (start-banner cwd project slot)]
+                               (-> (promise (update-subscriptions! client-id subscriptions))
+                                   (.then
+                                    (fn [_]
+                                      (-> (promise (send-message! slot-room-id banner {:clientId client-id}))
+                                          (.then
+                                           (fn [_]
+                                             (let [heartbeat-id (start-heartbeat! deps ctx client-id (:heartbeatSeconds registration))
+                                                   relay-state {:client-id client-id
+                                                                :project-config project-config
+                                                                :project project
+                                                                :global-operators (set global-operators)
+                                                                :bot-user-id (get-in health [:matrix :userId])
+                                                                :slot (:slot slot)
+                                                                :room-id slot-room-id
+                                                                :room-name (:roomName slot)
+                                                                :last-start-banner banner
+                                                                :heartbeat-id heartbeat-id}
+                                                   stream (open-event-stream!
+                                                           client-id
+                                                           #(handle-broker-event! deps pi ctx relay-state %))]
+                                               (set-status! ctx (status-text project-config slot))
+                                               (assoc relay-state :stream stream))))))))))))))))))))))
 
 (defn stop-relay!
-  [relay-state]
-  (when-let [stream (:stream relay-state)]
-    (when-let [close (.-close stream)]
-      (close)))
-  nil)
+  ([relay-state]
+   (stop-relay! {} nil relay-state))
+  ([{:keys [clear-interval!]} ctx relay-state]
+   (when-let [stream (:stream relay-state)]
+     (when-let [close (.-close stream)]
+       (close)))
+   (when-let [heartbeat-id (:heartbeat-id relay-state)]
+     (when clear-interval!
+       (clear-interval! heartbeat-id)))
+   (when ctx
+     (set-status! ctx nil))
+   nil))
 
 (defn- handle-help!
   [ctx]
@@ -451,6 +531,6 @@
                  (.catch (fn [err]
                            (notify! ctx (str "Matrix relay receive disabled: " (.-message err)) "warning"))))))
        (on "session_shutdown"
-           (fn [_event _ctx]
-             (stop-relay! @relay-state*)
+           (fn [_event ctx]
+             (stop-relay! deps ctx @relay-state*)
              (reset! relay-state* nil)))))))

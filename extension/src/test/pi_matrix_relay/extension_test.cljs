@@ -171,10 +171,11 @@
                     (is false (.-stack err))
                     (done)))))))
 
-(deftest session-start-registers-project-room-subscriptions-and-opens-event-stream
+(deftest session-start-registers-project-and-slot-subscriptions
   (async done
     (let [calls* (atom [])
           stream* (atom nil)
+          intervals* (atom [])
           deps {:read-project-config! (fn [_cwd]
                                         {:rooms {"ops" {:alias "ops"
                                                         :roomId "!room:example.org"
@@ -187,7 +188,25 @@
                                     (swap! calls* conj [:register request])
                                     (js/Promise.resolve {:clientId "client-1"
                                                          :eventStream "/v1/clients/client-1/events"
+                                                         :heartbeatSeconds 30
                                                          :globalOperators ["@alice:example.org"]}))
+                :acquire-slot! (fn [client-id project invite]
+                                 (swap! calls* conj [:acquire-slot client-id project invite])
+                                 (js/Promise.resolve {:slot "A"
+                                                      :roomId "!slot:example.org"
+                                                      :roomName "project-A"}))
+                :update-subscriptions! (fn [client-id rooms]
+                                         (swap! calls* conj [:update-subscriptions client-id rooms])
+                                         (js/Promise.resolve {:rooms rooms}))
+                :send-message! (fn [room-id message opts]
+                                (swap! calls* conj [:send-message room-id message opts])
+                                (js/Promise.resolve {:eventId "$start:example.org"}))
+                :heartbeat! (fn [client-id]
+                              (swap! calls* conj [:heartbeat client-id])
+                              (js/Promise.resolve {:heartbeatSeconds 30}))
+                :set-interval! (fn [f ms]
+                                 (swap! intervals* conj {:f f :ms ms})
+                                 :interval-1)
                 :open-event-stream! (fn [client-id on-event]
                                       (swap! calls* conj [:open-event-stream client-id])
                                       (reset! stream* {:client-id client-id
@@ -204,16 +223,82 @@
                             :setStatus (fn [id status]
                                          (swap! statuses* conj [id status]))}}]
       (-> (extension/start-relay! deps pi ctx)
-          (.then (fn [_]
-                   (is (= [:health] (first @calls*)))
-                   (is (= [:register {:clientInstanceId "matrix-relay-/work/project"
-                                      :protocolVersion 1
-                                      :project {:root "/work/project"
-                                                :id "project"}
-                                      :subscriptions {:rooms ["!room:example.org"]}}]
-                          (second @calls*)))
-                   (is (= [:open-event-stream "client-1"] (nth @calls* 2)))
-                   (is (= [["pi-matrix-relay" "matrix: listening to ops"]]
+          (.then (fn [relay-state]
+                   (is (= [[:health]
+                           [:register {:clientInstanceId "matrix-relay-/work/project"
+                                       :protocolVersion 1
+                                       :project {:root "/work/project"
+                                                 :id "project"}
+                                       :subscriptions {:rooms ["!room:example.org"]}}]
+                           [:acquire-slot "client-1" {:id "project" :displayName "project"} ["@alice:example.org"]]
+                           [:update-subscriptions "client-1" ["!room:example.org" "!slot:example.org"]]
+                           [:send-message "!slot:example.org" (:last-start-banner relay-state) {:clientId "client-1"}]
+                           [:open-event-stream "client-1"]]
+                          @calls*))
+                   (is (= [{:ms 30000 :has-fn? true}]
+                          (mapv (fn [{:keys [f ms]}] {:ms ms :has-fn? (fn? f)}) @intervals*)))
+                   (is (= {:slot "A"
+                           :room-id "!slot:example.org"
+                           :room-name "project-A"
+                           :heartbeat-id :interval-1}
+                          (select-keys relay-state [:slot :room-id :room-name :heartbeat-id])))
+                   (is (= [["pi-matrix-relay" "matrix: slot A project-A; rooms: ops"]]
+                          @statuses*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest session-start-acquires-slot-without-project-rooms
+  (async done
+    (let [calls* (atom [])
+          deps {:read-project-config! (fn [_cwd] {})
+                :health! (fn []
+                           (swap! calls* conj [:health])
+                           (js/Promise.resolve {:matrix {:connected true
+                                                         :userId "@bot:example.org"}}))
+                :register-client! (fn [request]
+                                    (swap! calls* conj [:register request])
+                                    (js/Promise.resolve {:clientId "client-1"
+                                                         :heartbeatSeconds 30
+                                                         :globalOperators ["@alice:example.org"]}))
+                :acquire-slot! (fn [client-id project invite]
+                                 (swap! calls* conj [:acquire-slot client-id project invite])
+                                 (js/Promise.resolve {:slot "A"
+                                                      :roomId "!slot:example.org"
+                                                      :roomName "project-A"}))
+                :update-subscriptions! (fn [client-id rooms]
+                                         (swap! calls* conj [:update-subscriptions client-id rooms])
+                                         (js/Promise.resolve {:rooms rooms}))
+                :send-message! (fn [room-id message opts]
+                                (swap! calls* conj [:send-message room-id (boolean (seq message)) opts])
+                                (js/Promise.resolve {:eventId "$start:example.org"}))
+                :heartbeat! (fn [client-id]
+                              (swap! calls* conj [:heartbeat client-id])
+                              (js/Promise.resolve {:heartbeatSeconds 30}))
+                :set-interval! (fn [_f _ms] :interval-1)
+                :open-event-stream! (fn [client-id _on-event]
+                                      (swap! calls* conj [:open-event-stream client-id])
+                                      #js {:close (fn [])})}
+          statuses* (atom [])
+          pi #js {:sendUserMessage (fn [_message])}
+          ctx #js {:cwd "/work/project"
+                   :ui #js {:setStatus (fn [id status]
+                                         (swap! statuses* conj [id status]))}}]
+      (-> (extension/start-relay! deps pi ctx)
+          (.then (fn [_relay-state]
+                   (is (= [[:health]
+                           [:register {:clientInstanceId "matrix-relay-/work/project"
+                                       :protocolVersion 1
+                                       :project {:root "/work/project"
+                                                 :id "project"}
+                                       :subscriptions {:rooms []}}]
+                           [:acquire-slot "client-1" {:id "project" :displayName "project"} ["@alice:example.org"]]
+                           [:update-subscriptions "client-1" ["!slot:example.org"]]
+                           [:send-message "!slot:example.org" true {:clientId "client-1"}]
+                           [:open-event-stream "client-1"]]
+                          @calls*))
+                   (is (= [["pi-matrix-relay" "matrix: slot A project-A"]]
                           @statuses*))
                    (done)))
           (.catch (fn [err]
