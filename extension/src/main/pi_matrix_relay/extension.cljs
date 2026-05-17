@@ -432,7 +432,10 @@
                                    :replyToEventId (:event-id target)}))
           (.then (fn [_]
                    (swap! pending* #(vec (rest %)))
-                   nil)))
+                   nil))
+          (.catch (fn [_]
+                    (swap! pending* #(vec (rest %)))
+                    nil)))
       (promise nil))))
 
 (defn- handle-help!

@@ -510,6 +510,30 @@
                     (is false (.-stack err))
                     (done)))))))
 
+(deftest agent-end-clears-pending-slot-reply-when-send-fails
+  (async done
+    (let [sent* (atom [])
+          pending* (atom [{:room-id "!slot:example.org"
+                           :event-id "$slot-event:example.org"}])
+          deps {:send-message! (fn [room-id message opts]
+                                (swap! sent* conj {:room-id room-id
+                                                   :message message
+                                                   :opts opts})
+                                (js/Promise.reject (js/Error. "send timed out")))}
+          relay-state {:client-id "client-1"
+                       :pending-auto-replies* pending*}
+          event {:messages [{:role "assistant"
+                             :stopReason "stop"
+                             :content [{:type "text" :text "Final answer"}]}]}]
+      (-> (extension/handle-agent-end! deps relay-state event)
+          (.then (fn [_]
+                   (is (= 1 (count @sent*)))
+                   (is (= [] @pending*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
 (deftest agent-end-does-not-send-automatic-reply-without-pending-slot-prompt
   (async done
     (let [sent* (atom [])
