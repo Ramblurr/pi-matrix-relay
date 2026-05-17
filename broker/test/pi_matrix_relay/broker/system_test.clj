@@ -2,8 +2,9 @@
   (:require [clojure.java.io :as io]
             [clojure.test :refer [deftest is testing]]
             [donut.system :as ds]
+            [pi-matrix-relay.broker.db :as db]
             [pi-matrix-relay.broker.json :as json]
-            [pi-matrix-relay.broker.state :as state]
+            [pi-matrix-relay.broker.store :as store]
             [pi-matrix-relay.broker.system :as system]
             [pi-matrix-relay.broker.test-util :as tu])
   (:import [java.net URI]
@@ -23,7 +24,8 @@
           runtime-dir (str "/tmp/pi-matrix-relay-system-test-" (random-uuid))
           running (system/start! {:paths {:runtime-dir runtime-dir
                                           :state-dir (str runtime-dir "/state")
-                                          :socket-path (str runtime-dir "/broker.sock")}
+                                          :socket-path (str runtime-dir "/broker.sock")
+                                          :broker-db-store-id (random-uuid)}
                                   :http {:transport :tcp :port 0}
                                   :matrix-gateway gateway})]
       (try
@@ -50,14 +52,16 @@
           socket-path (str runtime-dir "/broker.sock")
           running (system/start! {:paths {:runtime-dir runtime-dir
                                           :state-dir (str runtime-dir "/state")
-                                          :socket-path socket-path}
+                                          :socket-path socket-path
+                                          :broker-db-store-id (random-uuid)}
                                   :http {:transport :tcp :port 0}
                                   :matrix-gateway (tu/fake-gateway)})]
       (try
         (let [ex (try
                    (system/start! {:paths {:runtime-dir runtime-dir
                                            :state-dir (str runtime-dir "/state")
-                                           :socket-path socket-path}
+                                           :socket-path socket-path
+                                           :broker-db-store-id (random-uuid)}
                                    :http {:transport :tcp :port 0}
                                    :matrix-gateway (tu/fake-gateway)})
                    nil
@@ -75,7 +79,8 @@
           socket-path (str runtime-dir "/broker.sock")
           running (system/start! {:paths {:runtime-dir runtime-dir
                                           :state-dir (str runtime-dir "/state")
-                                          :socket-path socket-path}
+                                          :socket-path socket-path
+                                          :broker-db-store-id (random-uuid)}
                                   :matrix-gateway (tu/fake-gateway)})]
       (try
         (is (= {:transport :uds
@@ -89,40 +94,42 @@
 
 (deftest stale-lease-sweep-sends-one-minimal-operational-notice
   (testing "the broker releases stale leases without pretending the Pi session ended cleanly"
-    (let [gateway (tu/fake-gateway)
-          state* (atom (state/empty-state))]
-      (state/register-client!
-       state*
-       {:client-id-fn (constantly "client-stale")
-        :now 1000
-        :heartbeat-seconds 30
-        :global-operators []}
-       {:clientInstanceId "instance-stale"
-        :protocolVersion 1
-        :project {:id "project"}})
-      (state/acquire-slot!
-       state*
-       {:now 1000}
-       {:client-id "client-stale"
-        :project {:id "project"}
-        :room-id "!slot-stale:example.org"
-        :room-name "project-A"})
-      (let [stale (system/sweep-stale-leases! {:state* state*
-                                               :matrix-gateway gateway
-                                               :config {:leases {:heartbeat-seconds 30
-                                                                 :stale-after-missed 3}}
-                                               :now 100000})
-            send-request (second (first (filter #(= :send-message (first %))
-                                                (tu/calls gateway))))]
-        (is (= {:stale-slots ["A"]
-                :slot-state "released"
-                :send-target {:roomId "!slot-stale:example.org"}
-                :send-count 1}
-               {:stale-slots (mapv :slot stale)
-                :slot-state (get-in (state/list-slots @state* "project") [:slots 0 :state])
-                :send-target (:target send-request)
-                :send-count (count (filter #(= :send-message (first %))
-                                           (tu/calls gateway)))}))
-        (is (re-find #"slot A client disconnected unexpectedly" (:body send-request)))
-        (is (re-find #"Last heartbeat: 1970-01-01T00:00:01Z" (:body send-request)))
-        (is (not (re-find #"ended cleanly|tombstone|session ended" (:body send-request))))))))
+    (let [conn (tu/test-db-conn)
+          gateway (tu/fake-gateway)]
+      (try
+        (store/register-client! conn {:now-ms 1000}
+                                {:instanceId "instance-stale"
+                                 :protocolVersion 1
+                                 :project {:id "project"}})
+        (let [reservation (store/reserve-slot! conn {:now-ms 1000}
+                                               {:client-id "instance-stale"
+                                                :project {:id "project"}})]
+          (store/complete-slot-reservation!
+           conn
+           {:now-ms 1000
+            :lease-id (:lease-id reservation)
+            :reservation-id (:reservation-id reservation)
+            :client-id "instance-stale"
+            :room-id "!slot-stale:example.org"
+            :room-name "project-A"}))
+        (let [stale (system/sweep-stale-leases! {:db-conn conn
+                                                 :matrix-gateway gateway
+                                                 :config {:leases {:heartbeat-seconds 30
+                                                                   :stale-after-missed 3}}
+                                                 :now 100000})
+              send-request (second (first (filter #(= :send-message (first %))
+                                                  (tu/calls gateway))))]
+          (is (= {:stale-slots ["A"]
+                  :slot-state :released
+                  :send-target {:roomId "!slot-stale:example.org"}
+                  :send-count 1}
+                 {:stale-slots (mapv :slot stale)
+                  :slot-state (get-in (store/list-slots @conn "project") [:slots 0 :state])
+                  :send-target (:target send-request)
+                  :send-count (count (filter #(= :send-message (first %))
+                                             (tu/calls gateway)))}))
+          (is (re-find #"slot A client disconnected unexpectedly" (:body send-request)))
+          (is (re-find #"Last heartbeat: 1970-01-01T00:00:01Z" (:body send-request)))
+          (is (not (re-find #"ended cleanly|tombstone|session ended" (:body send-request)))))
+        (finally
+          (db/release-conn! conn))))))

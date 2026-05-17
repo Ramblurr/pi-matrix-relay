@@ -1,10 +1,22 @@
 (ns pi-matrix-relay.broker.test-util
-  (:require [pi-matrix-relay.broker.events :as events]
+  (:require [clojure.string :as str]
+            [pi-matrix-relay.broker.db :as db]
             [pi-matrix-relay.broker.json :as json]
             [pi-matrix-relay.broker.matrix :as matrix]
-            [pi-matrix-relay.broker.state :as state]))
+            [pi-matrix-relay.broker.runtime :as runtime])
+  (:import [java.nio.file Files]
+           [java.nio.file.attribute FileAttribute]))
 
-(defrecord FakeGateway [calls* rooms]
+(defn temp-dir
+  [prefix]
+  (str (Files/createTempDirectory prefix (make-array FileAttribute 0))))
+
+(defn test-db-conn
+  []
+  (db/start-conn! {:paths {:state-dir (temp-dir "pi-matrix-relay-test-state")
+                           :broker-db-store-id (random-uuid)}}))
+
+(defrecord FakeGateway [calls* rooms on-create-room]
   matrix/MatrixGateway
   (start! [this] this)
   (stop! [_] (swap! calls* conj [:stop]) nil)
@@ -15,10 +27,12 @@
     (or rooms []))
   (resolve-room! [_ room]
     (swap! calls* conj [:resolve-room room])
-    {:roomId room :canonicalAlias (when (.startsWith (str room) "#") room) :name room})
+    {:roomId room :canonicalAlias (when (.startsWith (str room) "#") room) :name room :membership "join"})
   (create-room! [_ request]
     (swap! calls* conj [:create-room request])
-    {:roomId (str "!" (:name request) ":example.org") :name (:name request)})
+    (when on-create-room
+      (on-create-room request))
+    {:roomId (str "!" (:name request) ":example.org") :name (:name request) :membership "join"})
   (ensure-users-power-level! [_ request]
     (swap! calls* conj [:ensure-users-power-level request])
     {:roomId (:roomId request)
@@ -64,18 +78,19 @@
 (defn fake-gateway
   ([]
    (fake-gateway {}))
-  ([{:keys [rooms]}]
-   (->FakeGateway (atom []) rooms)))
+  ([{:keys [rooms on-create-room]}]
+   (->FakeGateway (atom []) rooms on-create-room)))
 
 (defn calls
   [gateway]
   @(:calls* gateway))
 
 (defn test-env
-  ([] (test-env (fake-gateway)))
-  ([gateway]
-   {:state* (atom (state/empty-state))
-    :subscribers* (events/subscriber-store)
+  ([] (test-env (fake-gateway) (test-db-conn)))
+  ([gateway] (test-env gateway (test-db-conn)))
+  ([gateway conn]
+   {:db-conn conn
+    :runtime (runtime/create-runtime)
     :matrix-gateway gateway
     :config {:leases {:heartbeat-seconds 30}
              :matrix {:operators ["@operator:example.org"]}}}))
@@ -84,12 +99,15 @@
   ([app method uri]
    (request app method uri nil))
   ([app method uri body]
-   (let [body-stream (when body
+   (let [[path query-string] (let [parts (str/split uri #"\?" 2)]
+                               [(first parts) (second parts)])
+         body-stream (when body
                        (java.io.ByteArrayInputStream.
                         (.getBytes (json/write-json body) "UTF-8")))]
      (app (cond-> {:request-method method
-                   :uri uri
+                   :uri path
                    :headers {}}
+            query-string (assoc :query-string query-string)
             body-stream (assoc :body body-stream))))))
 
 (defn response-json

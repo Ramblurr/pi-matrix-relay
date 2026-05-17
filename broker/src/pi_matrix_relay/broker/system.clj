@@ -7,7 +7,8 @@
             [pi-matrix-relay.broker.http :as http]
             [pi-matrix-relay.broker.matrix :as matrix]
             [pi-matrix-relay.broker.paths :as paths]
-            [pi-matrix-relay.broker.state :as state])
+            [pi-matrix-relay.broker.runtime :as runtime]
+            [pi-matrix-relay.broker.store :as store])
   (:import [java.io File RandomAccessFile]
            [java.nio.channels OverlappingFileLockException]
            [java.time Instant]))
@@ -69,14 +70,14 @@
   [lease]
   (str "pi-matrix-relay slot " (:slot lease)
        " client disconnected unexpectedly. Last heartbeat: "
-       (str (Instant/ofEpochMilli (:last-heartbeat-at lease)))
+       (Instant/ofEpochMilli (:last-heartbeat-at lease))
        ". Slot lease released."))
 
 (defn sweep-stale-leases!
-  [{:keys [state* config matrix-gateway now]}]
+  [{:keys [db-conn config matrix-gateway now]}]
   (let [heartbeat-seconds (get-in config [:leases :heartbeat-seconds] 30)
         stale-after-missed (get-in config [:leases :stale-after-missed] 3)
-        stale (state/mark-stale-leases! state*
+        stale (store/mark-stale-leases! db-conn
                                         (or now (System/currentTimeMillis))
                                         heartbeat-seconds
                                         stale-after-missed)]
@@ -165,18 +166,17 @@
                     :config {:paths (ds/ref [:broker :paths])
                              :overrides config
                              :http http}}
-      :state #::ds{:start (fn [_] (atom (state/empty-state)))}
+      :runtime #::ds{:start (fn [_] (runtime/create-runtime))}
       :db-conn #::ds{:start (fn [{::ds/keys [config]}]
                               (db/start-conn! config))
                      :stop (fn [{::ds/keys [instance]}]
                              (db/release-conn! instance))
                      :config {:paths (ds/ref [:broker :paths])
                               :process-lock (ds/ref [:broker :process-lock])}}
-      :subscribers #::ds{:start (fn [_] (events/subscriber-store))}
       :matrix-gateway #::ds{:start (fn [{::ds/keys [config]}]
                                      (let [event-sink {:publish! #(events/publish!
-                                                                   {:state* (:state* config)
-                                                                    :subscribers* (:subscribers* config)}
+                                                                   {:db-conn (:db-conn config)
+                                                                    :runtime (:runtime config)}
                                                                    %)}
                                            gateway (or (:matrix-gateway config)
                                                        (matrix/gateway (:broker-config config)
@@ -189,17 +189,15 @@
                                      :process-lock (ds/ref [:broker :process-lock])
                                      :broker-config (ds/ref [:broker :config])
                                      :paths (ds/ref [:broker :paths])
-                                     :state* (ds/ref [:broker :state])
-                                     :subscribers* (ds/ref [:broker :subscribers])}}
+                                     :db-conn (ds/ref [:broker :db-conn])
+                                     :runtime (ds/ref [:broker :runtime])}}
       :app #::ds{:start (fn [{::ds/keys [config]}]
-                          (api/app {:state* (:state* config)
-                                    :db-conn (:db-conn config)
-                                    :subscribers* (:subscribers* config)
+                          (api/app {:db-conn (:db-conn config)
+                                    :runtime (:runtime config)
                                     :matrix-gateway (:matrix-gateway config)
                                     :config (:broker-config config)}))
-                 :config {:state* (ds/ref [:broker :state])
-                          :db-conn (ds/ref [:broker :db-conn])
-                          :subscribers* (ds/ref [:broker :subscribers])
+                 :config {:db-conn (ds/ref [:broker :db-conn])
+                          :runtime (ds/ref [:broker :runtime])
                           :matrix-gateway (ds/ref [:broker :matrix-gateway])
                           :broker-config (ds/ref [:broker :config])}}
       :http-server #::ds{:start (fn [{::ds/keys [instance config]}]
@@ -216,7 +214,7 @@
                                     (start-sweeper! config))
                            :stop (fn [{::ds/keys [instance]}]
                                    (stop-sweeper! instance))
-                           :config {:state* (ds/ref [:broker :state])
+                           :config {:db-conn (ds/ref [:broker :db-conn])
                                     :matrix-gateway (ds/ref [:broker :matrix-gateway])
                                     :config (ds/ref [:broker :config])}}}}}))
 

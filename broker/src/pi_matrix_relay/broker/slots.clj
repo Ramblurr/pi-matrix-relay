@@ -26,7 +26,7 @@
 
 (defn active-lease?
   [lease]
-  (contains? #{:leased :suspect} (:state lease)))
+  (contains? #{:reserved :leased :suspect} (:state lease)))
 
 (defn lease-sort-key
   [lease]

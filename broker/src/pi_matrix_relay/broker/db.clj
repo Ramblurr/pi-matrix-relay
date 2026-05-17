@@ -13,6 +13,7 @@
    {:db/ident :project/key
     :db/valueType :db.type/string
     :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/value
     :db/index true}
    {:db/ident :project/root
     :db/valueType :db.type/string
@@ -20,6 +21,37 @@
    {:db/ident :project/display-name
     :db/valueType :db.type/string
     :db/cardinality :db.cardinality/one}
+
+   {:db/ident :client/instance-id
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :client/protocol-version
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :client/project
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/index true}
+   {:db/ident :client/metadata-json
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :client/registered-at
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :client/last-heartbeat-at
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one
+    :db/index true}
+   {:db/ident :client/state
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one
+    :db/index true}
+   {:db/ident :client/subscribed-room-id
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/many
+    :db/index true}
+
    {:db/ident :slot-room/project
     :db/valueType :db.type/ref
     :db/cardinality :db.cardinality/one
@@ -40,6 +72,104 @@
     :db/cardinality :db.cardinality/one}
    {:db/ident :slot-room/updated-at
     :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
+
+   {:db/ident :lease/id
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :lease/project
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/index true}
+   {:db/ident :lease/client
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/index true}
+   {:db/ident :lease/slot
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/index true}
+   {:db/ident :lease/state
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one
+    :db/index true}
+   {:db/ident :lease/reservation-id
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one
+    :db/index true}
+   {:db/ident :lease/room
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/index true}
+   {:db/ident :lease/reserved-at
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :lease/acquired-at
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :lease/last-heartbeat-at
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one
+    :db/index true}
+   {:db/ident :lease/suspect-at
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :lease/released-at
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :lease/release-reason
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one}
+
+   {:db/ident :joined-room/room-id
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :joined-room/name
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :joined-room/canonical-alias
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :joined-room/membership
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :joined-room/updated-at
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
+
+   {:db/ident :request/id
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :request/fingerprint
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :request/operation
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :request/status
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one
+    :db/index true}
+   {:db/ident :request/owner-id
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :request/result-json
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :request/error-code
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :request/created-at
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :request/completed-at
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :request/expires-at
+    :db/valueType :db.type/instant
     :db/cardinality :db.cardinality/one}])
 
 (defn db-path
@@ -51,10 +181,10 @@
   [path-config]
   {:store {:backend :sqlite
            :dbname (db-path path-config)
-           :id store-id
+           :id (or (:broker-db-store-id path-config) store-id)
            :sqlite-opts {:pool-size 4}}
    :schema-flexibility :read
-   :keep-history? true})
+   :keep-history? false})
 
 (defn ensure-database!
   [config]
