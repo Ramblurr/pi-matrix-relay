@@ -33,14 +33,28 @@ Run from the repo root:
 
 For subproject tasks, see `broker/AGENTS.md` and `extension/AGENTS.md`.
 
-## Clojure and broker resources
+## Resources
 
 - trixnity-clj src: ~/src/github.com/outskirtslabs/trixnity-clj
 - trixnity example usage: ~/src/github.com/ramblurr/thingstead/components/matrix/deps.edn
 - ol.dirs src: ~/src/github.com/outskirtslabs/dirs
 - reitit src: ~/src/github.com/metosin/reitit
-
-## Clojurescript and shadow-cljs resources
-
 - shadow-cljs src ~/src/github.com/thheller/shadow-cljs
 - shadow-cljs docs ~/src/github.com/shadow-cljs/shadow-cljs.github.io/docs
+
+See local-git-reference skill if you need to reference more codebases, do not munge in jars or caches.
+
+
+## Dev workflow
+
+Pre-reqs:
+
+- read tmux skill
+- read clojure-eval still
+
+Start/Stop
+
+- use tmux session name 'pi-matrix-relay', the first tab is the broker repl, started with `cd broker && bb dev` INSIDE the tmux session. ONLY start and stop the broker repl inside there.
+- if this session doesnt exist, then create it with `tmuxb new pi-matrix-relay`
+  use tmuxb list to see if it exists
+- broker repl entrypoint is the `dev` ns: broker/dev/dev.clj
