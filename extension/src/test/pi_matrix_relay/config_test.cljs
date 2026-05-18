@@ -48,3 +48,17 @@
       (is (= project-config (config/read-project-config! cwd)))
       (finally
         (.rmSync config/fs cwd #js {:recursive true :force true})))))
+
+
+(deftest progress-verbosity-defaults-normal-and-accepts-quiet-normal-verbose
+  (testing "project config defaults to normal progress visibility"
+    (is (= "normal" (config/progress-verbosity {}))))
+  (testing "configured verbosity is normalized"
+    (is (= "quiet" (config/progress-verbosity {:progress {:verbosity "QUIET"}})))
+    (is (= "normal" (config/progress-verbosity {:progress {:verbosity "normal"}})))
+    (is (= "verbose" (config/progress-verbosity {:progress {:verbosity "verbose"}}))))
+  (testing "invalid verbosity is rejected for command validation"
+    (is (config/valid-progress-verbosity? "quiet"))
+    (is (config/valid-progress-verbosity? "normal"))
+    (is (config/valid-progress-verbosity? "verbose"))
+    (is (not (config/valid-progress-verbosity? "chatty")))))

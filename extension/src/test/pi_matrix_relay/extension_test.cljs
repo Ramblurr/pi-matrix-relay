@@ -4,6 +4,64 @@
             [pi-matrix-relay.config :as config]
             [pi-matrix-relay.extension :as extension]))
 
+(defn- pi-with-events
+  [events*]
+  #js {:registerCommand (fn [_name _opts])
+       :registerTool (fn [_tool])
+       :getActiveTools (fn []
+                         #js [])
+       :setActiveTools (fn [_tools])
+       :on (fn [event handler]
+             (swap! events* assoc event handler))})
+
+(defn- progress-test-deps
+  [project-config calls*]
+  (let [interval-counter* (atom 0)]
+    {:read-project-config! (fn [_cwd]
+                            project-config)
+     :health! (fn []
+                (js/Promise.resolve {:matrix/connected? true
+                                     :user/id "@bot:example.org"}))
+     :register-client! (fn [_request]
+                         (js/Promise.resolve {:client/id "client-1"
+                                              :heartbeat/seconds 30
+                                              :matrix/global-operators []}))
+     :acquire-slot! (fn [_client-id _project _invite]
+                      (js/Promise.resolve {:slot "A"
+                                           :room/id "!slot:example.org"
+                                           :room/name "project-A"}))
+     :update-subscriptions! (fn [_client-id rooms]
+                              (js/Promise.resolve {:rooms rooms}))
+     :get-room-delivery-mode! (fn [_client-id _room-id]
+                                (js/Promise.resolve {:room/default-delivery-mode nil}))
+     :get-room-prompt-mode! (fn [_client-id _room-id]
+                              (js/Promise.resolve {:room/prompt-mode nil}))
+     :send-message! (fn [room-id message opts]
+                      (swap! calls* conj [:message room-id message opts])
+                      (js/Promise.resolve {:event/id "$event:example.org"}))
+     :set-typing! (fn [room-id typing? opts]
+                    (swap! calls* conj [:typing room-id typing? opts])
+                    (js/Promise.resolve {}))
+     :heartbeat! (fn [_client-id]
+                   (js/Promise.resolve {:heartbeat/seconds 30}))
+     :set-interval! (fn [_f ms]
+                      (let [id (keyword (str "interval-" (swap! interval-counter* inc)))]
+                        (swap! calls* conj [:interval ms id])
+                        id))
+     :clear-interval! (fn [id]
+                        (swap! calls* conj [:clear-interval id]))
+     :open-event-stream! (fn [_opts _client-id _on-event]
+                           #js {:close (fn [])})}))
+
+(defn- call-handler!
+  [handler event ctx]
+  (js/Promise.resolve (handler event ctx)))
+
+(defn- message-call?
+  [[kind]]
+  (= :message kind))
+
+
 (deftest greeting-includes-target
   (testing "the extension test runner can load project namespaces"
     (is (= "Hello, Matrix, from ClojureScript!"
@@ -62,6 +120,115 @@
     ((get @events* "session_start") #js {} #js {})
     (is (every? (set @active-tools*) extension/relay-tool-names))
     (is (contains? (set @active-tools*) "read"))))
+
+
+(deftest slot-progress-events-send-typing-and-tool-labels-to-slot-room-only
+  (async done
+    (let [events* (atom {})
+          calls* (atom [])
+          project-config {:project {:project/id "project"}
+                          :rooms {"ops" {:alias "ops"
+                                           :room/id "!project:example.org"
+                                           :mode "all"}}}
+          pi (pi-with-events events*)
+          ctx #js {:cwd "/work/project"
+                   :ui #js {:setStatus (fn [_key _status])
+                            :notify (fn [_message _level])}}
+          deps (progress-test-deps project-config calls*)]
+      (extension/init pi deps)
+      (let [session-start (get @events* "session_start")
+            agent-start (get @events* "agent_start")
+            tool-start (get @events* "tool_execution_start")
+            agent-end (get @events* "agent_end")]
+        (is (fn? agent-start))
+        (is (fn? tool-start))
+        (if-not (and session-start agent-start tool-start agent-end)
+          (done)
+          (-> (call-handler! session-start #js {:reason "startup"} ctx)
+              (.then (fn [_]
+                       (reset! calls* [])
+                       (call-handler! agent-start #js {} ctx)))
+              (.then (fn [_]
+                       (is (some (fn [[kind room-id typing? opts]]
+                                   (and (= :typing kind)
+                                        (= "!slot:example.org" room-id)
+                                        (true? typing?)
+                                        (= {:client/id "client-1"
+                                            :timeout/ms 30000}
+                                           opts)))
+                                 @calls*))
+                       (is (some (fn [[kind room-id message _opts]]
+                                   (and (= :message kind)
+                                        (= "!slot:example.org" room-id)
+                                        (str/includes? message "Pi is working")))
+                                 @calls*))
+                       (is (some #(= :interval (first %)) @calls*))
+                       (reset! calls* [])
+                       (call-handler! tool-start #js {:toolName "bash"
+                                                      :args #js {:command "echo hi"}}
+                                      ctx)))
+              (.then (fn [_]
+                       (let [messages (filter message-call? @calls*)]
+                         (is (some (fn [[_kind room-id message _opts]]
+                                     (and (= "!slot:example.org" room-id)
+                                          (str/includes? message "bash")))
+                                   messages))
+                         (is (every? (fn [[_kind room-id _message _opts]]
+                                       (= "!slot:example.org" room-id))
+                                     messages)))
+                       (reset! calls* [])
+                       (call-handler! agent-end #js {:messages #js []} ctx)))
+              (.then (fn [_]
+                       (is (some #(= :clear-interval (first %)) @calls*))
+                       (is (some (fn [[kind room-id typing? opts]]
+                                   (and (= :typing kind)
+                                        (= "!slot:example.org" room-id)
+                                        (false? typing?)
+                                        (= {:client/id "client-1"
+                                            :timeout/ms 30000}
+                                           opts)))
+                                 @calls*))
+                       (done)))
+              (.catch (fn [err]
+                        (is false (.-stack err))
+                        (done)))))))))
+
+(deftest quiet-progress-verbosity-disables-automatic-progress-and-typing-start
+  (async done
+    (let [events* (atom {})
+          calls* (atom [])
+          project-config {:project {:project/id "project"}
+                          :progress {:verbosity "quiet"}}
+          pi (pi-with-events events*)
+          ctx #js {:cwd "/work/project"
+                   :ui #js {:setStatus (fn [_key _status])
+                            :notify (fn [_message _level])}}
+          deps (progress-test-deps project-config calls*)]
+      (extension/init pi deps)
+      (let [session-start (get @events* "session_start")
+            agent-start (get @events* "agent_start")
+            tool-start (get @events* "tool_execution_start")]
+        (is (fn? agent-start))
+        (is (fn? tool-start))
+        (if-not (and session-start agent-start tool-start)
+          (done)
+          (-> (call-handler! session-start #js {:reason "startup"} ctx)
+              (.then (fn [_]
+                       (reset! calls* [])
+                       (call-handler! agent-start #js {} ctx)))
+              (.then (fn [_]
+                       (call-handler! tool-start #js {:toolName "read"
+                                                      :args #js {:path "README.md"}}
+                                      ctx)))
+              (.then (fn [_]
+                       (is (not-any? message-call? @calls*))
+                       (is (not-any? (fn [[kind _room-id typing? _opts]]
+                                       (and (= :typing kind) (true? typing?)))
+                                     @calls*))
+                       (done)))
+              (.catch (fn [err]
+                        (is false (.-stack err))
+                        (done)))))))))
 
 (deftest room-bind-resolves-room-and-writes-project-config
   (async done

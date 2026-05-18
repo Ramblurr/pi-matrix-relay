@@ -34,6 +34,35 @@
                       (is false (.-stack err))
                       (done))))))))
 
+
+(deftest set-typing-posts-client-room-timeout
+  (async done
+    (let [calls* (atom [])
+          opts {:env #js {"XDG_RUNTIME_DIR" "/run/user/1000"}}]
+      (with-redefs [http/request-edn! (fn
+                                         ([method uri body]
+                                          (swap! calls* conj [{} method uri body])
+                                          (js/Promise.resolve {}))
+                                         ([opts method uri body]
+                                          (swap! calls* conj [opts method uri body])
+                                          (js/Promise.resolve {})))]
+        (-> (broker-client/set-typing! opts
+                                       "!room:example.org"
+                                       true
+                                       {:client/id "client-1"
+                                        :timeout/ms 45000})
+            (.then (fn [_]
+                     (is (= [[opts "POST" "/v1/matrix/typing"
+                              {:room/id "!room:example.org"
+                               :typing true
+                               :client/id "client-1"
+                               :timeout/ms 45000}]]
+                            @calls*))
+                     (done)))
+            (.catch (fn [err]
+                      (is false (.-stack err))
+                      (done))))))))
+
 (deftest slot-lifecycle-helpers-use-versioned-endpoints
   (async done
     (let [calls* (atom [])

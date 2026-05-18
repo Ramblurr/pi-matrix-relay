@@ -27,6 +27,7 @@
    :open-event-stream! broker-client/open-event-stream!
    :resolve-room! broker-client/resolve-room!
    :send-message! broker-client/send-message!
+   :set-typing! broker-client/set-typing!
    :send-reaction! broker-client/send-reaction!
    :set-interval! js/setInterval
    :clear-interval! js/clearInterval
@@ -517,6 +518,9 @@
     (str "↑" (format-count input) " ↓" (format-count output) " " (format-currency cost))))
 
 
+(declare relay-progress-verbosity)
+
+
 (defn- remote-status-values
   [relay-state binding room-id ctx]
   (let [{:keys [delivery-mode source]} (effective-room-delivery-mode relay-state room-id)
@@ -529,6 +533,7 @@
      :room-prompt-mode-source room-prompt-mode-source
      :delivery-mode delivery-mode
      :delivery-source source
+     :progress-verbosity (relay-progress-verbosity relay-state)
      :heartbeat (if (:heartbeat-id relay-state) "active" "inactive")
      :stream (if (:stream relay-state) "active" "inactive")
      :model (ctx-model-value ctx)
@@ -536,13 +541,14 @@
      :usage (ctx-usage-value ctx)}))
 
 (defn- remote-status-body
-  [{:keys [project slot slot-room room room-prompt-mode room-prompt-mode-source delivery-mode delivery-source heartbeat stream model context usage]}]
+  [{:keys [project slot slot-room room room-prompt-mode room-prompt-mode-source delivery-mode delivery-source progress-verbosity heartbeat stream model context usage]}]
   (str "pi-matrix-relay status\n"
        "project: " project "\n"
        "slot: " slot " " slot-room "\n"
        "room: " room "\n"
        "prompt mode: " room-prompt-mode " (" room-prompt-mode-source ")\n"
        "default delivery mode: " delivery-mode " (" delivery-source ")\n"
+       "progress verbosity: " progress-verbosity "\n"
        "heartbeat: " heartbeat "\n"
        "stream: " stream "\n"
        "model: " model "\n"
@@ -554,7 +560,7 @@
   (str "<tr><th>" (html-escape label) "</th><td>" value "</td></tr>"))
 
 (defn- remote-status-html
-  [{:keys [project slot slot-room room room-prompt-mode room-prompt-mode-source delivery-mode delivery-source heartbeat stream model context usage]}]
+  [{:keys [project slot slot-room room room-prompt-mode room-prompt-mode-source delivery-mode delivery-source progress-verbosity heartbeat stream model context usage]}]
   (str "<h3>pi-matrix-relay status</h3>"
        "<table><tbody>"
        (status-row "Project" (str "<code>" (html-escape project) "</code>"))
@@ -562,6 +568,7 @@
        (status-row "Room" (str "<code>" (html-escape room) "</code>"))
        (status-row "Prompt mode" (str "<code>" (html-escape room-prompt-mode) "</code> <em>" (html-escape room-prompt-mode-source) "</em>"))
        (status-row "Default delivery mode" (str "<code>" (html-escape delivery-mode) "</code> <em>" (html-escape delivery-source) "</em>"))
+       (status-row "Progress verbosity" (str "<code>" (html-escape progress-verbosity) "</code>"))
        (status-row "Heartbeat" (html-escape heartbeat))
        (status-row "Stream" (html-escape stream))
        (status-row "Model" (str "<code>" (html-escape model) "</code>"))
@@ -574,6 +581,142 @@
   (let [values (remote-status-values relay-state binding room-id ctx)]
     {:body (remote-status-body values)
      :formatted-body (remote-status-html values)}))
+
+(def typing-timeout-ms 30000)
+(def typing-refresh-ms 20000)
+(def tool-args-summary-limit 160)
+
+(defn- relay-progress-verbosity
+  [relay-state]
+  (config/progress-verbosity (:project-config relay-state)))
+
+(defn- progress-enabled?
+  [relay-state]
+  (not= "quiet" (relay-progress-verbosity relay-state)))
+
+(defn- progress-verbose?
+  [relay-state]
+  (= "verbose" (relay-progress-verbosity relay-state)))
+
+(defn- slot-room-id
+  [relay-state]
+  (:room-id relay-state))
+
+(defn- truncate-text
+  [text limit]
+  (let [text (str text)]
+    (if (> (count text) limit)
+      (str (subs text 0 limit) "…")
+      text)))
+
+(defn- compact-pr-str
+  [value]
+  (try
+    (-> (pr-str value)
+        (str/replace #"\s+" " ")
+        str/trim)
+    (catch js/Error _
+      "")))
+
+(defn- tool-name-from-event
+  [event]
+  (or (:toolName event)
+      (:tool-name event)
+      "tool"))
+
+(defn- tool-args-summary
+  [event]
+  (when-let [args (or (:args event) (:input event))]
+    (let [summary (truncate-text (compact-pr-str args) tool-args-summary-limit)]
+      (when-not (str/blank? summary)
+        (str " " summary)))))
+
+(defn- send-slot-progress!
+  [{:keys [send-message! diagnostics*]} relay-state message]
+  (if (and send-message!
+           (progress-enabled? relay-state)
+           (:client-id relay-state)
+           (slot-room-id relay-state))
+    (-> (promise (send-message! (slot-room-id relay-state)
+                                message
+                                {:client/id (:client-id relay-state)}))
+        (.catch (fn [err]
+                  (record-diagnostic! diagnostics* :progress/send-error (or (.-message err) (str err)))
+                  nil)))
+    (js/Promise.resolve nil)))
+
+(defn- set-slot-typing!
+  [{:keys [set-typing! diagnostics*]} relay-state typing?]
+  (if (and set-typing!
+           (:client-id relay-state)
+           (slot-room-id relay-state)
+           (or typing? (progress-enabled? relay-state)))
+    (-> (promise (set-typing! (slot-room-id relay-state)
+                              typing?
+                              {:client/id (:client-id relay-state)
+                               :timeout/ms typing-timeout-ms}))
+        (.catch (fn [err]
+                  (record-diagnostic! diagnostics* :progress/typing-error (or (.-message err) (str err)))
+                  nil)))
+    (js/Promise.resolve nil)))
+
+(defn- clear-slot-typing-interval!
+  [{:keys [clear-interval!]} relay-state* relay-state]
+  (when-let [interval-id (:typing-interval-id relay-state)]
+    (when clear-interval!
+      (clear-interval! interval-id))
+    (when relay-state*
+      (swap! relay-state* dissoc :typing-interval-id))))
+
+(defn- start-slot-typing!
+  [{:keys [set-interval!] :as deps} relay-state* relay-state]
+  (if (progress-enabled? relay-state)
+    (do
+      (clear-slot-typing-interval! deps relay-state* relay-state)
+      (let [start-promise (set-slot-typing! deps relay-state true)
+            interval-id (when (and set-interval! relay-state*)
+                          (set-interval!
+                           (fn []
+                             (when-let [state @relay-state*]
+                               (when (progress-enabled? state)
+                                 (set-slot-typing! deps state true))))
+                           typing-refresh-ms))]
+        (when interval-id
+          (swap! relay-state* assoc :typing-interval-id interval-id))
+        start-promise))
+    (js/Promise.resolve nil)))
+
+(defn- stop-slot-typing!
+  [deps relay-state* relay-state]
+  (clear-slot-typing-interval! deps relay-state* relay-state)
+  (set-slot-typing! deps relay-state false))
+
+(defn- handle-agent-start-progress!
+  [deps relay-state* relay-state]
+  (if (and relay-state (progress-enabled? relay-state))
+    (js/Promise.all
+     (clj->js [(start-slot-typing! deps relay-state* relay-state)
+               (send-slot-progress! deps relay-state "Pi is working…")]))
+    (js/Promise.resolve nil)))
+
+(defn- handle-tool-start-progress!
+  [deps relay-state event]
+  (when relay-state
+    (let [tool-name (tool-name-from-event event)
+          message (if (progress-verbose? relay-state)
+                    (str "🔧 Tool started: " tool-name (or (tool-args-summary event) ""))
+                    (str "🔧 " tool-name))]
+      (send-slot-progress! deps relay-state message))))
+
+(defn- handle-tool-end-progress!
+  [deps relay-state event]
+  (if (and relay-state (progress-verbose? relay-state))
+    (let [tool-name (tool-name-from-event event)
+          error? (:isError event)
+          icon (if error? "✗" "✓")
+          status (if error? "failed" "finished")]
+      (send-slot-progress! deps relay-state (str icon " Tool " status ": " tool-name)))
+    (js/Promise.resolve nil)))
 
 (defn- cache-room-delivery-mode!
   [relay-state room-id delivery-mode]
@@ -1642,11 +1785,13 @@
        "  reconnect                         Reconnect this Pi extension instance to the broker.\n"
        "  room bind <room> [alias] [mode]    Bind a Matrix room alias/id to a local target.\n"
        "  room mode <target> <mode>          Set a bound prompt mode: all, mentions, commands-only.\n"
+       "  progress <quiet|normal|verbose>  Configure slot-room typing/progress/tool labels.\n"
        "  send <alias-or-room-id> <message>  Send a message to a bound room or raw room id.\n\n"
        "Examples:\n"
        "  /mr status\n"
        "  /mr room bind #ops:example.org ops mentions\n"
        "  /mr room mode ops commands-only\n"
+       "  /mr progress normal\n"
        "  /mr send ops hello from Pi"))
 
 (defn- handle-help!
@@ -1849,6 +1994,22 @@
             (notify-error! ctx (str "No Matrix room binding for target " target))
             (promise nil)))))))
 
+
+(defn- handle-progress-verbosity!
+  [{:keys [read-project-config! write-project-config!] :as deps} {:keys [verbosity]} ctx]
+  (let [cwd (ctx-cwd ctx)
+        verbosity (config/normalize-progress-verbosity verbosity)]
+    (if-not (config/valid-progress-verbosity? verbosity)
+      (do
+        (notify-error! ctx "Invalid progress verbosity. Allowed: quiet, normal, verbose.")
+        (promise nil))
+      (let [project-config (read-project-config! cwd)
+            new-config (assoc-in project-config [:progress :verbosity] verbosity)]
+        (write-project-config! cwd new-config)
+        (-> (hot-apply-project-config! deps new-config)
+            (.then (fn [_]
+                     (notify! ctx (str "Matrix slot progress verbosity is now " verbosity ".")))))))))
+
 (defn- handle-send!
   [{:keys [read-project-config! send-message!]} {:keys [target message]} ctx]
   (let [cwd (ctx-cwd ctx)
@@ -1873,6 +2034,7 @@
        :control (handle-control! deps (:action command) ctx)
        :room-bind (handle-room-bind! deps command ctx)
        :room-prompt-mode (handle-room-prompt-mode! deps command ctx)
+       :progress-verbosity (handle-progress-verbosity! deps command ctx)
        :send (handle-send! deps command ctx)
        :internal-new-session (handle-internal-new-session-command! deps (:request-id command) ctx)
        :error (do
@@ -2126,12 +2288,31 @@
                  (.catch (fn [err]
                            (record-diagnostic! diagnostics* :start-error (error-summary err))
                            (notify! ctx (str "Matrix relay receive disabled: " (.-message err)) "warning"))))))
+       (on "agent_start"
+           (fn [_event _ctx]
+             (when-let [relay-state @relay-state*]
+               (handle-agent-start-progress! deps relay-state* relay-state))))
+       (on "tool_execution_start"
+           (fn [event _ctx]
+             (when-let [relay-state @relay-state*]
+               (handle-tool-start-progress! deps relay-state (js->clj event :keywordize-keys true)))))
+       (on "tool_execution_end"
+           (fn [event _ctx]
+             (when-let [relay-state @relay-state*]
+               (handle-tool-end-progress! deps relay-state (js->clj event :keywordize-keys true)))))
        (on "agent_end"
            (fn [event _ctx]
              (when-let [relay-state @relay-state*]
-               (handle-agent-end! deps relay-state (js->clj event :keywordize-keys true)))))
+               (js/Promise.all
+                (clj->js [(stop-slot-typing! deps relay-state* relay-state)
+                          (handle-agent-end! deps relay-state (js->clj event :keywordize-keys true))])))))
        (on "session_shutdown"
            (fn [_event ctx]
-             (-> (stop-relay! deps ctx @relay-state*)
-                 (.finally (fn []
-                             (reset! relay-state* nil))))))))))
+             (let [relay-state @relay-state*]
+               (-> (when relay-state
+                     (stop-slot-typing! deps relay-state* relay-state))
+                   (promise)
+                   (.then (fn [_]
+                            (stop-relay! deps ctx relay-state)))
+                   (.finally (fn []
+                               (reset! relay-state* nil)))))))))))

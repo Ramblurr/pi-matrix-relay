@@ -35,10 +35,22 @@
             :target "project"
             :message "hello Matrix from pi"}
            (commands/parse "send project hello Matrix from pi"))))
+  (testing "progress visibility parses quiet, normal, and verbose verbosity"
+    (is (= {:op :progress-verbosity
+            :verbosity "quiet"}
+           (commands/parse "progress quiet")))
+    (is (= {:op :progress-verbosity
+            :verbosity "normal"}
+           (commands/parse "progress normal")))
+    (is (= {:op :progress-verbosity
+            :verbosity "verbose"}
+           (commands/parse "progress verbose"))))
   (testing "internal new-session bridge command"
     (is (= {:op :internal-new-session
             :request-id "req-123"}
            (commands/parse "__new-session req-123"))))
   (testing "invalid command returns an error data shape"
     (is (= :error (:op (commands/parse "room"))))
-    (is (= :error (:op (commands/parse "send only-target"))))))
+    (is (= :error (:op (commands/parse "send only-target"))))
+    (is (= :error (:op (commands/parse "progress"))))
+    (is (= :error (:op (commands/parse "progress chatty"))))))

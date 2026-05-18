@@ -138,6 +138,23 @@
                        (assoc :formatted-body (or (:formatted-body send-opts)
                                                   (:formattedBody send-opts)))))))
 
+(defn set-typing!
+  ([room-id typing?]
+   (set-typing! {} room-id typing? nil))
+  ([opts-or-room-id room-id-or-typing? typing?-or-opts]
+   (if (map? opts-or-room-id)
+     (set-typing! opts-or-room-id room-id-or-typing? typing?-or-opts nil)
+     (set-typing! {} opts-or-room-id room-id-or-typing? typing?-or-opts)))
+  ([opts room-id typing? typing-opts]
+   (http/request-edn! opts "POST" "/v1/matrix/typing"
+                     (cond-> {:room/id room-id
+                              :typing (boolean typing?)}
+                       (:client/id typing-opts)
+                       (assoc :client/id (:client/id typing-opts))
+
+                       (:timeout/ms typing-opts)
+                       (assoc :timeout/ms (:timeout/ms typing-opts))))))
+
 (defn send-reaction!
   ([room-id event-id key]
    (send-reaction! {} room-id event-id key nil))

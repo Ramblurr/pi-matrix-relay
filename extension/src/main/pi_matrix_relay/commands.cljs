@@ -71,8 +71,13 @@
             {:op :room-prompt-mode
              :target target
              :mode (config/normalize-prompt-mode mode)}
-            (if-let [[_ target message] (re-matches #"send\s+(\S+)\s+([\s\S]+)" args)]
-              {:op :send
-               :target target
-               :message message}
-              (error (str "Unknown matrix-relay command: " args)))))))))
+            (if-let [[_ verbosity] (re-matches #"progress\s+(\S+)" args)]
+              (if (config/valid-progress-verbosity? verbosity)
+                {:op :progress-verbosity
+                 :verbosity (config/normalize-progress-verbosity verbosity)}
+                (error "Usage: progress <quiet|normal|verbose>"))
+              (if-let [[_ target message] (re-matches #"send\s+(\S+)\s+([\s\S]+)" args)]
+                {:op :send
+                 :target target
+                 :message message}
+                (error (str "Unknown matrix-relay command: " args))))))))))

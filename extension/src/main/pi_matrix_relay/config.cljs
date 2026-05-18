@@ -45,6 +45,8 @@
 (def default-room-prompt-mode "mentions")
 (def default-delivery-mode "follow-up")
 (def allowed-room-prompt-modes #{"all" "mentions" "commands-only"})
+(def default-progress-verbosity "normal")
+(def allowed-progress-verbosity #{"quiet" "normal" "verbose"})
 
 (defn normalize-prompt-mode
   [mode]
@@ -58,6 +60,29 @@
 (defn valid-room-prompt-mode?
   [mode]
   (contains? allowed-room-prompt-modes (normalize-prompt-mode mode)))
+
+(defn normalize-progress-verbosity
+  [verbosity]
+  (let [verbosity (some-> verbosity str str/trim str/lower-case)]
+    (case verbosity
+      nil nil
+      "" nil
+      "silent" "quiet"
+      "off" "quiet"
+      "default" default-progress-verbosity
+      verbosity)))
+
+(defn valid-progress-verbosity?
+  [verbosity]
+  (contains? allowed-progress-verbosity (normalize-progress-verbosity verbosity)))
+
+(defn progress-verbosity
+  [project-config]
+  (let [verbosity (or (normalize-progress-verbosity (get-in project-config [:progress :verbosity]))
+                      (normalize-progress-verbosity (:progress-verbosity project-config)))]
+    (if (contains? allowed-progress-verbosity verbosity)
+      verbosity
+      default-progress-verbosity)))
 
 (defn- nonblank
   [value]

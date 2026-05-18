@@ -31,6 +31,29 @@ Run from the repo root:
 - `bb test` — test broker and extension.
 - `bb qa` — run `lint`, then `test`.
 
+### Local extension install for live Pi/Matrix testing
+
+Use exactly one project-local extension bundle during development:
+
+```text
+.pi/extensions/pi-matrix-relay.js
+```
+
+Install or replace it only with:
+
+```bash
+cd extension && bb install-local-extension
+```
+
+That task must overwrite the stable file above. Do not create timestamped, hashed, or otherwise unique extension bundle names such as `pi-matrix-relay-<hash>.js`; Pi loads every discovered extension file, so duplicate bundles start duplicate relay clients and can lease multiple Matrix slots.
+
+Before live testing after extension work:
+
+1. Run `cd extension && bb install-local-extension`.
+2. Ensure `.pi/extensions/` contains only `pi-matrix-relay.js` for this relay; remove stale `pi-matrix-relay-*.js` copies.
+3. Reload Pi (`/reload` or `reload_runtime`).
+4. Run `matrix_relay_diagnostics` and verify this Pi process has exactly one active relay client/slot before testing Matrix behavior.
+
 For subproject tasks, see `broker/AGENTS.md` and `extension/AGENTS.md`.
 
 ## Resources
