@@ -117,21 +117,77 @@
                     []))))
    nil))
 
-(defn- start-banner
-  [cwd project slot]
-  (str "pi-matrix-relay session started\n"
-       "project: " (:project/id project) "\n"
-       "slot: " (:slot slot) "\n"
-       "room: " (:room/name slot) "\n"
-       "path: " cwd "\n"
-       "time: " (now-iso)))
+(defn- pad2
+  [n]
+  (if (< n 10)
+    (str "0" n)
+    (str n)))
 
-(defn- end-banner
+(defn- format-local-minute
+  [timestamp]
+  (if-not timestamp
+    "unknown"
+    (let [date (js/Date. timestamp)]
+      (if (js/isNaN (.getTime date))
+        "unknown"
+        (str (.getFullYear date) "-"
+             (pad2 (inc (.getMonth date))) "-"
+             (pad2 (.getDate date)) " "
+             (pad2 (.getHours date)) ":"
+             (pad2 (.getMinutes date)))))))
+
+(defn- home-path
+  []
+  (let [env (some-> js/globalThis
+                    (aget "process")
+                    (aget "env"))]
+    (or (some-> env (aget "HOME"))
+        (some-> env (aget "USERPROFILE")))))
+
+(defn- shorten-home-path
+  [path]
+  (let [path (str path)
+        home (home-path)]
+    (cond
+      (str/blank? path) "unknown"
+      (and (seq home) (= path home)) "~"
+      (and (seq home) (str/starts-with? path (str home "/")))
+      (str "~/" (subs path (inc (count home))))
+
+      :else path)))
+
+(defn- session-status
   [relay-state]
-  (str "pi-matrix-relay session ended\n"
-       "project: " (get-in relay-state [:project :project/id]) "\n"
-       "slot: " (:slot relay-state) "\n"
-       "time: " (now-iso)))
+  (or (:session/status relay-state)
+      (cond
+        (:session/ended-at relay-state) "ended"
+        (:session/started-at relay-state) "started"
+        :else nil)))
+
+(defn- session-timestamp
+  [relay-state status]
+  (case status
+    "ended" (or (:session/ended-at relay-state) (:session/started-at relay-state))
+    "started" (:session/started-at relay-state)
+    nil))
+
+(defn- session-path
+  [relay-state]
+  (or (:session/path relay-state)
+      (get-in relay-state [:project :project/root])))
+
+(defn- session-summary-parts
+  [relay-state]
+  (when-let [status (session-status relay-state)]
+    {:status status
+     :time (format-local-minute (session-timestamp relay-state status))
+     :path (shorten-home-path (session-path relay-state))}))
+
+(defn- session-summary-text
+  [relay-state]
+  (if-let [{:keys [status time path]} (session-summary-parts relay-state)]
+    (str status " " time " " path)
+    "not recorded"))
 
 (defn- status-text
   [project-config slot]
@@ -473,6 +529,12 @@
                \" "&quot;"
                \' "&#39;"}))
 
+(defn- session-summary-html
+  [relay-state]
+  (if-let [{:keys [status time path]} (session-summary-parts relay-state)]
+    (str (html-escape status) " " (html-escape time) " <code>" (html-escape path) "</code>")
+    "not recorded"))
+
 (defn- ctx-model-value
   [^js ctx]
   (if-let [model (js->clj-safe (.-model ctx))]
@@ -526,28 +588,30 @@
      :slot (or (:slot relay-state) "?")
      :slot-room (or (:room-name relay-state) "unknown")
      :room (or room-id "unknown")
+     :session (session-summary-text relay-state)
+     :session-html (session-summary-html relay-state)
      :room-prompt-mode room-prompt-mode
      :room-prompt-mode-source room-prompt-mode-source
      :delivery-mode delivery-mode
      :delivery-source source
      :progress-verbosity (relay-progress-verbosity relay-state)
-     :heartbeat (if (:heartbeat-id relay-state) "active" "inactive")
-     :stream (if (:stream relay-state) "active" "inactive")
+     :heartbeat (if (:heartbeat-id relay-state) "🟢" "🔴")
+     :stream (if (:stream relay-state) "🟢" "🔴")
      :model (ctx-model-value ctx)
      :context (ctx-context-value ctx)
      :usage (ctx-usage-value ctx)}))
 
 (defn- remote-status-body
-  [{:keys [project slot slot-room room room-prompt-mode room-prompt-mode-source delivery-mode delivery-source progress-verbosity heartbeat stream model context usage]}]
+  [{:keys [project slot slot-room room session room-prompt-mode room-prompt-mode-source delivery-mode delivery-source progress-verbosity heartbeat stream model context usage]}]
   (str "pi-matrix-relay status\n"
        "project: " project "\n"
        "slot: " slot " " slot-room "\n"
        "room: " room "\n"
+       "session: " session "\n"
        "prompt mode: " room-prompt-mode " (" room-prompt-mode-source ")\n"
        "default delivery mode: " delivery-mode " (" delivery-source ")\n"
        "progress verbosity: " progress-verbosity "\n"
-       "heartbeat: " heartbeat "\n"
-       "stream: " stream "\n"
+       "connection: heartbeat " heartbeat ", stream " stream "\n"
        "model: " model "\n"
        "context: " context "\n"
        "usage: " usage))
@@ -557,17 +621,17 @@
   (str "<tr><th>" (html-escape label) "</th><td>" value "</td></tr>"))
 
 (defn- remote-status-html
-  [{:keys [project slot slot-room room room-prompt-mode room-prompt-mode-source delivery-mode delivery-source progress-verbosity heartbeat stream model context usage]}]
+  [{:keys [project slot slot-room room session-html room-prompt-mode room-prompt-mode-source delivery-mode delivery-source progress-verbosity heartbeat stream model context usage]}]
   (str "<h3>pi-matrix-relay status</h3>"
        "<table><tbody>"
        (status-row "Project" (str "<code>" (html-escape project) "</code>"))
        (status-row "Slot" (str "<code>" (html-escape slot) "</code> " (html-escape slot-room)))
        (status-row "Room" (str "<code>" (html-escape room) "</code>"))
+       (status-row "Session" session-html)
        (status-row "Prompt mode" (str "<code>" (html-escape room-prompt-mode) "</code> <em>" (html-escape room-prompt-mode-source) "</em>"))
        (status-row "Default delivery mode" (str "<code>" (html-escape delivery-mode) "</code> <em>" (html-escape delivery-source) "</em>"))
        (status-row "Progress verbosity" (str "<code>" (html-escape progress-verbosity) "</code>"))
-       (status-row "Heartbeat" (html-escape heartbeat))
-       (status-row "Stream" (html-escape stream))
+       (status-row "Connection" (str "heartbeat " (html-escape heartbeat) ", stream " (html-escape stream)))
        (status-row "Model" (str "<code>" (html-escape model) "</code>"))
        (status-row "Context" (html-escape context))
        (status-row "Usage" (html-escape usage))
@@ -1361,7 +1425,7 @@
 
 (defn start-relay!
   [{:keys [read-project-config! health! register-client! acquire-slot!
-           update-subscriptions! send-message! diagnostics* relay-state*] :as deps}
+           update-subscriptions! diagnostics* relay-state*] :as deps}
    pi ctx]
   (let [cwd (ctx-cwd ctx)
         project-config (read-project-config! cwd)
@@ -1393,7 +1457,7 @@
                                                                               :room/name (:room/name slot)})
                              (let [slot-room-id (:room/id slot)
                                    subscriptions (relay-subscriptions project-config {:room-id slot-room-id})
-                                   banner (start-banner cwd project slot)]
+                                   started-at (now-iso)]
                                (-> (promise (update-subscriptions! client-id subscriptions))
                                    (.then
                                     (fn [_]
@@ -1405,33 +1469,31 @@
                                    (.then
                                     (fn [room-settings]
                                       (let [room-delivery-modes* (aget room-settings 0)
-                                            room-prompt-modes* (aget room-settings 1)]
-                                        (-> (promise (send-message! slot-room-id banner {:client/id client-id}))
-                                            (.then
-                                             (fn [_]
-                                               (record-diagnostic! diagnostics* :start-banner-sent {:room/id slot-room-id})
-                                               (let [heartbeat-id (start-heartbeat! deps ctx client-id (:heartbeat/seconds registration))
-                                                     relay-state {:client-id client-id
-                                                                  :project-config project-config
-                                                                  :project project
-                                                                  :global-operators (set global-operators)
-                                                                  :bot-user-id (:user/id health)
-                                                                  :slot (:slot slot)
-                                                                  :room-id slot-room-id
-                                                                  :room-name (:room/name slot)
-                                                                  :room-delivery-modes* room-delivery-modes*
-                                                                  :room-prompt-modes* room-prompt-modes*
-                                                                  :pending-auto-replies* (atom [])
-                                                                  :last-start-banner banner
-                                                                  :heartbeat-id heartbeat-id}
-                                                     relay-state* (or relay-state* (atom relay-state))
-                                                     _ (reset! relay-state* relay-state)
-                                                     stream (open-relay-event-stream! deps pi ctx relay-state* client-id)
-                                                     relay-state (assoc relay-state :stream stream)]
-                                                 (reset! relay-state* relay-state)
-                                                 (record-diagnostic! diagnostics* :event-stream-opened {:client/id client-id})
-                                                 (set-status! ctx (status-text project-config slot))
-                                                 relay-state))))))))))))))))))))))
+                                            room-prompt-modes* (aget room-settings 1)
+                                            heartbeat-id (start-heartbeat! deps ctx client-id (:heartbeat/seconds registration))
+                                            relay-state {:client-id client-id
+                                                         :project-config project-config
+                                                         :project project
+                                                         :global-operators (set global-operators)
+                                                         :bot-user-id (:user/id health)
+                                                         :slot (:slot slot)
+                                                         :room-id slot-room-id
+                                                         :room-name (:room/name slot)
+                                                         :room-delivery-modes* room-delivery-modes*
+                                                         :room-prompt-modes* room-prompt-modes*
+                                                         :pending-auto-replies* (atom [])
+                                                         :session/status "started"
+                                                         :session/path cwd
+                                                         :session/started-at started-at
+                                                         :heartbeat-id heartbeat-id}
+                                            relay-state* (or relay-state* (atom relay-state))
+                                            _ (reset! relay-state* relay-state)
+                                            stream (open-relay-event-stream! deps pi ctx relay-state* client-id)
+                                            relay-state (assoc relay-state :stream stream)]
+                                        (reset! relay-state* relay-state)
+                                        (record-diagnostic! diagnostics* :event-stream-opened {:client/id client-id})
+                                        (set-status! ctx (status-text project-config slot))
+                                        relay-state))))))))))))))))))
 
 (defn- ignore-errors
   [thunk]
@@ -1444,7 +1506,7 @@
 (defn stop-relay!
   ([relay-state]
    (stop-relay! {} nil relay-state))
-  ([{:keys [clear-interval! send-message! release-slot! unregister-client!]} ctx relay-state]
+  ([{:keys [clear-interval! release-slot! unregister-client!]} ctx relay-state]
    (when-let [stream (:stream relay-state)]
      (when-let [close (.-close stream)]
        (close)))
@@ -1452,14 +1514,8 @@
      (when clear-interval!
        (clear-interval! heartbeat-id)))
    (-> (ignore-errors
-        #(when (and send-message! (:room-id relay-state) (:client-id relay-state))
-           (send-message! (:room-id relay-state)
-                          (end-banner relay-state)
-                          {:client/id (:client-id relay-state)})))
-       (.then (fn [_]
-                (ignore-errors
-                 #(when (and release-slot! (:client-id relay-state) (:room-id relay-state) (:slot relay-state))
-                    (release-slot! (:client-id relay-state) (:room-id relay-state) (:slot relay-state))))))
+        #(when (and release-slot! (:client-id relay-state) (:room-id relay-state) (:slot relay-state))
+           (release-slot! (:client-id relay-state) (:room-id relay-state) (:slot relay-state))))
        (.then (fn [_]
                 (ignore-errors
                  #(when (and unregister-client! (:client-id relay-state))
@@ -2172,9 +2228,9 @@
                       :label "Send Matrix Message"
                       :description "Send a Matrix message. `message` content is interpreted by `format`; default is Markdown."
                       :promptSnippet "Send a Matrix message."
-                      :promptGuidelines #js ["Use send_matrix_message only when explicitly asked to message Matrix, or when replying to a message from Matrix"
-                                             "send_matrix_message formatting: omit format for Markdown; use text/plain for literal text, text/html for pre-rendered Matrix-safe HTML."
-                                             "For send_matrix_message replies, set replyToEventId."]
+                      :promptGuidelines #js ["Use only when explicitly asked to message Matrix."
+                                             "Omit format for Markdown; use text/plain for literal text, text/html for pre-rendered Matrix-safe HTML."
+                                             "For Matrix replies, set replyToEventId."]
                       :parameters send-matrix-message-parameters
                       :execute (fn [_tool-call-id params _signal _on-update ctx]
                                  (-> (execute-send-matrix-message! deps (js->clj params :keywordize-keys true) ctx)

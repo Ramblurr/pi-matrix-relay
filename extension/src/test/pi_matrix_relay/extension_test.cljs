@@ -1019,7 +1019,6 @@
                                        :subscriptions {:rooms ["!room:example.org"]}}]
                            [:acquire-slot "client-1" {:project/id "project" :project/display-name "project"} ["@alice:example.org"]]
                            [:update-subscriptions "client-1" ["!room:example.org" "!slot:example.org"]]
-                           [:send-message "!slot:example.org" (:last-start-banner relay-state) {:client/id "client-1"}]
                            [:open-event-stream "client-1" true]]
                           @calls*))
                    (is (= [{:ms 30000 :has-fn? true}]
@@ -1027,8 +1026,13 @@
                    (is (= {:slot "A"
                            :room-id "!slot:example.org"
                            :room-name "project-A"
-                           :heartbeat-id :interval-1}
-                          (select-keys relay-state [:slot :room-id :room-name :heartbeat-id])))
+                           :heartbeat-id :interval-1
+                           :session/status "started"
+                           :session/path "/work/project"}
+                          (select-keys relay-state [:slot :room-id :room-name :heartbeat-id
+                                                    :session/status :session/path])))
+                   (is (string? (:session/started-at relay-state)))
+                   (is (nil? (:last-start-banner relay-state)))
                    (is (= [["pi-matrix-relay" "matrix: slot A project-A; rooms: ops"]]
                           @statuses*))
                    (done)))
@@ -1098,7 +1102,6 @@
                              [:register]
                              [:acquire-slot]
                              [:update-subscriptions]
-                             [:send-message]
                              [:open-event-stream "client-1" 1]]
                             @calls*))
                      (first-close-handler {:stream/closed? true
@@ -1107,7 +1110,6 @@
                              [:register]
                              [:acquire-slot]
                              [:update-subscriptions]
-                             [:send-message]
                              [:open-event-stream "client-1" 1]
                              [:set-timeout 0]
                              [:open-event-stream "client-1" 2]]
@@ -1372,7 +1374,6 @@
                            [:register]
                            [:acquire-slot]
                            [:update-subscriptions]
-                           [:send-message]
                            [:open-event-stream "client-1" 1]
                            [:set-timeout 0]]
                           @calls*))
@@ -1432,7 +1433,6 @@
                            [:update-subscriptions ["!room:example.org" "!slot:example.org"]]
                            [:get-room-delivery-mode "client-1" "!room:example.org"]
                            [:get-room-delivery-mode "client-1" "!slot:example.org"]
-                           [:send-message "!slot:example.org"]
                            [:open-event-stream "client-1"]]
                           @calls*))
                    (is (= {"!slot:example.org" {:delivery-mode "steer" :source "broker"}}
@@ -1487,7 +1487,7 @@
                              :event/timestamp "2026-05-16T12:34:56Z"
                              :event/text "/status"})
                    (is (str/includes? (:message (last @sent*)) "default delivery mode: follow-up (system-default)"))
-                   (is (str/includes? (:message (last @sent*)) "stream: active"))
+                   (is (str/includes? (:message (last @sent*)) "connection: heartbeat 🟢, stream 🟢"))
                    (done)))
           (.catch (fn [err]
                     (is false (.-stack err))
@@ -1597,7 +1597,6 @@
                                        :subscriptions {:rooms []}}]
                            [:acquire-slot "client-1" {:project/id "project" :project/display-name "project"} ["@alice:example.org"]]
                            [:update-subscriptions "client-1" ["!slot:example.org"]]
-                           [:send-message "!slot:example.org" true {:client/id "client-1"}]
                            [:open-event-stream "client-1" true]]
                           @calls*))
                    (is (= [["pi-matrix-relay" "matrix: slot A project-A"]]
@@ -1607,7 +1606,7 @@
                     (is false (.-stack err))
                     (done)))))))
 
-(deftest stop-relay-sends-tombstone-and-releases-slot
+(deftest stop-relay-releases-slot-without-sending-session-ended-message
   (async done
     (let [calls* (atom [])
           statuses* (atom [])
@@ -1636,7 +1635,6 @@
           (.then (fn [_]
                    (is (= [[:close-stream]
                            [:clear-interval :interval-1]
-                           [:send-message "!slot:example.org" true {:client/id "client-1"}]
                            [:release-slot "client-1" "!slot:example.org" "A"]
                            [:unregister-client "client-1" "shutdown"]]
                           @calls*))
@@ -1646,7 +1644,7 @@
                     (is false (.-stack err))
                     (done)))))))
 
-(deftest stop-relay-releases-slot-even-when-tombstone-send-fails
+(deftest stop-relay-releases-slot-even-when-cleanup-would-have-sent-no-message
   (async done
     (let [calls* (atom [])
           deps {:clear-interval! (fn [heartbeat-id]
@@ -1672,7 +1670,6 @@
           (.then (fn [_]
                    (is (= [[:close-stream]
                            [:clear-interval :interval-1]
-                           [:send-message]
                            [:release-slot "client-1" "!slot:example.org" "A"]
                            [:unregister-client "client-1" "shutdown"]]
                           @calls*))
@@ -1799,7 +1796,9 @@
                                                   (this-as this
                                                     (.-branch ^js this))))
                           sm)
-        ctx #js {:cwd "/work/project"
+        home-path (or (.. js/process -env -HOME) "/home/pi")
+        project-path (str home-path "/src/project")
+        ctx #js {:cwd project-path
                  :model #js {:provider "openai-codex"
                              :id "gpt-5.5"
                              :contextWindow 272000}
@@ -1818,7 +1817,10 @@
                      :room-id "!slot:example.org"
                      :room-name "project-A"
                      :heartbeat-id :heartbeat-1
-                     :stream #js {}}
+                     :stream #js {}
+                     :session/status "started"
+                     :session/path project-path
+                     :session/started-at "2026-05-16T12:34:56.000Z"}
         deps {:send-message! (fn [room-id message opts]
                               (swap! acks* conj {:room-id room-id
                                                  :message message
@@ -1845,18 +1847,71 @@
       (is (str/includes? (:message ack) "model: openai-codex/gpt-5.5"))
       (is (str/includes? (:message ack) "context: 123456 tokens (45%/272k)"))
       (is (str/includes? (:message ack) "usage: ↑360.0k ↓14.0k $4.591"))
+      (is (re-find #"session: started \d{4}-\d{2}-\d{2} \d{2}:\d{2} ~/src/project" (:message ack)))
+      (is (not (str/includes? (:message ack) "2026-05-16T12:34:56.000Z")))
       (is (str/includes? formatted-body "<h3>pi-matrix-relay status</h3>"))
       (is (str/includes? formatted-body "<table>"))
       (is (str/includes? formatted-body "<th>Project</th><td><code>project</code></td>"))
       (is (str/includes? formatted-body "<th>Slot</th><td><code>A</code> project-A</td>"))
       (is (str/includes? formatted-body "<th>Room</th><td><code>!slot:example.org</code></td>"))
+      (is (str/includes? formatted-body "<th>Session</th><td>started "))
+      (is (str/includes? formatted-body "<code>~/src/project</code>"))
+      (is (not (str/includes? formatted-body "2026-05-16T12:34:56.000Z")))
       (is (str/includes? formatted-body "<th>Prompt mode</th><td><code>all</code> <em>slot-default</em></td>"))
       (is (str/includes? formatted-body "<th>Default delivery mode</th><td><code>follow-up</code> <em>system-default</em></td>"))
-      (is (str/includes? formatted-body "<th>Heartbeat</th><td>active</td>"))
-      (is (str/includes? formatted-body "<th>Stream</th><td>active</td>"))
+      (is (str/includes? (:message ack) "connection: heartbeat 🟢, stream 🟢"))
+      (is (not (str/includes? (:message ack) "heartbeat active")))
+      (is (not (str/includes? (:message ack) "stream active")))
+      (is (not (str/includes? (:message ack) "heartbeat: active")))
+      (is (not (str/includes? (:message ack) "stream: active")))
+      (is (str/includes? formatted-body "<th>Connection</th><td>heartbeat 🟢, stream 🟢</td>"))
+      (is (not (str/includes? formatted-body "<th>Heartbeat</th>")))
+      (is (not (str/includes? formatted-body "<th>Stream</th>")))
       (is (str/includes? formatted-body "<th>Model</th><td><code>openai-codex/gpt-5.5</code></td>"))
       (is (str/includes? formatted-body "<th>Context</th><td>123456 tokens (45%/272k)</td>"))
       (is (str/includes? formatted-body "<th>Usage</th><td>↑360.0k ↓14.0k $4.591</td>")))))
+
+(deftest matrix-status-command-reports-ended-session-in-one-compact-row
+  (let [acks* (atom [])
+        home-path (or (.. js/process -env -HOME) "/home/pi")
+        project-path (str home-path "/src/project")
+        pi #js {:sendUserMessage (fn [_message _options])}
+        ctx #js {:cwd project-path
+                 :isIdle (fn [] true)}
+        relay-state {:client-id "client-1"
+                     :project-config {}
+                     :project {:project/id "project"}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"
+                     :slot "A"
+                     :room-id "!slot:example.org"
+                     :room-name "project-A"
+                     :session/status "ended"
+                     :session/path project-path
+                     :session/started-at "2026-05-16T12:34:56.000Z"
+                     :session/ended-at "2026-05-16T13:45:00.000Z"}
+        deps {:send-message! (fn [room-id message opts]
+                              (swap! acks* conj {:room-id room-id
+                                                 :message message
+                                                 :opts opts})
+                              (js/Promise.resolve {:event/id "$ack:example.org"}))}
+        event {:type "matrix.message"
+               :room/id "!slot:example.org"
+               :event/id "$status:example.org"
+               :event/sender "@alice:example.org"
+               :event/timestamp "2026-05-16T13:45:01Z"
+               :event/text "/status"}]
+    (extension/handle-broker-event! deps pi ctx relay-state event)
+    (let [ack (first @acks*)
+          session-line (some #(when (str/starts-with? % "session:") %)
+                             (str/split-lines (:message ack)))
+          formatted-body (str (get-in ack [:opts :formatted-body]))]
+      (is (re-find #"session: ended \d{4}-\d{2}-\d{2} \d{2}:\d{2} ~/src/project" session-line))
+      (is (not (str/includes? session-line "slot")))
+      (is (str/includes? (:message ack) "connection: heartbeat 🔴, stream 🔴"))
+      (is (str/includes? formatted-body "<th>Session</th><td>ended "))
+      (is (str/includes? formatted-body "<code>~/src/project</code>"))
+      (is (str/includes? formatted-body "<th>Connection</th><td>heartbeat 🔴, stream 🔴</td>")))))
 
 (deftest matrix-help-command-lists-commands-and-prefixes
   (let [sent* (atom [])
@@ -2028,7 +2083,8 @@
     (is (str/includes? (:message (first @acks*)) "pi-matrix-relay status"))
     (is (str/includes? (:message (first @acks*)) "model: anthropic/claude-sonnet"))
     (is (str/includes? (:message (first @acks*)) "context: ?"))
-    (is (str/includes? (:message (first @acks*)) "usage: ↑10 ↓5 $0.010"))))
+    (is (str/includes? (:message (first @acks*)) "usage: ↑10 ↓5 $0.010"))
+    (is (str/includes? (:message (first @acks*)) "session: not recorded"))))
 
 (deftest matrix-status-command-reports-broker-prompt-and-delivery-mode-sources
   (let [acks* (atom [])
