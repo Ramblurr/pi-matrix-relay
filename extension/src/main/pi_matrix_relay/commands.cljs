@@ -23,6 +23,10 @@
       (= "status" args)
       {:op :status}
 
+      (#{"connect" "disconnect" "reconnect"} args)
+      {:op :control
+       :action args}
+
       :else
       (if-let [[_ request-id] (re-matches #"__new-session\s+(\S+)" args)]
         {:op :internal-new-session

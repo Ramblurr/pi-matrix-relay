@@ -1263,8 +1263,8 @@
 
 (defn- handle-help!
   [ctx]
-  (notify! ctx (str "Matrix relay commands: setup, status, room bind <room> [alias], "
-                    "send <alias-or-room-id> <message>"))
+  (notify! ctx (str "Matrix relay commands: setup, status, connect, disconnect, reconnect, "
+                    "room bind <room> [alias], send <alias-or-room-id> <message>"))
   (promise nil))
 
 (defn- handle-setup!
@@ -1292,6 +1292,24 @@
                           (str "Matrix connected as " (:user/id health))
                           "Matrix broker is not connected")
                         (if (:matrix/connected? health) "info" "warning"))))))
+
+(defn- tui-control-action
+  [action]
+  (case action
+    "connect" "start"
+    "disconnect" "stop"
+    "reconnect" "restart"
+    action))
+
+(defn- handle-control!
+  [deps action ctx]
+  (-> (execute-matrix-relay-control! deps
+                                     {:action (tui-control-action action)}
+                                     (or (:pi deps) #js {})
+                                     ctx)
+      (.then (fn [result]
+               (notify! ctx (or (get-in result [:content 0 :text])
+                                "Matrix relay control completed."))))))
 
 (defn- handle-room-bind!
   [{:keys [resolve-room! read-project-config! write-project-config!]} {:keys [room alias]} ctx]
@@ -1325,6 +1343,7 @@
        :help (handle-help! ctx)
        :setup (handle-setup! deps ctx)
        :status (handle-status! deps ctx)
+       :control (handle-control! deps (:action command) ctx)
        :room-bind (handle-room-bind! deps command ctx)
        :send (handle-send! deps command ctx)
        :internal-new-session (handle-internal-new-session-command! deps (:request-id command) ctx)

@@ -3,10 +3,13 @@
             [pi-matrix-relay.commands :as commands]))
 
 (deftest parse-command-subcommands
-  (testing "setup/status/help"
+  (testing "setup/status/help and connection controls"
     (is (= {:op :help} (commands/parse "")))
     (is (= {:op :setup} (commands/parse "setup")))
-    (is (= {:op :status} (commands/parse "status"))))
+    (is (= {:op :status} (commands/parse "status")))
+    (is (= {:op :control :action "connect"} (commands/parse "connect")))
+    (is (= {:op :control :action "disconnect"} (commands/parse "disconnect")))
+    (is (= {:op :control :action "reconnect"} (commands/parse "reconnect"))))
   (testing "room bind keeps room and optional alias separate"
     (is (= {:op :room-bind
             :room "#pi:example.org"

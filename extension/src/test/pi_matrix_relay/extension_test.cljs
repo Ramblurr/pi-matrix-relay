@@ -464,6 +464,95 @@
                     (is false (.-stack err))
                     (done)))))))
 
+(deftest tui-connect-reconnect-disconnect-commands-control-only-this-extension-client
+  (async done
+    (let [calls* (atom [])
+          notifications* (atom [])
+          start-count* (atom 0)
+          relay-state* (atom nil)
+          next-client-id (fn []
+                           (let [n (swap! start-count* inc)]
+                             (str "client-" n)))
+          slot-for-client (fn [client-id]
+                            (if (= "client-1" client-id)
+                              {:slot "A"
+                               :room/id "!slot-a:example.org"
+                               :room/name "project-A"}
+                              {:slot "B"
+                               :room/id "!slot-b:example.org"
+                               :room/name "project-B"}))
+          deps {:relay-state* relay-state*
+                :diagnostics* (atom {})
+                :read-project-config! (fn [_cwd] {})
+                :health! (fn []
+                           (swap! calls* conj [:health])
+                           (js/Promise.resolve {:matrix/connected? true
+                                                :user/id "@bot:example.org"}))
+                :register-client! (fn [request]
+                                    (let [client-id (next-client-id)]
+                                      (swap! calls* conj [:register (:client/instance-id request) client-id])
+                                      (js/Promise.resolve {:client/id client-id
+                                                           :heartbeat/seconds 30
+                                                           :matrix/global-operators []})))
+                :acquire-slot! (fn [client-id project invite]
+                                 (swap! calls* conj [:acquire-slot client-id project invite])
+                                 (js/Promise.resolve (slot-for-client client-id)))
+                :update-subscriptions! (fn [client-id rooms]
+                                         (swap! calls* conj [:update-subscriptions client-id rooms])
+                                         (js/Promise.resolve {:rooms rooms}))
+                :send-message! (fn [room-id message opts]
+                                (swap! calls* conj [:send-message room-id (boolean (seq message)) opts])
+                                (js/Promise.resolve {:event/id "$event:example.org"}))
+                :release-slot! (fn [client-id room-id slot]
+                                 (swap! calls* conj [:release-slot client-id room-id slot])
+                                 (js/Promise.resolve {:released true}))
+                :unregister-client! (fn [client-id reason]
+                                      (swap! calls* conj [:unregister-client client-id reason])
+                                      (js/Promise.resolve {}))
+                :heartbeat! (fn [client-id]
+                              (swap! calls* conj [:heartbeat client-id])
+                              (js/Promise.resolve {:heartbeat/seconds 30}))
+                :set-interval! (fn [_f _ms]
+                                 (keyword (str "interval-" @start-count*)))
+                :clear-interval! (fn [id]
+                                   (swap! calls* conj [:clear-interval id]))
+                :open-event-stream! (fn [_opts client-id _on-event]
+                                      (swap! calls* conj [:open-event-stream client-id])
+                                      #js {:close (fn []
+                                                    (swap! calls* conj [:close-stream client-id]))})
+                :list-slots! (fn [project-id]
+                               (js/Promise.resolve {:project/id project-id :slots []}))
+                :pi #js {}}
+          ctx #js {:cwd "/work/project"
+                   :ui #js {:notify (fn [message level]
+                                      (swap! notifications* conj [message level]))
+                            :setStatus (fn [_id _status])}}]
+      (-> (extension/handle-command! deps "connect" ctx)
+          (.then (fn [_]
+                   (is (= "client-1" (:client-id @relay-state*)))
+                   (is (str/includes? (ffirst @notifications*)
+                                      "extension: running slot A project-A"))
+                   (extension/handle-command! deps "reconnect" ctx)))
+          (.then (fn [_]
+                   (is (some #{[:close-stream "client-1"]} @calls*))
+                   (is (some #{[:release-slot "client-1" "!slot-a:example.org" "A"]} @calls*))
+                   (is (some #{[:unregister-client "client-1" "shutdown"]} @calls*))
+                   (is (= "client-2" (:client-id @relay-state*)))
+                   (is (str/includes? (first (last @notifications*))
+                                      "extension: running slot B project-B"))
+                   (extension/handle-command! deps "disconnect" ctx)))
+          (.then (fn [_]
+                   (is (some #{[:close-stream "client-2"]} @calls*))
+                   (is (some #{[:release-slot "client-2" "!slot-b:example.org" "B"]} @calls*))
+                   (is (some #{[:unregister-client "client-2" "shutdown"]} @calls*))
+                   (is (nil? @relay-state*))
+                   (is (str/includes? (first (last @notifications*))
+                                      "extension: not running"))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
 (deftest send-command-resolves-bound-target-and-posts-message
   (async done
     (let [sent* (atom nil)
