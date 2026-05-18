@@ -1,5 +1,5 @@
 (ns pi-matrix-relay.systemd-test
-  (:require [cljs.test :refer [deftest is testing]]
+  (:require [cljs.test :refer [deftest is]]
             [pi-matrix-relay.systemd :as systemd]))
 
 (def fs (js/require "fs"))

@@ -1,5 +1,5 @@
 (ns pi-matrix-relay.broker-client-test
-  (:require [cljs.test :refer [async deftest is testing]]
+  (:require [cljs.test :refer [async deftest is]]
             [pi-matrix-relay.broker-client :as broker-client]))
 
 (deftest socket-path-prefers-xdg-runtime-dir

@@ -23,15 +23,22 @@ shadow-cljs.
 - Always acknowledge Matrix/user messages before long development or research stretches so the operator knows the relay is alive and work has started.
 - Do not ship best-effort placeholders, fake implementations, or degraded fallbacks as if they are complete. If a feature cannot be implemented properly with the available Pi/broker APIs, stop and raise the limitation for discussion before proceeding.
 
+## Local dev
+
+Run from the repo root:
+
+- `bb lint` — lint broker and extension.
+- `bb test` — test broker and extension.
+- `bb qa` — run `lint`, then `test`.
+
+For subproject tasks, see `broker/AGENTS.md` and `extension/AGENTS.md`.
+
 ## Clojure and broker resources
 
 - trixnity-clj src: ~/src/github.com/outskirtslabs/trixnity-clj
 - trixnity example usage: ~/src/github.com/ramblurr/thingstead/components/matrix/deps.edn
 - ol.dirs src: ~/src/github.com/outskirtslabs/dirs
 - reitit src: ~/src/github.com/metosin/reitit
-- Broker commands:
-  - `cd broker && bb dev` starts the JVM nREPL from the broker directory.
-  - `cd broker && bb test` runs JVM Clojure tests.
 
 ## Clojurescript and shadow-cljs resources
 

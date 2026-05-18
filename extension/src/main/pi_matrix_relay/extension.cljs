@@ -55,17 +55,6 @@
     (when-let [set-status (.-setStatus ui)]
       (set-status "pi-matrix-relay" (if (nil? status) js/undefined status)))))
 
-(defn- rooms-map
-  [project-config]
-  (let [rooms (:rooms project-config)]
-    (cond
-      (map? rooms) rooms
-      (sequential? rooms) (into {} (keep (fn [binding]
-                                           (when-let [alias (:alias binding)]
-                                             [alias binding])))
-                                  rooms)
-      :else {})))
-
 (defn- room-bindings
   [project-config]
   (let [rooms (:rooms project-config)]
