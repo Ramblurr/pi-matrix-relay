@@ -67,13 +67,22 @@
   (async done
     (let [notifications* (atom [])
           written* (atom nil)
-          deps {:resolve-room! (fn [room]
+          subscriptions* (atom nil)
+          relay-state* (atom {:client-id "client-1"
+                              :project-config {}
+                              :room-id "!slot:example.org"})
+          deps {:relay-state* relay-state*
+                :resolve-room! (fn [room]
                                  (js/Promise.resolve {:room/id "!room:example.org"
                                                       :room/canonical-alias room
                                                       :room/name "Pi Room"}))
                 :read-project-config! (fn [_cwd] {})
                 :write-project-config! (fn [cwd config]
-                                        (reset! written* {:cwd cwd :config config}))}
+                                        (reset! written* {:cwd cwd :config config}))
+                :update-subscriptions! (fn [client-id rooms]
+                                         (reset! subscriptions* {:client-id client-id
+                                                                :rooms rooms})
+                                         (js/Promise.resolve {:rooms rooms}))}
           ctx #js {:cwd "/work/project"
                    :ui #js {:notify (fn [message level]
                                       (swap! notifications* conj [message level]))}}]
@@ -86,6 +95,15 @@
                                                    :room/name "Pi Room"
                                                    :mode "mentions"}}}}
                           @written*))
+                   (is (= {:client-id "client-1"
+                           :rooms ["!room:example.org" "!slot:example.org"]}
+                          @subscriptions*))
+                   (is (= {:rooms {"ops" {:alias "ops"
+                                           :room/id "!room:example.org"
+                                           :room/canonical-alias "#pi:example.org"
+                                           :room/name "Pi Room"
+                                           :mode "mentions"}}}
+                          (:project-config @relay-state*)))
                    (is (= [["Bound ops to !room:example.org with mode mentions" "info"]]
                           @notifications*))
                    (done)))

@@ -420,6 +420,31 @@
                :where [?slot-room :slot-room/room _]]
              db)))
 
+(defn list-space-link-rooms
+  "Return Matrix room IDs that should be linked into the configured Space.
+
+  Includes persisted slot rooms and rooms subscribed by non-unregistered broker
+  clients. Client subscriptions are how the extension tells the broker about
+  project-bound rooms."
+  [db]
+  (->> (concat
+        (d/q '[:find [?room-id ...]
+               :where
+               [?slot-room :slot-room/room ?room]
+               [?room :room/id ?room-id]]
+             db)
+        (d/q '[:find [?room-id ...]
+               :where
+               [?client :client/subscribed-room ?room]
+               [?client :client/state ?state]
+               [(not= ?state :unregistered)]
+               [?room :room/id ?room-id]]
+             db))
+       distinct
+       sort
+       (mapv (fn [room-id]
+               {:room-id room-id}))))
+
 (defn remember-slot-room!
   [conn {:keys [project slot room-id room-name now-ms] :as command}]
   (let [project-key (or (:project-key command) (project-key project))

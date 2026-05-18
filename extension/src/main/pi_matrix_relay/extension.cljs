@@ -75,6 +75,10 @@
        distinct
        vec))
 
+(defn- relay-subscriptions
+  [project-config relay-state]
+  (vec (distinct (cond-> (project-room-ids project-config)
+                   (:room-id relay-state) (conj (:room-id relay-state))))))
 (defn- effective-project-id
   [cwd project-config]
   (or (get-in project-config [:project :project/id])
@@ -1248,7 +1252,7 @@
                                                                               :room/id (:room/id slot)
                                                                               :room/name (:room/name slot)})
                              (let [slot-room-id (:room/id slot)
-                                   subscriptions (vec (distinct (conj room-ids slot-room-id)))
+                                   subscriptions (relay-subscriptions project-config {:room-id slot-room-id})
                                    banner (start-banner cwd project slot)]
                                (-> (promise (update-subscriptions! client-id subscriptions))
                                    (.then
@@ -1755,8 +1759,22 @@
                (notify! ctx (or (get-in result [:content 0 :text])
                                 "Matrix relay control completed."))))))
 
+(defn- hot-apply-project-config!
+  [{:keys [relay-state* update-subscriptions! diagnostics*]} project-config]
+  (if-let [relay-state (some-> relay-state* deref)]
+    (let [subscriptions (relay-subscriptions project-config relay-state)]
+      (-> (if (and update-subscriptions! (:client-id relay-state))
+            (promise (update-subscriptions! (:client-id relay-state) subscriptions))
+            (promise nil))
+          (.then (fn [_]
+                   (swap! relay-state* assoc :project-config project-config)
+                   (record-diagnostic! diagnostics* :project-config-hot-applied
+                                       {:client/id (:client-id relay-state)
+                                        :rooms subscriptions})
+                   nil))))
+    (promise nil)))
 (defn- handle-room-bind!
-  [{:keys [resolve-room! read-project-config! write-project-config!]} {:keys [room alias mode]} ctx]
+  [{:keys [resolve-room! read-project-config! write-project-config!] :as deps} {:keys [room alias mode]} ctx]
   (let [cwd (ctx-cwd ctx)]
     (if (and mode (not (config/valid-room-prompt-mode? mode)))
       (do
@@ -1768,7 +1786,9 @@
                          new-config (config/bind-room old-config room-result alias cwd mode)
                          binding (config/room-binding room-result alias cwd mode)]
                      (write-project-config! cwd new-config)
-                     (notify! ctx (str "Bound " (:alias binding) " to " (:room/id binding) " with mode " (:mode binding))))))))))
+                     (-> (hot-apply-project-config! deps new-config)
+                         (.then (fn [_]
+                                  (notify! ctx (str "Bound " (:alias binding) " to " (:room/id binding) " with mode " (:mode binding)))))))))))))
 
 (defn- update-room-binding-mode
   [project-config target mode]
@@ -1821,6 +1841,8 @@
                 new-config (update-room-binding-mode project-config target mode)]
             (write-project-config! cwd new-config)
             (-> (persist-broker-room-prompt-mode! deps (:room/id binding) mode)
+                (.then (fn [_]
+                         (hot-apply-project-config! deps new-config)))
                 (.then (fn [_]
                          (notify! ctx (str "Prompt mode for " target " is now " mode "."))))))
           (do

@@ -1,5 +1,6 @@
 (ns pi-matrix-relay.config
-  (:require [clojure.string :as str]
+  (:require [cljs.reader :as reader]
+            [clojure.string :as str]
             [ol.dirs :as dirs]))
 
 (def fs (js/require "fs"))
@@ -22,20 +23,20 @@
   ([]
    (let [config-dir (dirs/config-dir app-name)]
      {:config-dir config-dir
-      :config-path (.join path config-dir "config.json")
+      :config-path (.join path config-dir "config.edn")
       :token-path (.join path config-dir "token")}))
   ([env]
    (let [config-home (or (env-value env "XDG_CONFIG_HOME")
                          (.join path (home-dir env) ".config"))
          config-dir (.join path config-home app-name)]
      {:config-dir config-dir
-      :config-path (.join path config-dir "config.json")
+      :config-path (.join path config-dir "config.edn")
       :token-path (.join path config-dir "token")})))
 
 (defn project-config-path
-  "Return the project-local config path below the exact Pi `ctx.cwd`."
+  "Return the project-local EDN config path below the exact Pi `ctx.cwd`."
   [cwd]
-  (.join path cwd ".agents" "matrix-relay" "config.json"))
+  (.join path cwd ".agents" "matrix-relay" "config.edn"))
 
 (defn project-id
   [cwd]
@@ -105,23 +106,24 @@
   [file-path]
   (.mkdirSync fs (.dirname path file-path) #js {:recursive true}))
 
-(defn read-json-file!
+
+(defn read-edn-file!
   [file-path]
   (when (.existsSync fs file-path)
     (let [text (.readFileSync fs file-path "utf8")]
       (when-not (str/blank? text)
-        (js->clj (js/JSON.parse text) :keywordize-keys true)))))
+        (reader/read-string text)))))
 
-(defn write-json-file!
+(defn write-edn-file!
   [file-path data]
   (ensure-parent-dir! file-path)
-  (.writeFileSync fs file-path (str (js/JSON.stringify (clj->js data) nil 2) "\n") "utf8")
+  (.writeFileSync fs file-path (str (pr-str data) "\n") "utf8")
   data)
 
 (defn read-project-config!
   [cwd]
-  (or (read-json-file! (project-config-path cwd)) {}))
+  (or (read-edn-file! (project-config-path cwd)) {}))
 
 (defn write-project-config!
   [cwd config]
-  (write-json-file! (project-config-path cwd) config))
+  (write-edn-file! (project-config-path cwd) config))

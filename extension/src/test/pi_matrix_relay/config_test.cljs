@@ -5,12 +5,12 @@
 (deftest path-helpers-follow-xdg-and-project-layout
   (testing "global config paths prefer XDG_CONFIG_HOME"
     (is (= {:config-dir "/tmp/xdg/pi-matrix-relay"
-            :config-path "/tmp/xdg/pi-matrix-relay/config.json"
+            :config-path "/tmp/xdg/pi-matrix-relay/config.edn"
             :token-path "/tmp/xdg/pi-matrix-relay/token"}
            (config/global-paths #js {"XDG_CONFIG_HOME" "/tmp/xdg"
                                      "HOME" "/home/alice"}))))
   (testing "project config lives below the exact cwd"
-    (is (= "/work/project/.agents/matrix-relay/config.json"
+    (is (= "/work/project/.agents/matrix-relay/config.edn"
            (config/project-config-path "/work/project")))))
 
 (deftest room-binding-defaults-and-target-resolution
@@ -37,11 +37,14 @@
              (select-keys (config/resolve-target by-alias "!room:example.org") [:room/id :alias])))
       (is (nil? (config/resolve-target by-alias "!other:example.org"))))))
 
-(deftest target-resolution-tolerates-json-read-keywordized-room-aliases
-  (testing "project configs read from JSON can keywordize room-map keys"
-    (is (= {:room/id "!room:example.org"
-            :alias "ops"}
-           (select-keys (config/resolve-target {:rooms {:ops {:alias "ops"
-                                                              :room/id "!room:example.org"}}}
-                                               "ops")
-                        [:room/id :alias])))))
+(deftest project-config-edn-round-trips-namespaced-room-keys
+  (let [cwd (str "/tmp/pi-matrix-relay-config-test-" (random-uuid))
+        project-config {:rooms {"ops" {:alias "ops"
+                                       :room/id "!room:example.org"
+                                       :room/name "Ops Room"
+                                       :mode "mentions"}}}]
+    (try
+      (config/write-project-config! cwd project-config)
+      (is (= project-config (config/read-project-config! cwd)))
+      (finally
+        (.rmSync config/fs cwd #js {:recursive true :force true})))))

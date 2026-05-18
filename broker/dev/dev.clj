@@ -44,6 +44,15 @@
 
 (defonce broker-system* (atom nil))
 
+;; `dev` is intentionally in clj-reload's :no-reload set so `broker-system*`
+;; survives normal app reloads and direct namespace aliases are not re-evaluated
+;; into stale/conflicting aliases. If you edit this namespace, reload it explicitly:
+;;
+;;   (remove-ns 'dev)
+;;   (require '[dev :as dev])
+;;
+;; Or restart the REPL.
+
 (defn system
   "Return the currently running broker donut system, or nil."
   []

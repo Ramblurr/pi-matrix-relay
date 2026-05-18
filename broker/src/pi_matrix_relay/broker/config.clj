@@ -1,7 +1,7 @@
 (ns pi-matrix-relay.broker.config
-  (:require [clojure.java.io :as io]
+  (:require [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [clojure.string :as str]
-            [pi-matrix-relay.broker.json :as broker.json]
             [pi-matrix-relay.broker.paths :as paths]))
 
 (def default-config
@@ -27,7 +27,9 @@
   [path]
   (let [file (io/file path)]
     (when (.exists file)
-      (broker.json/read-json (slurp file)))))
+      (let [text (slurp file)]
+        (when-not (str/blank? text)
+          (edn/read-string text))))))
 
 (defn read-token-file
   [path]

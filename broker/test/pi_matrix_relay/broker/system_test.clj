@@ -80,8 +80,8 @@
         (finally
           (system/stop! running))))))
 
-(deftest matrix-space-reconcile-accepts-later-invite-and-links-known-slot-rooms
-  (testing "the running broker can recover Matrix Space setup after an invite arrives"
+(deftest matrix-space-reconcile-accepts-later-invite-and-links-known-relay-rooms
+  (testing "the running broker can recover Matrix Space setup and link slot plus project-bound rooms"
     (let [conn (tu/test-db-conn)
           gateway (tu/fake-gateway {:space-id "!space:example.org"})]
       (try
@@ -89,6 +89,13 @@
                                          :slot "A"
                                          :room-id "!project-A:example.org"
                                          :room-name "project-A"})
+        (store/register-client! conn {:now-ms 1
+                                      :heartbeat-seconds 30
+                                      :global-operators []}
+                                {:client/instance-id "client-1"
+                                 :protocol/version 1
+                                 :project {:project/id "project"}
+                                 :subscriptions {:rooms ["!project-bound:example.org"]}})
         (let [status* (atom {:status "error"
                              :space/enabled? true
                              :error {:code "matrix_space_setup_failed"
@@ -101,12 +108,16 @@
                   :space/enabled? true
                   :space/id "!space:example.org"
                   :space/mode :existing
-                  :slot-room-links {:attempted 1
-                                    :linked 1
-                                    :failed []}}
+                  :room-links {:attempted 2
+                               :linked 2
+                               :failed []}}
                  status))
-          (is (= [:ensure-space :ensure-room-in-space]
-                 (mapv first (tu/calls gateway)))))
+          (is (= [:ensure-space :ensure-room-in-space :ensure-room-in-space]
+                 (mapv first (tu/calls gateway))))
+          (is (= #{"!project-A:example.org" "!project-bound:example.org"}
+                 (set (map (comp :room/id second)
+                           (filter #(= :ensure-room-in-space (first %))
+                                   (tu/calls gateway)))))))
         (finally
           (db/release-conn! conn))))))
 

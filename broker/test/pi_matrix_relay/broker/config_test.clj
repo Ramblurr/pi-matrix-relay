@@ -59,11 +59,21 @@
 (deftest xdg-path-map-has-broker-files-under-app-directory
   (testing "path shape is centralized and data-only"
     (let [p (paths/xdg-paths)]
-      (is (= {:config-json? true
+      (is (= {:config-edn? true
               :token? true
               :state-db? true
               :runtime-socket? true}
-             {:config-json? (.endsWith (:config-path p) "pi-matrix-relay/config.json")
+             {:config-edn? (.endsWith (:config-path p) "pi-matrix-relay/config.edn")
               :token? (.endsWith (:token-path p) "pi-matrix-relay/token")
               :state-db? (.endsWith (:database-path p) "pi-matrix-relay/trixnity.sqlite")
               :runtime-socket? (.endsWith (:socket-path p) "pi-matrix-relay/broker.sock")})))))
+
+(deftest read-config-file-reads-edn
+  (let [file (java.io.File/createTempFile "pi-matrix-relay-config" ".edn")]
+    (try
+      (spit file "{:matrix {:homeserver-url \"https://matrix.example.org\" :encrypted? true}}")
+      (is (= {:matrix {:homeserver-url "https://matrix.example.org"
+                       :encrypted? true}}
+             (config/read-config-file (.getPath file))))
+      (finally
+        (.delete file)))))

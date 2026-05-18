@@ -172,50 +172,46 @@
     (catch Throwable throwable
       (matrix-space-error-status throwable))))
 
-(defn- slot-room-link-result
-  [matrix-gateway slot-room]
+(defn- room-link-result
+  [matrix-gateway room]
   (try
-    (assoc (matrix/ensure-room-in-space! matrix-gateway {:room/id (:room-id slot-room)})
-           :project-key (:project-key slot-room)
-           :slot (:slot slot-room))
+    (matrix/ensure-room-in-space! matrix-gateway {:room/id (:room-id room)})
     (catch Throwable throwable
-      {:room/id (:room-id slot-room)
-       :project-key (:project-key slot-room)
-       :slot (:slot slot-room)
+      {:room/id (:room-id room)
        :linked? false
        :error (:error (matrix-space-error-status throwable))})))
 
-(defn- link-known-slot-rooms!
+(defn- link-known-rooms!
   [{:keys [db-conn matrix-gateway]}]
   (if (and db-conn matrix-gateway)
-    (mapv #(slot-room-link-result matrix-gateway %)
-          (store/list-slot-rooms @db-conn))
+    (mapv #(room-link-result matrix-gateway %)
+          (store/list-space-link-rooms @db-conn))
     []))
 
-(defn- slot-room-link-summary
+(defn- room-link-summary
   [results]
   {:attempted (count results)
    :linked (count (filter :linked? results))
    :failed (vec (remove :linked? results))})
 
 (defn reconcile-matrix-space!
-  "Retry configured Matrix Space setup and, once available, link known slot rooms.
+  "Retry configured Matrix Space setup and, once available, link known relay rooms.
 
   This is safe to call periodically. It updates `:matrix-space`, an atom holding
   the health-visible Matrix Space status, and returns the new status map."
-  [{:keys [matrix-space link-slot-rooms?] :as config}]
+  [{:keys [matrix-space link-rooms?] :as config}]
   (let [old-status (when matrix-space @matrix-space)]
     (if (= "disabled" (:status old-status))
       old-status
       (let [status (ensure-matrix-space-status! config)
             should-link? (and (= "ok" (:status status))
-                              (or link-slot-rooms?
+                              (or link-rooms?
                                   (not= "ok" (:status old-status))))
             link-results (when should-link?
-                           (link-known-slot-rooms! config))
+                           (link-known-rooms! config))
             status (cond-> status
-                     (seq link-results) (assoc :slot-room-links
-                                               (slot-room-link-summary link-results)))]
+                     (seq link-results) (assoc :room-links
+                                               (room-link-summary link-results)))]
         (when matrix-space
           (reset! matrix-space status))
         status))))
@@ -223,13 +219,11 @@
 (defn- start-matrix-space-reconciler!
   [{:keys [config] :as reconcile-config}]
   (let [running? (atom true)
-        first-run? (atom true)
         interval-ms (* 1000 (long (or (get-in config [:matrix :space :reconcile-seconds]) 10)))
         run-once! (fn []
                     (try
                       (reconcile-matrix-space! (assoc reconcile-config
-                                                      :link-slot-rooms? @first-run?))
-                      (reset! first-run? false)
+                                                      :link-rooms? true))
                       (catch Throwable _
                         nil)))
         thread (Thread/startVirtualThread

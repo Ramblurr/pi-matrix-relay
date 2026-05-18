@@ -136,12 +136,12 @@
 
 (defn read-global-config!
   []
-  (or (config/read-json-file! (:config-path (config/global-paths))) {}))
+  (or (config/read-edn-file! (:config-path (config/global-paths))) {}))
 
 (defn write-global-config!
   [broker-config]
   (let [{:keys [config-path]} (config/global-paths)]
-    (config/write-json-file! config-path broker-config)
+    (config/write-edn-file! config-path broker-config)
     ;; Contains a password for the current Trixnity adapter, so keep it private.
     (.chmodSync fs config-path 384)
     broker-config))

@@ -21,7 +21,7 @@
         runtime-dir (or (dirs/runtime-dir app-name)
                         (path-str (System/getProperty "java.io.tmpdir") app-name))]
     {:config-dir config-dir
-     :config-path (path-str config-dir "config.json")
+     :config-path (path-str config-dir "config.edn")
      :token-path (path-str config-dir "token")
      :state-dir state-dir
      :crypto-dir (path-str state-dir "crypto")
