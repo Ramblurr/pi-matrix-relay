@@ -58,6 +58,23 @@
    :room/membership (::mx/membership room)
    :room/direct? (::mx/is-direct room)})
 
+(defn- persistent-map
+  [value]
+  (into {} (or value {})))
+
+(defn- power-level-content-for-set
+  [content]
+  (let [content (dissoc (persistent-map content) ::mx/raw)]
+    (cond-> content
+      (::mx/event-levels content)
+      (update ::mx/event-levels persistent-map)
+
+      (::mx/user-levels content)
+      (update ::mx/user-levels persistent-map)
+
+      (::mx/notification-levels content)
+      (update ::mx/notification-levels persistent-map))))
+
 (defn- attachment
   [ev]
   (when (or (event/url ev) (event/encrypted-file ev))
@@ -195,7 +212,7 @@
           room-id (:room/id request)
           level (long (or (:level request) 100))
           users (vec (:users request))
-          content (or (flow-value (room/get-power-levels c room-id)) {})
+          content (power-level-content-for-set (flow-value (room/get-power-levels c room-id)))
           current-users (or (::mx/user-levels content) {})
           updated-content (assoc content ::mx/user-levels (reduce #(assoc %1 %2 level) current-users users))]
       (when (not= content updated-content)

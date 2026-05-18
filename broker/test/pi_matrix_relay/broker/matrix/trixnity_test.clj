@@ -29,14 +29,23 @@
              (get-in (#'sut/normalized-event ::event "@other:example.org")
                      [:data :event/sender-is-bot?]))))))
 
+(defn- java-map
+  [entries]
+  (doto (java.util.LinkedHashMap.)
+    (as-> m
+      (doseq [[k v] entries]
+        (.put m k v)))))
+
 (deftest ensure-users-power-level-uses-trixnity-room-power-level-api
   (let [gateway (sut/gateway {:matrix {:homeserver-url "https://matrix.example.org"
                                        :user-id "@bot:example.org"
                                        :password "secret"}}
                              {})
         calls* (atom [])
-        existing-power-levels {::mx/ban-level 50
-                               ::mx/user-levels {"@existing:example.org" 50}}]
+        existing-power-levels (java-map [[::mx/ban-level 50]
+                                         [::mx/raw ::upstream-raw-power-levels]
+                                         [::mx/event-levels (java-map [["m.room.name" 50]])]
+                                         [::mx/user-levels (java-map [["@existing:example.org" 50]])]])]
     (reset! (:runtime* gateway) {:client :client})
     (with-redefs [http/request (fn [& _]
                                  (throw (ex-info "raw Matrix HTTP bypass should not be used" {})))
@@ -55,6 +64,7 @@
       (is (= [[:get-power-levels :client "!room:example.org"]
               [:set-power-levels :client "!room:example.org"
                {::mx/ban-level 50
+                ::mx/event-levels {"m.room.name" 50}
                 ::mx/user-levels {"@existing:example.org" 50
                                   "@alice:example.org" 100
                                   "@bob:example.org" 100}}
