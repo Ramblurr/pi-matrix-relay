@@ -1,8 +1,6 @@
 (ns pi-matrix-relay.broker.matrix.trixnity
-  (:require [charred.api :as charred]
-            [clojure.string :as str]
+  (:require [clojure.string :as str]
             [missionary.core :as m]
-            [org.httpkit.client :as http]
             [ol.trixnity.client :as client]
             [ol.trixnity.event :as event]
             [ol.trixnity.repo :as repo]
@@ -10,8 +8,7 @@
             [ol.trixnity.room.message :as msg]
             [ol.trixnity.schemas :as mx]
             [pi-matrix-relay.broker.matrix :as matrix])
-  (:import [java.net URLEncoder]
-           [java.time Duration Instant]))
+  (:import [java.time Duration Instant]))
 
 (defn- require-nonblank
   [config k]
@@ -60,88 +57,6 @@
    :room/name (::mx/room-name room)
    :room/membership (::mx/membership room)
    :room/direct? (::mx/is-direct room)})
-
-(defn- read-matrix-json
-  [body]
-  (when-not (str/blank? (str body))
-    (charred/read-json body)))
-
-(defn- matrix-json-request!
-  [{:keys [homeserver token method path body allow-not-found?]}]
-  (let [response @(http/request (cond-> {:method method
-                                         :url (str (str/replace homeserver #"/$" "") path)
-                                         :headers (cond-> {"Accept" "application/json"}
-                                                    token (assoc "Authorization" (str "Bearer " token))
-                                                    body (assoc "Content-Type" "application/json"))
-                                         :timeout 20000}
-                                  body (assoc :body (charred/write-json-str body))))
-        status (:status response)]
-    (cond
-      (and allow-not-found? (= 404 status))
-      nil
-
-      (>= status 400)
-      (throw (matrix/ex :matrix_http_failed
-                        "Matrix HTTP request failed."
-                        {:status status
-                         :path path
-                         :body (:body response)}))
-
-      :else
-      (read-matrix-json (:body response)))))
-
-(defn- matrix-login-token!
-  [matrix-config]
-  (let [password (:password matrix-config)]
-    (when (str/blank? (str password))
-      (throw (matrix/ex :matrix_config_missing
-                        "Matrix password is required for broker-side room administration."
-                        {})))
-    (get (matrix-json-request!
-          {:homeserver (:homeserver-url matrix-config)
-           :method :post
-           :path "/_matrix/client/v3/login"
-           :body {"type" "m.login.password"
-                  "identifier" {"type" "m.id.user"
-                                "user" (:user-id matrix-config)}
-                  "password" password}})
-         "access_token")))
-
-(defn- matrix-http-token!
-  [config runtime*]
-  (or (get-in config [:matrix :access-token])
-      (:matrix-http-token @runtime*)
-      (let [token (matrix-login-token! (:matrix config))]
-        (swap! runtime* assoc :matrix-http-token token)
-        token)))
-
-(defn- encode-path-segment
-  [value]
-  (URLEncoder/encode (str value) "UTF-8"))
-
-(defn- room-state-path
-  [room-id event-type]
-  (str "/_matrix/client/v3/rooms/" (encode-path-segment room-id)
-       "/state/" event-type))
-
-(defn- power-level-content!
-  [config runtime* room-id]
-  (or (matrix-json-request!
-       {:homeserver (get-in config [:matrix :homeserver-url])
-        :token (matrix-http-token! config runtime*)
-        :method :get
-        :path (room-state-path room-id "m.room.power_levels")
-        :allow-not-found? true})
-      {}))
-
-(defn- put-power-level-content!
-  [config runtime* room-id content]
-  (matrix-json-request!
-   {:homeserver (get-in config [:matrix :homeserver-url])
-    :token (matrix-http-token! config runtime*)
-    :method :put
-    :path (room-state-path room-id "m.room.power_levels")
-    :body content}))
 
 (defn- attachment
   [ev]
@@ -276,14 +191,15 @@
       {:room/id (str room-id)
        :room/name (room-name-from-request request)}))
   (ensure-users-power-level! [_ request]
-    (let [room-id (:room/id request)
+    (let [c (:client @runtime*)
+          room-id (:room/id request)
           level (long (or (:level request) 100))
           users (vec (:users request))
-          content (power-level-content! config runtime* room-id)
-          current-users (or (get content "users") {})
-          updated-content (assoc content "users" (reduce #(assoc %1 %2 level) current-users users))]
+          content (or (flow-value (room/get-power-levels c room-id)) {})
+          current-users (or (::mx/user-levels content) {})
+          updated-content (assoc content ::mx/user-levels (reduce #(assoc %1 %2 level) current-users users))]
       (when (not= content updated-content)
-        (put-power-level-content! config runtime* room-id updated-content))
+        (m/? (room/set-power-levels c room-id updated-content {::mx/timeout (Duration/ofSeconds 10)})))
       {:room/id room-id
        :users users
        :level level}))
