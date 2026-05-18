@@ -199,6 +199,34 @@
                                :updated-by-user (:room/prompt-mode-updated-by-user body)
                                :now-ms (System/currentTimeMillis)}))))))
 
+(defn get-room-tool-message-settings-handler
+  [{:keys [db-conn]}]
+  (fn [request]
+    (let [client-id (client-id-param request)
+          room-id (room-id-param request)]
+      (ensure-room-settings-authorized! @db-conn client-id room-id)
+      (response/ok-response (present/room-tool-message-settings
+                             (store/room-tool-message-settings @db-conn room-id))))))
+
+(defn set-room-tool-message-settings-handler
+  [{:keys [db-conn]}]
+  (fn [request]
+    (let [client-id (client-id-param request)
+          room-id (room-id-param request)
+          body (body-params request)]
+      (response/ok-response (present/room-tool-message-settings
+                             (store/set-room-tool-message-settings!
+                              db-conn
+                              (cond-> {:client-id client-id
+                                        :room-id room-id
+                                        :updated-by-user (:room/tool-message-settings-updated-by-user body)
+                                        :now-ms (System/currentTimeMillis)}
+                                (contains? body :room/tool-messages-enabled?)
+                                (assoc :tool-messages-enabled? (:room/tool-messages-enabled? body))
+
+                                (contains? body :room/tool-message-batch-ms)
+                                (assoc :tool-message-batch-ms (:room/tool-message-batch-ms body)))))))))
+
 (defn heartbeat-handler
   [{:keys [db-conn config]}]
   (fn [request]
@@ -472,7 +500,9 @@
     ["/clients/:client-id/rooms/:room-id/delivery-mode" {:get (get-room-delivery-mode-handler env)
                                                          :put (set-room-delivery-mode-handler env)}]
     ["/clients/:client-id/rooms/:room-id/prompt-mode" {:get (get-room-prompt-mode-handler env)
-                                                  :put (set-room-prompt-mode-handler env)}]
+                                                        :put (set-room-prompt-mode-handler env)}]
+    ["/clients/:client-id/rooms/:room-id/tool-messages" {:get (get-room-tool-message-settings-handler env)
+                                                          :put (set-room-tool-message-settings-handler env)}]
     ["/slots" {:get (list-slots-handler env)}]
     ["/slots/acquire" {:post (acquire-slot-handler env)}]
     ["/slots/release" {:post (release-slot-handler env)}]

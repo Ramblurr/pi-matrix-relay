@@ -60,6 +60,27 @@
                      {:room/prompt-mode mode
                       :room/prompt-mode-updated-by-user updated-by-user})))
 
+(defn get-room-tool-message-settings!
+  ([client-id room-id]
+   (get-room-tool-message-settings! {} client-id room-id))
+  ([opts client-id room-id]
+   (http/request-edn! opts "GET" (client-room-path client-id room-id "/tool-messages") nil)))
+
+(defn set-room-tool-message-settings!
+  ([client-id room-id settings updated-by-user]
+   (set-room-tool-message-settings! {} client-id room-id settings updated-by-user))
+  ([opts client-id room-id {:keys [enabled? batch-ms]} updated-by-user]
+   (http/request-edn! opts "PUT" (client-room-path client-id room-id "/tool-messages")
+                     (cond-> {}
+                       (some? enabled?)
+                       (assoc :room/tool-messages-enabled? enabled?)
+
+                       (some? batch-ms)
+                       (assoc :room/tool-message-batch-ms batch-ms)
+
+                       (some? updated-by-user)
+                       (assoc :room/tool-message-settings-updated-by-user updated-by-user)))))
+
 (defn heartbeat!
   ([client-id]
    (heartbeat! {} client-id))

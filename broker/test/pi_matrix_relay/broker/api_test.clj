@@ -37,6 +37,12 @@
        "/rooms/" (path-encode room-id)
        "/prompt-mode"))
 
+(defn tool-messages-path
+  [client-id room-id]
+  (str "/v1/clients/" (path-encode client-id)
+       "/rooms/" (path-encode room-id)
+       "/tool-messages"))
+
 (defn normalize-delivery-response
   [response]
   (update-in response [:data :room/default-delivery-mode-updated-at] boolean))
@@ -44,6 +50,10 @@
 (defn normalize-prompt-mode-response
   [response]
   (update-in response [:data :room/prompt-mode-updated-at] boolean))
+
+(defn normalize-tool-messages-response
+  [response]
+  (update-in response [:data :room/tool-message-settings-updated-at] boolean))
 
 (deftest health-and-client-registration-use-edn-envelope
   (testing "health and client registration expose stable v1 envelopes without an API state atom"
@@ -410,6 +420,80 @@
                                           {:room/prompt-mode "commands-only"
                                            :room/prompt-mode-updated-by-user "@alice:example.org"}))
                   :after (normalize-prompt-mode-response (tu/edn-request app :get path nil))})))))))
+
+(deftest room-tool-message-endpoints-are-client-scoped-and-persistent
+  (with-env
+    (fn [env _]
+      (let [app (api/app env)]
+        (tu/edn-request app :post "/v1/clients"
+                        {:request/id "register-tool-messages"
+                         :client/instance-id "client-1"
+                         :protocol/version 1
+                         :project {:project/id "project"}
+                         :subscriptions {:rooms ["!project:example.org"]}})
+        (let [path (tool-messages-path "client-1" "!project:example.org")]
+          (is (= {:before {:ok true
+                           :data {:room/id "!project:example.org"
+                                  :room/tool-messages-enabled? nil
+                                  :room/tool-message-batch-ms nil
+                                  :room/tool-message-settings-updated-at false
+                                  :room/tool-message-settings-updated-by-client nil
+                                  :room/tool-message-settings-updated-by-user nil}}
+                  :write {:ok true
+                          :data {:room/id "!project:example.org"
+                                 :room/tool-messages-enabled? false
+                                 :room/tool-message-batch-ms 30000
+                                 :room/tool-message-settings-updated-at true
+                                 :room/tool-message-settings-updated-by-client "client-1"
+                                 :room/tool-message-settings-updated-by-user "@alice:example.org"}}
+                  :after {:ok true
+                          :data {:room/id "!project:example.org"
+                                 :room/tool-messages-enabled? false
+                                 :room/tool-message-batch-ms 30000
+                                 :room/tool-message-settings-updated-at true
+                                 :room/tool-message-settings-updated-by-client "client-1"
+                                 :room/tool-message-settings-updated-by-user "@alice:example.org"}}}
+                 {:before (normalize-tool-messages-response (tu/edn-request app :get path nil))
+                  :write (normalize-tool-messages-response
+                          (tu/edn-request app :put path
+                                          {:room/tool-messages-enabled? false
+                                           :room/tool-message-batch-ms 30000
+                                           :room/tool-message-settings-updated-by-user "@alice:example.org"}))
+                  :after (normalize-tool-messages-response (tu/edn-request app :get path nil))})))))))
+
+(deftest room-tool-message-endpoints-reject-invalid-or-unauthorized-requests
+  (with-env
+    (fn [env _]
+      (let [app (api/app env)
+            project-path (tool-messages-path "client-1" "!project:example.org")
+            other-path (tool-messages-path "client-1" "!other:example.org")]
+        (tu/edn-request app :post "/v1/clients"
+                        {:request/id "register-tool-messages-rejects"
+                         :client/instance-id "client-1"
+                         :protocol/version 1
+                         :project {:project/id "project"}
+                         :subscriptions {:rooms ["!project:example.org"]}})
+        (is (= {:unknown {:ok false
+                          :error {:code "client_not_found"
+                                  :message "Unknown broker client."
+                                  :details {:client-id "missing-client"}}}
+                :unauthorized {:ok false
+                               :error {:code "room_not_allowed"
+                                       :message "Client is not registered for the target Matrix room."
+                                       :details {:client-id "client-1"
+                                                 :room-id "!other:example.org"}}}
+                :invalid {:ok false
+                          :error {:code "invalid_request"
+                                  :message "Invalid tool message batch window."
+                                  :details {:room/tool-message-batch-ms 0
+                                            :allowed "1000..3600000"}}}}
+               {:unknown (tu/edn-request app :get
+                                         (tool-messages-path "missing-client" "!project:example.org")
+                                         nil)
+                :unauthorized (tu/edn-request app :put other-path
+                                              {:room/tool-messages-enabled? false})
+                :invalid (tu/edn-request app :put project-path
+                                         {:room/tool-message-batch-ms 0})}))))))
 
 (deftest room-prompt-mode-endpoints-reject-invalid-or-unauthorized-requests
   (with-env

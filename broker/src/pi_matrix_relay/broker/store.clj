@@ -10,6 +10,8 @@
 (def terminal-lease-states #{:released :failed})
 (def allowed-delivery-modes #{:follow-up :steer :reject})
 (def allowed-prompt-modes #{:all :mentions :commands-only})
+(def min-tool-message-batch-ms 1000)
+(def max-tool-message-batch-ms 3600000)
 (def idempotency-result-byte-limit 2048)
 
 (defn- now-date
@@ -790,6 +792,74 @@
                        (some? updated-by-user)
                        (conj [:db/add [:room/id room-id] :room/prompt-mode-updated-by-user updated-by-user])))
     (room-prompt-mode @conn room-id)))
+
+(defn- validate-tool-message-batch-ms!
+  [batch-ms]
+  (when (some? batch-ms)
+    (let [batch-ms (long batch-ms)]
+      (when-not (<= min-tool-message-batch-ms batch-ms max-tool-message-batch-ms)
+        (throw (ex-info "Invalid tool message batch window."
+                        {:code :invalid_request
+                         :room/tool-message-batch-ms batch-ms
+                         :allowed (str min-tool-message-batch-ms ".." max-tool-message-batch-ms)})))
+      batch-ms)))
+
+(defn room-tool-message-settings
+  [db room-id]
+  (let [entity-id (first-entity db
+                                '[:find ?room
+                                  :in $ ?room-id
+                                  :where [?room :room/id ?room-id]]
+                                room-id)]
+    (if entity-id
+      (let [room (d/pull db [:room/id
+                             :room/tool-messages-enabled?
+                             :room/tool-message-batch-ms
+                             :room/tool-message-settings-updated-at
+                             :room/tool-message-settings-updated-by-user
+                             {:room/tool-message-settings-updated-by-client [:client/instance-id]}]
+                         entity-id)]
+        {:room-id (:room/id room)
+         :tool-messages-enabled? (:room/tool-messages-enabled? room)
+         :tool-message-batch-ms (:room/tool-message-batch-ms room)
+         :updated-at (instant->ms (:room/tool-message-settings-updated-at room))
+         :updated-by-client (get-in room [:room/tool-message-settings-updated-by-client :client/instance-id])
+         :updated-by-user (:room/tool-message-settings-updated-by-user room)})
+      {:room-id room-id
+       :tool-messages-enabled? nil
+       :tool-message-batch-ms nil
+       :updated-at nil
+       :updated-by-client nil
+       :updated-by-user nil})))
+
+(defn set-room-tool-message-settings!
+  [conn {:keys [client-id room-id tool-messages-enabled? tool-message-batch-ms updated-by-user now-ms] :as settings}]
+  (when-not (known-room-for-client? @conn client-id room-id)
+    (throw (ex-info "Client is not registered for the target Matrix room."
+                    {:code :room_not_allowed
+                     :client-id client-id
+                     :room-id room-id})))
+  (let [batch-ms (validate-tool-message-batch-ms! tool-message-batch-ms)
+        existing (room-tool-message-settings @conn room-id)
+        enabled? (if (contains? settings :tool-messages-enabled?)
+                   (boolean tool-messages-enabled?)
+                   (:tool-messages-enabled? existing))
+        batch-ms (if (contains? settings :tool-message-batch-ms)
+                   batch-ms
+                   (:tool-message-batch-ms existing))
+        now (now-date now-ms)]
+    (ensure-room! conn room-id)
+    (d/transact conn (cond-> [[:db/add [:room/id room-id] :room/tool-message-settings-updated-at now]
+                              [:db/add [:room/id room-id] :room/tool-message-settings-updated-by-client [:client/instance-id client-id]]]
+                       (contains? settings :tool-messages-enabled?)
+                       (conj [:db/add [:room/id room-id] :room/tool-messages-enabled? enabled?])
+
+                       (contains? settings :tool-message-batch-ms)
+                       (conj [:db/add [:room/id room-id] :room/tool-message-batch-ms batch-ms])
+
+                       (some? updated-by-user)
+                       (conj [:db/add [:room/id room-id] :room/tool-message-settings-updated-by-user updated-by-user])))
+    (room-tool-message-settings @conn room-id)))
 
 (defn clients-for-room
   [db room-id]

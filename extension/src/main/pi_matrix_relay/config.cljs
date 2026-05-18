@@ -47,6 +47,8 @@
 (def allowed-room-prompt-modes #{"all" "mentions" "commands-only"})
 (def default-progress-verbosity "normal")
 (def allowed-progress-verbosity #{"quiet" "normal" "verbose"})
+(def default-tool-messages-enabled? true)
+(def default-tool-message-batch-ms 60000)
 
 (defn normalize-prompt-mode
   [mode]

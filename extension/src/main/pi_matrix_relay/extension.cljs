@@ -19,6 +19,8 @@
    :set-room-delivery-mode! broker-client/set-room-delivery-mode!
    :get-room-prompt-mode! broker-client/get-room-prompt-mode!
    :set-room-prompt-mode! broker-client/set-room-prompt-mode!
+   :get-room-tool-message-settings! broker-client/get-room-tool-message-settings!
+   :set-room-tool-message-settings! broker-client/set-room-tool-message-settings!
    :heartbeat! broker-client/heartbeat!
    :unregister-client! broker-client/unregister-client!
    :acquire-slot! broker-client/acquire-slot!
@@ -251,6 +253,65 @@
                  (= "slot" (:room/class binding)) "slot-default"
                  (:mode binding) "project-config"
                  :else "system-default")}))
+
+(defn- cached-room-tool-message-settings
+  [relay-state room-id]
+  (when-let [room-tool-message-settings* (:room-tool-message-settings* relay-state)]
+    (get @room-tool-message-settings* room-id)))
+
+(defn- default-tool-message-settings
+  []
+  {:enabled? config/default-tool-messages-enabled?
+   :batch-ms config/default-tool-message-batch-ms
+   :source "system-default"})
+
+(defn- normalize-room-tool-message-settings
+  [settings]
+  (let [enabled? (cond
+                   (contains? settings :enabled?) (:enabled? settings)
+                   (contains? settings :room/tool-messages-enabled?) (:room/tool-messages-enabled? settings)
+                   (contains? settings :tool-messages-enabled?) (:tool-messages-enabled? settings)
+                   :else nil)
+        batch-ms (cond
+                   (contains? settings :batch-ms) (:batch-ms settings)
+                   (contains? settings :room/tool-message-batch-ms) (:room/tool-message-batch-ms settings)
+                   (contains? settings :tool-message-batch-ms) (:tool-message-batch-ms settings)
+                   :else nil)]
+    (cond-> {}
+      (some? enabled?)
+      (assoc :enabled? (boolean enabled?))
+
+      (some? batch-ms)
+      (assoc :batch-ms batch-ms)
+
+      (:source settings)
+      (assoc :source (:source settings)))))
+
+(defn- effective-room-tool-message-settings
+  [relay-state room-id]
+  (merge (default-tool-message-settings)
+         (cached-room-tool-message-settings relay-state room-id)))
+
+(defn- cache-room-tool-message-settings!
+  [relay-state room-id settings]
+  (when-let [room-tool-message-settings* (:room-tool-message-settings* relay-state)]
+    (let [normalized (merge (default-tool-message-settings)
+                            (normalize-room-tool-message-settings settings)
+                            {:source "broker"})]
+      (swap! room-tool-message-settings* assoc room-id normalized)
+      normalized)))
+
+(defn- format-duration-ms
+  [ms]
+  (let [ms (or ms 0)]
+    (cond
+      (zero? (mod ms 1000)) (str (/ ms 1000) "s")
+      :else (str ms "ms"))))
+
+(defn- tool-message-settings-summary
+  [relay-state room-id]
+  (let [{:keys [enabled? batch-ms]} (effective-room-tool-message-settings relay-state room-id)]
+    (str (if enabled? "on" "off") ", batch " (format-duration-ms batch-ms))))
 
 (defn- binding-for-relay-room
   [relay-state room-id]
@@ -579,6 +640,7 @@
     (str "↑" (format-count input) " ↓" (format-count output) " " (format-currency cost))))
 
 (declare relay-progress-verbosity)
+(declare tool-message-settings-summary)
 
 (defn- remote-status-values
   [relay-state binding room-id ctx]
@@ -594,7 +656,7 @@
      :room-prompt-mode-source room-prompt-mode-source
      :delivery-mode delivery-mode
      :delivery-source source
-     :progress-verbosity (relay-progress-verbosity relay-state)
+     :tool-messages (tool-message-settings-summary relay-state room-id)
      :heartbeat (if (:heartbeat-id relay-state) "🟢" "🔴")
      :stream (if (:stream relay-state) "🟢" "🔴")
      :model (ctx-model-value ctx)
@@ -602,7 +664,7 @@
      :usage (ctx-usage-value ctx)}))
 
 (defn- remote-status-body
-  [{:keys [project slot slot-room room session room-prompt-mode room-prompt-mode-source delivery-mode delivery-source progress-verbosity heartbeat stream model context usage]}]
+  [{:keys [project slot slot-room room session room-prompt-mode room-prompt-mode-source delivery-mode delivery-source tool-messages heartbeat stream model context usage]}]
   (str "pi-matrix-relay status\n"
        "project: " project "\n"
        "slot: " slot " " slot-room "\n"
@@ -610,7 +672,7 @@
        "session: " session "\n"
        "prompt mode: " room-prompt-mode " (" room-prompt-mode-source ")\n"
        "default delivery mode: " delivery-mode " (" delivery-source ")\n"
-       "progress verbosity: " progress-verbosity "\n"
+       "tool messages: " tool-messages "\n"
        "connection: heartbeat " heartbeat ", stream " stream "\n"
        "model: " model "\n"
        "context: " context "\n"
@@ -621,7 +683,7 @@
   (str "<tr><th>" (html-escape label) "</th><td>" value "</td></tr>"))
 
 (defn- remote-status-html
-  [{:keys [project slot slot-room room session-html room-prompt-mode room-prompt-mode-source delivery-mode delivery-source progress-verbosity heartbeat stream model context usage]}]
+  [{:keys [project slot slot-room room session-html room-prompt-mode room-prompt-mode-source delivery-mode delivery-source tool-messages heartbeat stream model context usage]}]
   (str "<h3>pi-matrix-relay status</h3>"
        "<table><tbody>"
        (status-row "Project" (str "<code>" (html-escape project) "</code>"))
@@ -630,7 +692,7 @@
        (status-row "Session" session-html)
        (status-row "Prompt mode" (str "<code>" (html-escape room-prompt-mode) "</code> <em>" (html-escape room-prompt-mode-source) "</em>"))
        (status-row "Default delivery mode" (str "<code>" (html-escape delivery-mode) "</code> <em>" (html-escape delivery-source) "</em>"))
-       (status-row "Progress verbosity" (str "<code>" (html-escape progress-verbosity) "</code>"))
+       (status-row "Tool messages" (html-escape tool-messages))
        (status-row "Connection" (str "heartbeat " (html-escape heartbeat) ", stream " (html-escape stream)))
        (status-row "Model" (str "<code>" (html-escape model) "</code>"))
        (status-row "Context" (html-escape context))
@@ -706,6 +768,58 @@
                   nil)))
     (js/Promise.resolve nil)))
 
+(defn- tool-message-batch-body
+  [messages]
+  (if (= 1 (count messages))
+    (first messages)
+    (str "🔧 Tools used:\n" (str/join "\n" (map #(str "- " %) messages)))))
+
+(defn- clear-tool-message-batch!
+  [relay-state room-id]
+  (when-let [batches* (:tool-message-batches* relay-state)]
+    (swap! batches* dissoc room-id)))
+
+(defn- flush-tool-message-batch!
+  [{:keys [send-message! diagnostics*]} relay-state room-id]
+  (let [batches* (:tool-message-batches* relay-state)
+        entry (when batches* (get @batches* room-id))
+        messages (vec (:messages entry))]
+    (when batches*
+      (swap! batches* dissoc room-id))
+    (if (and send-message!
+             (seq messages)
+             (:client-id relay-state)
+             room-id)
+      (-> (promise (send-message! room-id
+                                  (tool-message-batch-body messages)
+                                  {:client/id (:client-id relay-state)}))
+          (.catch (fn [err]
+                    (record-diagnostic! diagnostics* :tool-messages/send-error (or (.-message err) (str err)))
+                    nil)))
+      (js/Promise.resolve nil))))
+
+(defn- queue-tool-message!
+  [{:keys [set-timeout!] :as deps} relay-state room-id message]
+  (let [{:keys [enabled? batch-ms]} (effective-room-tool-message-settings relay-state room-id)
+        batches* (:tool-message-batches* relay-state)]
+    (if (and enabled? batches* room-id)
+      (let [needs-schedule? (atom false)]
+        (swap! batches*
+               (fn [batches]
+                 (let [entry (get batches room-id)]
+                   (if entry
+                     (update-in batches [room-id :messages] conj message)
+                     (do
+                       (reset! needs-schedule? true)
+                       (assoc batches room-id {:messages [message]}))))))
+        (when @needs-schedule?
+          (if set-timeout!
+            (let [timeout-id (set-timeout! #(flush-tool-message-batch! deps relay-state room-id) batch-ms)]
+              (swap! batches* update room-id assoc :timeout-id timeout-id))
+            (flush-tool-message-batch! deps relay-state room-id)))
+        (js/Promise.resolve nil))
+      (js/Promise.resolve nil))))
+
 (defn- set-slot-typing!
   [{:keys [set-typing! diagnostics*]} relay-state typing?]
   (if (and set-typing!
@@ -762,21 +876,24 @@
 
 (defn- handle-tool-start-progress!
   [deps relay-state event]
-  (when relay-state
-    (let [tool-name (tool-name-from-event event)
+  (if relay-state
+    (let [room-id (slot-room-id relay-state)
+          tool-name (tool-name-from-event event)
           message (if (progress-verbose? relay-state)
                     (str "🔧 Tool started: " tool-name (or (tool-args-summary event) ""))
                     (str "🔧 " tool-name))]
-      (send-slot-progress! deps relay-state message))))
+      (queue-tool-message! deps relay-state room-id message))
+    (js/Promise.resolve nil)))
 
 (defn- handle-tool-end-progress!
   [deps relay-state event]
   (if (and relay-state (progress-verbose? relay-state))
-    (let [tool-name (tool-name-from-event event)
+    (let [room-id (slot-room-id relay-state)
+          tool-name (tool-name-from-event event)
           error? (:isError event)
           icon (if error? "✗" "✓")
           status (if error? "failed" "finished")]
-      (send-slot-progress! deps relay-state (str icon " Tool " status ": " tool-name)))
+      (queue-tool-message! deps relay-state room-id (str icon " Tool " status ": " tool-name)))
     (js/Promise.resolve nil)))
 
 (defn- cache-room-delivery-mode!
@@ -806,7 +923,7 @@
     :names ["status"]
     :usage "status"
     :summary "Show relay status for this Pi session."
-    :details ["Reports the project, slot room, prompt mode, delivery mode, heartbeat, stream, model, context, and usage."]}
+    :details ["Reports the project, slot room, prompt mode, delivery mode, tool message setting, heartbeat, stream, model, context, and usage."]}
    {:command :prompt
     :names ["prompt"]
     :usage "prompt <mode>"
@@ -831,6 +948,13 @@
     :usage "reject"
     :summary "Set this room's default delivery mode to reject while Pi is busy."
     :details ["Reject ignores non-command Matrix messages while Pi is busy."]}
+   {:command :tools
+    :names ["tools"]
+    :usage "tools <on|off|batch <duration>>"
+    :summary "Configure this room's tool execution messages."
+    :details ["Use tools on/off to enable or disable tool execution messages for this room."
+              "Use tools batch <duration> to set the batching window, for example 30s, 60s, or 2m."
+              "Current tool settings are shown in !status."]}
    {:command :abort
     :names ["abort"]
     :usage "abort"
@@ -1127,6 +1251,77 @@
                   (send-room-ack! deps relay-state room-id event-id
                                   (str "Prompt mode update failed: " (or (.-message err) (str err))))
                   true)))))
+
+(def min-tool-message-batch-ms 1000)
+(def max-tool-message-batch-ms 3600000)
+
+(def tools-usage-message
+  "Usage: !tools <on|off|batch <duration>>\nExamples: !tools off, !tools on, !tools batch 30s")
+
+(defn- parse-duration-ms
+  [text]
+  (let [text (str/lower-case (str/trim (str text)))]
+    (when-let [[_ amount unit] (re-matches #"(\d+)(ms|s|m)?" text)]
+      (let [n (js/parseInt amount 10)]
+        (case (or unit "s")
+          "ms" n
+          "s" (* n 1000)
+          "m" (* n 60000)
+          nil)))))
+
+(defn- valid-tool-message-batch-ms?
+  [batch-ms]
+  (and (int? batch-ms)
+       (<= min-tool-message-batch-ms batch-ms max-tool-message-batch-ms)))
+
+(defn- persist-room-tool-message-settings-command!
+  [{:keys [set-room-tool-message-settings!] :as deps} relay-state room-id event-id sender settings ack-message]
+  (if-not set-room-tool-message-settings!
+    (do
+      (send-room-ack! deps relay-state room-id event-id
+                      "Tool message setting update failed: broker client is not available.")
+      (promise true))
+    (-> (promise (set-room-tool-message-settings! (:client-id relay-state) room-id settings sender))
+        (.then (fn [result]
+                 (let [cached-settings (cache-room-tool-message-settings! relay-state room-id result)]
+                   (when (= false (:enabled? cached-settings))
+                     (clear-tool-message-batch! relay-state room-id)))
+                 (send-room-ack! deps relay-state room-id event-id ack-message)
+                 true))
+        (.catch (fn [err]
+                  (send-room-ack! deps relay-state room-id event-id
+                                  (str "Tool message setting update failed: " (or (.-message err) (str err))))
+                  true)))))
+
+(defn- handle-tools-command!
+  [deps relay-state room-id event-id sender args]
+  (let [[subcommand rest-args] (str/split (str/trim args) #"\s+" 2)
+        subcommand (some-> subcommand str/lower-case)
+        rest-args (str/trim (or rest-args ""))]
+    (case subcommand
+      "on"
+      (persist-room-tool-message-settings-command! deps relay-state room-id event-id sender
+                                                   {:enabled? true}
+                                                   "Tool messages for this room are now on.")
+
+      "off"
+      (persist-room-tool-message-settings-command! deps relay-state room-id event-id sender
+                                                   {:enabled? false}
+                                                   "Tool messages for this room are now off.")
+
+      "batch"
+      (let [batch-ms (parse-duration-ms rest-args)]
+        (if (valid-tool-message-batch-ms? batch-ms)
+          (persist-room-tool-message-settings-command! deps relay-state room-id event-id sender
+                                                       {:batch-ms batch-ms}
+                                                       (str "Tool message batch window for this room is now " (format-duration-ms batch-ms) "."))
+          (do
+            (send-room-ack! deps relay-state room-id event-id tools-usage-message)
+            true)))
+
+      (do
+        (send-room-ack! deps relay-state room-id event-id tools-usage-message)
+        true))))
 (defn- handle-remote-command!
   [deps pi ctx relay-state binding matrix-event]
   (let [room-id (:room/id matrix-event)
@@ -1153,6 +1348,9 @@
               (do
                 (send-room-ack! deps relay-state room-id event-id prompt-mode-usage-message)
                 true)))
+
+          :tools
+          (handle-tools-command! deps relay-state room-id event-id (:event/sender matrix-event) args)
 
           :abort
           (handle-abort-command! deps ctx relay-state room-id event-id)
@@ -1318,6 +1516,32 @@
                      (record-diagnostic! diagnostics* :room-prompt-modes-loaded {:rooms (keys cache)})
                      (atom cache))))))))
 
+(defn- load-room-tool-message-settings!
+  [{:keys [get-room-tool-message-settings! diagnostics*]} client-id room-ids]
+  (let [room-ids (vec (distinct (remove str/blank? room-ids)))]
+    (if-not get-room-tool-message-settings!
+      (promise (atom {}))
+      (-> (js/Promise.all
+           (clj->js
+            (mapv (fn [room-id]
+                    (-> (promise (get-room-tool-message-settings! client-id room-id))
+                        (.then (fn [result]
+                                 (assoc (normalize-room-tool-message-settings result)
+                                        :room-id room-id)))))
+                  room-ids)))
+          (.then (fn [results]
+                   (let [cache (->> (js->clj results :keywordize-keys true)
+                                    (keep (fn [{:keys [room-id] :as settings}]
+                                            (let [normalized (normalize-room-tool-message-settings settings)]
+                                              (when (or (contains? normalized :enabled?)
+                                                        (contains? normalized :batch-ms))
+                                                [room-id (merge (default-tool-message-settings)
+                                                                normalized
+                                                                {:source "broker"})]))))
+                                    (into {}))]
+                     (record-diagnostic! diagnostics* :room-tool-message-settings-loaded {:rooms (keys cache)})
+                     (atom cache))))))))
+
 (defn- reconnecting-stream-marker
   []
   #js {:diagnostics (fn []
@@ -1465,11 +1689,13 @@
                                                                                                :rooms subscriptions})
                                       (js/Promise.all
                                        (clj->js [(load-room-delivery-modes! deps client-id subscriptions)
-                                                 (load-room-prompt-modes! deps client-id subscriptions)]))))
+                                                 (load-room-prompt-modes! deps client-id subscriptions)
+                                                 (load-room-tool-message-settings! deps client-id subscriptions)]))))
                                    (.then
                                     (fn [room-settings]
                                       (let [room-delivery-modes* (aget room-settings 0)
                                             room-prompt-modes* (aget room-settings 1)
+                                            room-tool-message-settings* (aget room-settings 2)
                                             heartbeat-id (start-heartbeat! deps ctx client-id (:heartbeat/seconds registration))
                                             relay-state {:client-id client-id
                                                          :project-config project-config
@@ -1481,6 +1707,8 @@
                                                          :room-name (:room/name slot)
                                                          :room-delivery-modes* room-delivery-modes*
                                                          :room-prompt-modes* room-prompt-modes*
+                                                         :room-tool-message-settings* room-tool-message-settings*
+                                                         :tool-message-batches* (atom {})
                                                          :pending-auto-replies* (atom [])
                                                          :session/status "started"
                                                          :session/path cwd
@@ -1840,7 +2068,7 @@
        "  reconnect                         Reconnect this Pi extension instance to the broker.\n"
        "  room bind <room> [alias] [mode]    Bind a Matrix room alias/id to a local target.\n"
        "  room mode <target> <mode>          Set a bound prompt mode: all, mentions, commands-only.\n"
-       "  progress <quiet|normal|verbose>  Configure slot-room typing/progress/tool labels.\n"
+       "  progress <quiet|normal|verbose>  Configure slot-room typing/progress detail.\n"
        "  send <alias-or-room-id> <message>  Send a message to a bound room or raw room id.\n\n"
        "Examples:\n"
        "  /mr status\n"

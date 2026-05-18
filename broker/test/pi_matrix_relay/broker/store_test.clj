@@ -299,6 +299,78 @@
                                                  :now-ms 5000})))
         (is (= :mentions (:mode (store/room-prompt-mode @conn "!project:example.org"))))))))
 
+(deftest room-tool-message-settings-are-persisted-and-authorized
+  (with-conn
+    (fn [conn]
+      (store/register-client! conn {:now-ms 1000}
+                              {:client/instance-id "client-1"
+                               :protocol/version 1
+                               :project {:project/id "project"}
+                               :subscriptions {:rooms ["!project:example.org"]}})
+      (testing "missing settings return nil values"
+        (is (= {:room-id "!project:example.org"
+                :tool-messages-enabled? nil
+                :tool-message-batch-ms nil
+                :updated-at nil
+                :updated-by-client nil
+                :updated-by-user nil}
+               (store/room-tool-message-settings @conn "!project:example.org"))))
+      (testing "subscribed room writes persist tool message settings and updater metadata"
+        (is (= {:room-id "!project:example.org"
+                :tool-messages-enabled? false
+                :tool-message-batch-ms 30000
+                :updated-at 2000
+                :updated-by-client "client-1"
+                :updated-by-user "@alice:example.org"}
+               (store/set-room-tool-message-settings! conn {:client-id "client-1"
+                                                            :room-id "!project:example.org"
+                                                            :tool-messages-enabled? false
+                                                            :tool-message-batch-ms 30000
+                                                            :updated-by-user "@alice:example.org"
+                                                            :now-ms 2000})))
+        (is (= {:room-id "!project:example.org"
+                :tool-messages-enabled? false
+                :tool-message-batch-ms 30000
+                :updated-at 2000
+                :updated-by-client "client-1"
+                :updated-by-user "@alice:example.org"}
+               (store/room-tool-message-settings @conn "!project:example.org"))))
+      (testing "partial updates preserve existing values"
+        (is (= {:room-id "!project:example.org"
+                :tool-messages-enabled? true
+                :tool-message-batch-ms 30000
+                :updated-at 3000
+                :updated-by-client "client-1"
+                :updated-by-user "@alice:example.org"}
+               (store/set-room-tool-message-settings! conn {:client-id "client-1"
+                                                            :room-id "!project:example.org"
+                                                            :tool-messages-enabled? true
+                                                            :updated-by-user "@alice:example.org"
+                                                            :now-ms 3000}))))
+      (testing "unknown or unauthorized rooms are rejected"
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo
+             #"Client is not registered for the target Matrix room"
+             (store/set-room-tool-message-settings! conn {:client-id "client-1"
+                                                          :room-id "!other:example.org"
+                                                          :tool-messages-enabled? false
+                                                          :now-ms 4000})))
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo
+             #"Unknown broker client"
+             (store/set-room-tool-message-settings! conn {:client-id "missing-client"
+                                                          :room-id "!project:example.org"
+                                                          :tool-messages-enabled? false
+                                                          :now-ms 4000}))))
+      (testing "invalid batch windows are rejected before persistence"
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo
+             #"Invalid tool message batch window"
+             (store/set-room-tool-message-settings! conn {:client-id "client-1"
+                                                          :room-id "!project:example.org"
+                                                          :tool-message-batch-ms 0
+                                                          :now-ms 5000})))))))
+
 (deftest idempotency-records-are-transactional-and-inline-capped
   (with-conn
     (fn [conn]

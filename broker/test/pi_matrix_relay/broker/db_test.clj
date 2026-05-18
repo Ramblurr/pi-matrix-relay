@@ -50,6 +50,9 @@
                 :room/default-delivery-mode-updated-by-client [:db.type/ref :db.cardinality/one nil false]
                 :room/prompt-mode [:db.type/keyword :db.cardinality/one nil true]
                 :room/prompt-mode-updated-by-client [:db.type/ref :db.cardinality/one nil false]
+                :room/tool-messages-enabled? [:db.type/boolean :db.cardinality/one nil true]
+                :room/tool-message-batch-ms [:db.type/long :db.cardinality/one nil true]
+                :room/tool-message-settings-updated-by-client [:db.type/ref :db.cardinality/one nil false]
                 :client/instance-id [:db.type/string :db.cardinality/one :db.unique/identity false]
                 :client/subscribed-room [:db.type/ref :db.cardinality/many nil true]
                 :lease/id [:db.type/uuid :db.cardinality/one :db.unique/identity false]
@@ -66,6 +69,9 @@
                 :room/default-delivery-mode-updated-by-client (attr-schema conn :room/default-delivery-mode-updated-by-client)
                 :room/prompt-mode (attr-schema conn :room/prompt-mode)
                 :room/prompt-mode-updated-by-client (attr-schema conn :room/prompt-mode-updated-by-client)
+                :room/tool-messages-enabled? (attr-schema conn :room/tool-messages-enabled?)
+                :room/tool-message-batch-ms (attr-schema conn :room/tool-message-batch-ms)
+                :room/tool-message-settings-updated-by-client (attr-schema conn :room/tool-message-settings-updated-by-client)
                 :client/instance-id (attr-schema conn :client/instance-id)
                 :client/subscribed-room (attr-schema conn :client/subscribed-room)
                 :lease/id (attr-schema conn :lease/id)
@@ -87,6 +93,11 @@
                      :room/prompt-mode-updated-at
                      :room/prompt-mode-updated-by-client
                      :room/prompt-mode-updated-by-user
+                     :room/tool-messages-enabled?
+                     :room/tool-message-batch-ms
+                     :room/tool-message-settings-updated-at
+                     :room/tool-message-settings-updated-by-client
+                     :room/tool-message-settings-updated-by-user
                      :client/instance-id
                      :client/subscribed-room
                      :lease/id
@@ -115,7 +126,12 @@
                  :room/prompt-mode
                  :room/prompt-mode-updated-at
                  :room/prompt-mode-updated-by-client
-                 :room/prompt-mode-updated-by-user}
+                 :room/prompt-mode-updated-by-user
+                 :room/tool-messages-enabled?
+                 :room/tool-message-batch-ms
+                 :room/tool-message-settings-updated-at
+                 :room/tool-message-settings-updated-by-client
+                 :room/tool-message-settings-updated-by-user}
                (set (filter #(= "room" (namespace %)) (schema-idents conn)))))
         (finally
           (db/release-conn! conn))))))

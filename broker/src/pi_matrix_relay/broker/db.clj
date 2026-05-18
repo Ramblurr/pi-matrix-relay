@@ -83,6 +83,23 @@
    {:db/ident :room/prompt-mode-updated-by-user
     :db/valueType :db.type/string
     :db/cardinality :db.cardinality/one}
+ {:db/ident :room/tool-messages-enabled?
+  :db/valueType :db.type/boolean
+  :db/cardinality :db.cardinality/one
+  :db/index true}
+ {:db/ident :room/tool-message-batch-ms
+  :db/valueType :db.type/long
+  :db/cardinality :db.cardinality/one
+  :db/index true}
+ {:db/ident :room/tool-message-settings-updated-at
+  :db/valueType :db.type/instant
+  :db/cardinality :db.cardinality/one}
+ {:db/ident :room/tool-message-settings-updated-by-client
+  :db/valueType :db.type/ref
+  :db/cardinality :db.cardinality/one}
+ {:db/ident :room/tool-message-settings-updated-by-user
+  :db/valueType :db.type/string
+  :db/cardinality :db.cardinality/one}
 
    {:db/ident :matrix-space/key
     :db/valueType :db.type/string

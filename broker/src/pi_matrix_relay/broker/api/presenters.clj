@@ -66,3 +66,12 @@
    :room/prompt-mode-updated-at (iso-instant updated-at)
    :room/prompt-mode-updated-by-client updated-by-client
    :room/prompt-mode-updated-by-user updated-by-user})
+
+(defn room-tool-message-settings
+  [{:keys [room-id tool-messages-enabled? tool-message-batch-ms updated-at updated-by-client updated-by-user]}]
+  {:room/id room-id
+   :room/tool-messages-enabled? tool-messages-enabled?
+   :room/tool-message-batch-ms tool-message-batch-ms
+   :room/tool-message-settings-updated-at (iso-instant updated-at)
+   :room/tool-message-settings-updated-by-client updated-by-client
+   :room/tool-message-settings-updated-by-user updated-by-user})

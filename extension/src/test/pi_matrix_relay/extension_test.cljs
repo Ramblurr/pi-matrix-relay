@@ -16,7 +16,8 @@
 
 (defn- progress-test-deps
   [project-config calls*]
-  (let [interval-counter* (atom 0)]
+  (let [interval-counter* (atom 0)
+        timeout-counter* (atom 0)]
     {:read-project-config! (fn [_cwd]
                             project-config)
      :health! (fn []
@@ -36,6 +37,9 @@
                                 (js/Promise.resolve {:room/default-delivery-mode nil}))
      :get-room-prompt-mode! (fn [_client-id _room-id]
                               (js/Promise.resolve {:room/prompt-mode nil}))
+     :get-room-tool-message-settings! (fn [_client-id _room-id]
+                                        (js/Promise.resolve {:room/tool-messages-enabled? nil
+                                                             :room/tool-message-batch-ms nil}))
      :send-message! (fn [room-id message opts]
                       (swap! calls* conj [:message room-id message opts])
                       (js/Promise.resolve {:event/id "$event:example.org"}))
@@ -48,6 +52,10 @@
                       (let [id (keyword (str "interval-" (swap! interval-counter* inc)))]
                         (swap! calls* conj [:interval ms id])
                         id))
+     :set-timeout! (fn [f ms]
+                     (let [id (keyword (str "timeout-" (swap! timeout-counter* inc)))]
+                       (swap! calls* conj [:timeout ms id f])
+                       id))
      :clear-interval! (fn [id]
                         (swap! calls* conj [:clear-interval id]))
      :open-event-stream! (fn [_opts _client-id _on-event]
@@ -178,10 +186,20 @@
                                                       :args #js {:command "echo hi"}}
                                       ctx)))
               (.then (fn [_]
+                       (call-handler! tool-start #js {:toolName "read"
+                                                      :args #js {:path "README.md"}}
+                                      ctx)))
+              (.then (fn [_]
+                       (is (not-any? message-call? @calls*))
+                       (let [[_kind ms _id flush!] (first (filter #(= :timeout (first %)) @calls*))]
+                         (is (= 60000 ms))
+                         (flush!))
                        (let [messages (filter message-call? @calls*)]
+                         (is (= 1 (count messages)))
                          (is (some (fn [[_kind room-id message _opts]]
                                      (and (= "!slot:example.org" room-id)
-                                          (str/includes? message "bash")))
+                                          (str/includes? message "bash")
+                                          (str/includes? message "read")))
                                    messages))
                          (is (every? (fn [[_kind room-id _message _opts]]
                                        (= "!slot:example.org" room-id))
@@ -235,6 +253,47 @@
                        (is (not-any? (fn [[kind _room-id typing? _opts]]
                                        (and (= :typing kind) (true? typing?)))
                                      @calls*))
+                       (done)))
+              (.catch (fn [err]
+                        (is false (.-stack err))
+                        (done)))))))))
+
+(deftest room-tool-message-preference-off-disables-tool-labels-but-not-typing
+  (async done
+    (let [events* (atom {})
+          calls* (atom [])
+          project-config {:project {:project/id "project"}}
+          pi (pi-with-events events*)
+          ctx #js {:cwd "/work/project"
+                   :ui #js {:setStatus (fn [_key _status])
+                            :notify (fn [_message _level])}}
+          deps (assoc (progress-test-deps project-config calls*)
+                      :get-room-tool-message-settings!
+                      (fn [_client-id room-id]
+                        (js/Promise.resolve {:room/id room-id
+                                             :room/tool-messages-enabled? false
+                                             :room/tool-message-batch-ms 60000})))]
+      (extension/init pi deps)
+      (let [session-start (get @events* "session_start")
+            agent-start (get @events* "agent_start")
+            tool-start (get @events* "tool_execution_start")]
+        (if-not (and session-start agent-start tool-start)
+          (done)
+          (-> (call-handler! session-start #js {:reason "startup"} ctx)
+              (.then (fn [_]
+                       (reset! calls* [])
+                       (call-handler! agent-start #js {} ctx)))
+              (.then (fn [_]
+                       (is (some (fn [[kind room-id typing? _opts]]
+                                   (and (= :typing kind)
+                                        (= "!slot:example.org" room-id)
+                                        (true? typing?)))
+                                 @calls*))
+                       (reset! calls* [])
+                       (call-handler! tool-start #js {:toolName "bash"} ctx)))
+              (.then (fn [_]
+                       (is (not-any? message-call? @calls*))
+                       (is (not-any? #(= :timeout (first %)) @calls*))
                        (done)))
               (.catch (fn [err]
                         (is false (.-stack err))
@@ -1867,6 +1926,9 @@
       (is (str/includes? formatted-body "<th>Connection</th><td>heartbeat 🟢, stream 🟢</td>"))
       (is (not (str/includes? formatted-body "<th>Heartbeat</th>")))
       (is (not (str/includes? formatted-body "<th>Stream</th>")))
+      (is (str/includes? (:message ack) "tool messages: on, batch 60s"))
+      (is (str/includes? formatted-body "<th>Tool messages</th><td>on, batch 60s</td>"))
+      (is (not (str/includes? formatted-body "<th>Progress verbosity</th>")))
       (is (str/includes? formatted-body "<th>Model</th><td><code>openai-codex/gpt-5.5</code></td>"))
       (is (str/includes? formatted-body "<th>Context</th><td>123456 tokens (45%/272k)</td>"))
       (is (str/includes? formatted-body "<th>Usage</th><td>↑360.0k ↓14.0k $4.591</td>")))))
@@ -2117,6 +2179,116 @@
     (extension/handle-broker-event! deps pi ctx relay-state event)
     (is (str/includes? (:message (first @acks*)) "prompt mode: commands-only (broker)"))
     (is (str/includes? (:message (first @acks*)) "default delivery mode: steer (broker)"))))
+
+(deftest matrix-tools-command-updates-room-tool-message-settings-and-status
+  (async done
+    (let [acks* (atom [])
+          persisted* (atom [])
+          tool-settings* (atom {})
+          tool-batches* (atom {"!slot:example.org" {:messages ["🔧 bash"]
+                                                     :timeout-id :timeout-1}})
+          pi #js {:sendUserMessage (fn [_message _options])}
+          ctx #js {:cwd "/work/project"
+                   :isIdle (fn [] true)}
+          relay-state {:client-id "client-1"
+                       :project-config {}
+                       :project {:project/id "project"}
+                       :global-operators #{"@alice:example.org"}
+                       :bot-user-id "@bot:example.org"
+                       :slot "A"
+                       :room-id "!slot:example.org"
+                       :room-name "project-A"
+                       :room-tool-message-settings* tool-settings*
+                       :tool-message-batches* tool-batches*}
+          deps {:set-room-tool-message-settings! (fn [client-id room-id settings updated-by-user]
+                                                  (swap! persisted* conj {:client-id client-id
+                                                                         :room-id room-id
+                                                                         :settings settings
+                                                                         :updated-by-user updated-by-user})
+                                                  (js/Promise.resolve {:room/id room-id
+                                                                       :room/tool-messages-enabled? (:enabled? settings)
+                                                                       :room/tool-message-batch-ms (:batch-ms settings)}))
+                :send-message! (fn [room-id message opts]
+                                (swap! acks* conj {:room-id room-id
+                                                   :message message
+                                                   :opts opts})
+                                (js/Promise.resolve {:event/id "$ack:example.org"}))}
+          event-for (fn [event-id text]
+                      {:type "matrix.message"
+                       :room/id "!slot:example.org"
+                       :event/id event-id
+                       :event/sender "@alice:example.org"
+                       :event/timestamp "2026-05-16T12:34:56Z"
+                       :event/text text})]
+      (-> (js/Promise.resolve (extension/handle-broker-event! deps pi ctx relay-state (event-for "$tools-off" "/tools off")))
+          (.then (fn [_]
+                   (is (= [{:client-id "client-1"
+                            :room-id "!slot:example.org"
+                            :settings {:enabled? false}
+                            :updated-by-user "@alice:example.org"}]
+                          @persisted*))
+                   (is (= {"!slot:example.org" {:enabled? false :batch-ms 60000 :source "broker"}}
+                          @tool-settings*))
+                   (is (= {} @tool-batches*))
+                   (is (str/includes? (:message (first @acks*)) "Tool messages for this room are now off."))
+                   (reset! acks* [])
+                   (extension/handle-broker-event! deps pi ctx relay-state (event-for "$status" "/status"))
+                   (is (str/includes? (:message (first @acks*)) "tool messages: off, batch 60s"))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest matrix-tools-batch-command-updates-room-batch-window
+  (async done
+    (let [acks* (atom [])
+          persisted* (atom [])
+          tool-settings* (atom {"!slot:example.org" {:enabled? true :batch-ms 60000 :source "broker"}})
+          pi #js {:sendUserMessage (fn [_message _options])}
+          ctx #js {:cwd "/work/project"
+                   :isIdle (fn [] true)}
+          relay-state {:client-id "client-1"
+                       :project-config {}
+                       :project {:project/id "project"}
+                       :global-operators #{"@alice:example.org"}
+                       :bot-user-id "@bot:example.org"
+                       :slot "A"
+                       :room-id "!slot:example.org"
+                       :room-name "project-A"
+                       :room-tool-message-settings* tool-settings*}
+          deps {:set-room-tool-message-settings! (fn [client-id room-id settings updated-by-user]
+                                                  (swap! persisted* conj {:client-id client-id
+                                                                         :room-id room-id
+                                                                         :settings settings
+                                                                         :updated-by-user updated-by-user})
+                                                  (js/Promise.resolve {:room/id room-id
+                                                                       :room/tool-messages-enabled? true
+                                                                       :room/tool-message-batch-ms (:batch-ms settings)}))
+                :send-message! (fn [room-id message opts]
+                                (swap! acks* conj {:room-id room-id
+                                                   :message message
+                                                   :opts opts})
+                                (js/Promise.resolve {:event/id "$ack:example.org"}))}
+          event {:type "matrix.message"
+                 :room/id "!slot:example.org"
+                 :event/id "$tools-batch"
+                 :event/sender "@alice:example.org"
+                 :event/timestamp "2026-05-16T12:34:56Z"
+                 :event/text "/tools batch 30s"}]
+      (-> (js/Promise.resolve (extension/handle-broker-event! deps pi ctx relay-state event))
+          (.then (fn [_]
+                   (is (= [{:client-id "client-1"
+                            :room-id "!slot:example.org"
+                            :settings {:batch-ms 30000}
+                            :updated-by-user "@alice:example.org"}]
+                          @persisted*))
+                   (is (= {"!slot:example.org" {:enabled? true :batch-ms 30000 :source "broker"}}
+                          @tool-settings*))
+                   (is (str/includes? (:message (first @acks*)) "Tool message batch window for this room is now 30s."))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
 
 (deftest matrix-status-command-still-acks-when-branch-usage-is-unavailable
   (let [sent* (atom [])
