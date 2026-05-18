@@ -316,6 +316,49 @@
                     (is false (.-stack err))
                     (done)))))))
 
+(deftest run-setup-warns-when-health-reports-matrix-space-error
+  (async done
+    (let [calls* (atom [])
+          confirm-values (atom [true true true false])
+          deps {:read-global-config! (constantly {})
+                :input! (fn [_ _] (js/Promise.resolve "secret"))
+                :editor! (fn [label initial]
+                           (js/Promise.resolve
+                            (case label
+                              "Matrix homeserver URL" "https://matrix.example.org"
+                              "Matrix bot user ID" "@bot:example.org"
+                              "Global operator MXIDs, one per line" ""
+                              "Existing Matrix Space room ID or alias" "!space:example.org"
+                              initial)))
+                :confirm! (fn [_ _]
+                            (js/Promise.resolve (let [v (first @confirm-values)]
+                                                  (swap! confirm-values subvec 1)
+                                                  v)))
+                :write-global-config! (fn [_])
+                :health! (fn []
+                           (js/Promise.resolve {:matrix/connected? true
+                                                :user/id "@bot:example.org"
+                                                :matrix/space {:status "error"
+                                                               :space/enabled? true
+                                                               :error {:code "matrix_space_setup_failed"
+                                                                       :message "Could not join configured Matrix space."}}}))
+                :notify! (fn [message level]
+                           (swap! calls* conj [:notify message level]))
+                :set-status! (fn [status]
+                               (swap! calls* conj [:status status]))}]
+      (-> (setup/run-setup! deps)
+          (.then (fn [_]
+                   (is (some (fn [[op message level]]
+                               (and (= :notify op)
+                                    (= "warning" level)
+                                    (re-find #"Matrix Space setup failed: Could not join configured Matrix space\." message)))
+                             @calls*))
+                   (is (some #(= [:status "matrix: @bot:example.org (Matrix Space error)"] %) @calls*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
 (deftest run-setup-writes-config-installs-service-and-checks-health
   (async done
     (let [calls* (atom [])

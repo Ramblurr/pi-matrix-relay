@@ -47,6 +47,69 @@
         (finally
           (system/stop! running))))))
 
+(deftest broker-system-keeps-running-when-matrix-space-setup-fails
+  (testing "Matrix Space join/setup failures degrade health instead of aborting broker startup"
+    (let [gateway (tu/fake-gateway {:on-ensure-space (fn [_]
+                                                        (throw (ex-info "Could not join configured Matrix space."
+                                                                        {:code :matrix_space_setup_failed
+                                                                         :space-id "!space:example.org"
+                                                                         :bot-user-id "@bot:example.org"})))})
+          runtime-dir (str "/tmp/pi-matrix-relay-system-test-space-" (random-uuid))
+          running (system/start! {:paths {:runtime-dir runtime-dir
+                                          :state-dir (str runtime-dir "/state")
+                                          :socket-path (str runtime-dir "/broker.sock")
+                                          :broker-db-store-id (random-uuid)}
+                                  :http {:transport :tcp :port 0}
+                                  :matrix-gateway gateway})]
+      (try
+        (let [http-server (ds/instance running [:broker :http-server])
+              response (http-get (str "http://127.0.0.1:" (:port http-server) "/v1/health"))
+              health (:data (edn/read-string (.body response)))
+              space (:matrix/space health)]
+          (is (pos? (:port http-server)))
+          (is (= "degraded" (:status health)))
+          (is (true? (:matrix/connected? health)))
+          (is (= {:status "error"
+                  :space/enabled? true}
+                 (select-keys space [:status :space/enabled?])))
+          (is (= {:code "matrix_space_setup_failed"
+                  :message "Could not join configured Matrix space."
+                  :details {:space-id "!space:example.org"
+                            :bot-user-id "@bot:example.org"}}
+                 (:error space))))
+        (finally
+          (system/stop! running))))))
+
+(deftest matrix-space-reconcile-accepts-later-invite-and-links-known-slot-rooms
+  (testing "the running broker can recover Matrix Space setup after an invite arrives"
+    (let [conn (tu/test-db-conn)
+          gateway (tu/fake-gateway {:space-id "!space:example.org"})]
+      (try
+        (store/remember-slot-room! conn {:project {:project/id "project"}
+                                         :slot "A"
+                                         :room-id "!project-A:example.org"
+                                         :room-name "project-A"})
+        (let [status* (atom {:status "error"
+                             :space/enabled? true
+                             :error {:code "matrix_space_setup_failed"
+                                     :message "waiting for invite"}})
+              status (system/reconcile-matrix-space! {:matrix-gateway gateway
+                                                      :db-conn conn
+                                                      :matrix-space status*})]
+          (is (= status @status*))
+          (is (= {:status "ok"
+                  :space/enabled? true
+                  :space/id "!space:example.org"
+                  :space/mode :existing
+                  :slot-room-links {:attempted 1
+                                    :linked 1
+                                    :failed []}}
+                 status))
+          (is (= [:ensure-space :ensure-room-in-space]
+                 (mapv first (tu/calls gateway)))))
+        (finally
+          (db/release-conn! conn))))))
+
 (deftest broker-system-refuses-to-start-twice-for-the-same-runtime-dir
   (testing "a process lock prevents a second broker from stealing the Unix socket"
     (let [runtime-dir (str "/tmp/pi-matrix-relay-system-test-lock-" (random-uuid))

@@ -1436,6 +1436,24 @@
     (:value result)
     {:error (:error result)}))
 
+(defn- matrix-space-error-message
+  [space]
+  (or (get-in space [:error :message])
+      "Matrix Space setup failed"))
+
+(defn- matrix-space-error?
+  [health]
+  (= "error" (get-in health [:matrix/space :status])))
+
+(defn- matrix-space-summary-line
+  [health]
+  (when-let [space (:matrix/space health)]
+    (case (:status space)
+      "error" (str "space: error " (matrix-space-error-message space))
+      "ok" (str "space: " (or (:space/id space) "ok"))
+      "disabled" "space: disabled"
+      nil)))
+
 (defn- broker-summary-line
   [broker]
   (let [health (:health broker)]
@@ -1488,6 +1506,8 @@
               (str/join "\n" (map diagnostic-error-line errors))
               "\n"))
        (broker-summary-line broker) "\n"
+       (when-let [space-line (matrix-space-summary-line (:health broker))]
+         (str space-line "\n"))
        (slots-summary-line broker)))
 
 (defn execute-matrix-relay-diagnostics!
@@ -1670,9 +1690,12 @@
                       "broker: Matrix not connected"
 
                       :else
-                      "broker: status unknown")]
+                      "broker: status unknown")
+        space-line (matrix-space-summary-line health)]
     (str "Matrix relay status\n"
          broker-line "\n"
+         (when space-line
+           (str space-line "\n"))
          (if relay-state
            (str "extension: connected to broker\n"
                 "project: " (or (get-in relay-state [:project :project/id]) "unknown") "\n"
@@ -1688,6 +1711,7 @@
 (defn- tui-status-level
   [health relay-state]
   (if (and (:matrix/connected? health)
+           (not (matrix-space-error? health))
            relay-state
            (event-stream-active? relay-state))
     "info"

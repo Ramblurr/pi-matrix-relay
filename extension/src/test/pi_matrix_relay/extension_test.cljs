@@ -676,6 +676,38 @@
                     (is false (.-stack err))
                     (done)))))))
 
+(deftest tui-status-reports-matrix-space-setup-errors
+  (async done
+    (let [notifications* (atom [])
+          deps {:relay-state* (atom {:client-id "client-1"
+                                     :project-config {}
+                                     :project {:project/id "project"}
+                                     :slot "A"
+                                     :room-id "!slot:example.org"
+                                     :room-name "project-A"
+                                     :heartbeat-id :heartbeat-1
+                                     :stream #js {}})
+                :health! (fn []
+                           (js/Promise.resolve {:matrix/connected? true
+                                                :user/id "@bot:example.org"
+                                                :matrix/space {:status "error"
+                                                               :space/enabled? true
+                                                               :error {:code "matrix_space_setup_failed"
+                                                                       :message "Could not join configured Matrix space."}}}))}
+          ctx #js {:cwd "/work/project"
+                   :ui #js {:notify (fn [message level]
+                                      (swap! notifications* conj [message level]))}}]
+      (-> (extension/handle-command! deps "status" ctx)
+          (.then (fn [_]
+                   (let [[message level] (first @notifications*)]
+                     (is (= "warning" level))
+                     (is (str/includes? message "broker: Matrix connected as @bot:example.org"))
+                     (is (str/includes? message "space: error Could not join configured Matrix space.")))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
 (deftest tui-status-reports-closed-event-stream-as-inactive
   (async done
     (let [notifications* (atom [])

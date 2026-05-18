@@ -413,6 +413,13 @@
   [db room-id]
   (slot-room-from-entity db (slot-room-eid-by-room-id db room-id)))
 
+(defn list-slot-rooms
+  [db]
+  (mapv #(slot-room-from-entity db %)
+        (d/q '[:find [?slot-room ...]
+               :where [?slot-room :slot-room/room _]]
+             db)))
+
 (defn remember-slot-room!
   [conn {:keys [project slot room-id room-name now-ms] :as command}]
   (let [project-key (or (:project-key command) (project-key project))

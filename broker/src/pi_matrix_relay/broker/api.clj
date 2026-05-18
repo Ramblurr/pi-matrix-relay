@@ -91,10 +91,32 @@
         reservation))
     (thunk)))
 
+(defn- include-matrix-space-health?
+  [matrix-space]
+  (and matrix-space
+       (not= "disabled" (:status matrix-space))))
+
+(defn- current-matrix-space-health
+  [matrix-space]
+  (if (instance? clojure.lang.IDeref matrix-space)
+    @matrix-space
+    matrix-space))
+
+(defn- attach-matrix-space-health
+  [health matrix-space]
+  (let [matrix-space (current-matrix-space-health matrix-space)]
+    (cond-> health
+      (include-matrix-space-health? matrix-space)
+      (assoc :matrix/space matrix-space)
+
+      (= "error" (:status matrix-space))
+      (assoc :status "degraded"))))
+
 (defn health-handler
-  [{:keys [matrix-gateway]}]
+  [{:keys [matrix-gateway matrix-space]}]
   (fn [_]
-    (response/ok-response (matrix/health matrix-gateway))))
+    (response/ok-response
+     (attach-matrix-space-health (matrix/health matrix-gateway) matrix-space))))
 
 (defn register-client-handler
   [{:keys [db-conn config] :as env}]

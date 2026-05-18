@@ -117,6 +117,141 @@
   (when thread
     (.interrupt ^Thread thread)))
 
+(defn- simple-health-value
+  [value]
+  (cond
+    (or (nil? value) (string? value) (number? value) (keyword? value) (boolean? value)) value
+    (map? value) (into {}
+                       (map (fn [[k v]]
+                              [(simple-health-value k) (simple-health-value v)]))
+                       value)
+    (set? value) (set (map simple-health-value value))
+    (sequential? value) (mapv simple-health-value value)
+    :else (str value)))
+
+(defn- throwable-details
+  [throwable]
+  (not-empty (simple-health-value (dissoc (ex-data throwable) :code))))
+
+(defn- matrix-space-success-status
+  [result]
+  (cond
+    (false? (:space/enabled? result))
+    {:status "disabled"
+     :space/enabled? false}
+
+    (:space/id result)
+    (assoc result
+           :status "ok"
+           :space/enabled? true)
+
+    :else
+    (assoc (or result {})
+           :status "ok"
+           :space/enabled? true)))
+
+(defn- matrix-space-error-status
+  [throwable]
+  {:status "error"
+   :space/enabled? true
+   :error (cond-> {:code (name (or (:code (ex-data throwable)) :matrix_space_setup_failed))
+                   :message (or (ex-message throwable) "Matrix Space setup failed.")}
+            (throwable-details throwable)
+            (assoc :details (throwable-details throwable))
+
+            (ex-cause throwable)
+            (assoc-in [:details :cause]
+                      {:message (or (ex-message (ex-cause throwable)) "unknown cause")
+                       :class (.getName (class (ex-cause throwable)))}))})
+
+(defn- ensure-matrix-space-status!
+  [{:keys [matrix-gateway db-conn]}]
+  (try
+    (matrix-space-success-status
+     (matrix/ensure-space! matrix-gateway {:db-conn db-conn}))
+    (catch Throwable throwable
+      (matrix-space-error-status throwable))))
+
+(defn- slot-room-link-result
+  [matrix-gateway slot-room]
+  (try
+    (assoc (matrix/ensure-room-in-space! matrix-gateway {:room/id (:room-id slot-room)})
+           :project-key (:project-key slot-room)
+           :slot (:slot slot-room))
+    (catch Throwable throwable
+      {:room/id (:room-id slot-room)
+       :project-key (:project-key slot-room)
+       :slot (:slot slot-room)
+       :linked? false
+       :error (:error (matrix-space-error-status throwable))})))
+
+(defn- link-known-slot-rooms!
+  [{:keys [db-conn matrix-gateway]}]
+  (if (and db-conn matrix-gateway)
+    (mapv #(slot-room-link-result matrix-gateway %)
+          (store/list-slot-rooms @db-conn))
+    []))
+
+(defn- slot-room-link-summary
+  [results]
+  {:attempted (count results)
+   :linked (count (filter :linked? results))
+   :failed (vec (remove :linked? results))})
+
+(defn reconcile-matrix-space!
+  "Retry configured Matrix Space setup and, once available, link known slot rooms.
+
+  This is safe to call periodically. It updates `:matrix-space`, an atom holding
+  the health-visible Matrix Space status, and returns the new status map."
+  [{:keys [matrix-space link-slot-rooms?] :as config}]
+  (let [old-status (when matrix-space @matrix-space)]
+    (if (= "disabled" (:status old-status))
+      old-status
+      (let [status (ensure-matrix-space-status! config)
+            should-link? (and (= "ok" (:status status))
+                              (or link-slot-rooms?
+                                  (not= "ok" (:status old-status))))
+            link-results (when should-link?
+                           (link-known-slot-rooms! config))
+            status (cond-> status
+                     (seq link-results) (assoc :slot-room-links
+                                               (slot-room-link-summary link-results)))]
+        (when matrix-space
+          (reset! matrix-space status))
+        status))))
+
+(defn- start-matrix-space-reconciler!
+  [{:keys [config] :as reconcile-config}]
+  (let [running? (atom true)
+        first-run? (atom true)
+        interval-ms (* 1000 (long (or (get-in config [:matrix :space :reconcile-seconds]) 10)))
+        run-once! (fn []
+                    (try
+                      (reconcile-matrix-space! (assoc reconcile-config
+                                                      :link-slot-rooms? @first-run?))
+                      (reset! first-run? false)
+                      (catch Throwable _
+                        nil)))
+        thread (Thread/startVirtualThread
+                (fn []
+                  (run-once!)
+                  (while @running?
+                    (try
+                      (Thread/sleep interval-ms)
+                      (run-once!)
+                      (catch InterruptedException _
+                        (reset! running? false))))))]
+    {:running? running?
+     :thread thread
+     :interval-ms interval-ms}))
+
+(defn- stop-matrix-space-reconciler!
+  [{:keys [running? thread]}]
+  (when running?
+    (reset! running? false))
+  (when thread
+    (.interrupt ^Thread thread)))
+
 (defn- merge-path-overrides
   [overrides]
   (let [base (paths/xdg-paths)
@@ -196,20 +331,31 @@
                                      :runtime (ds/ref [:broker :runtime])}}
 
       :matrix-space #::ds{:start (fn [{::ds/keys [config]}]
-                                  (matrix/ensure-space! (:matrix-gateway config)
-                                                        {:db-conn (:db-conn config)}))
-                         :config {:matrix-gateway (ds/ref [:broker :matrix-gateway])
-                                  :db-conn (ds/ref [:broker :db-conn])}}
+                                   (atom (ensure-matrix-space-status! {:matrix-gateway (:matrix-gateway config)
+                                                                       :db-conn (:db-conn config)})))
+                          :config {:matrix-gateway (ds/ref [:broker :matrix-gateway])
+                                   :db-conn (ds/ref [:broker :db-conn])}}
+
+      :matrix-space-reconciler #::ds{:start (fn [{::ds/keys [config]}]
+                                              (start-matrix-space-reconciler! config))
+                                     :stop (fn [{::ds/keys [instance]}]
+                                             (stop-matrix-space-reconciler! instance))
+                                     :config {:matrix-space (ds/ref [:broker :matrix-space])
+                                              :matrix-gateway (ds/ref [:broker :matrix-gateway])
+                                              :db-conn (ds/ref [:broker :db-conn])
+                                              :config (ds/ref [:broker :config])}}
       :app #::ds{:start (fn [{::ds/keys [config]}]
                           (api/app {:db-conn (:db-conn config)
                                     :runtime (:runtime config)
                                     :matrix-gateway (:matrix-gateway config)
+                                    :matrix-space (:matrix-space config)
                                     :config (:broker-config config)}))
                  :config {:db-conn (ds/ref [:broker :db-conn])
                           :runtime (ds/ref [:broker :runtime])
                           :matrix-gateway (ds/ref [:broker :matrix-gateway])
                           :broker-config (ds/ref [:broker :config])
-                          :matrix-space (ds/ref [:broker :matrix-space])}}
+                          :matrix-space (ds/ref [:broker :matrix-space])
+                          :matrix-space-reconciler (ds/ref [:broker :matrix-space-reconciler])}}
       :http-server #::ds{:start (fn [{::ds/keys [instance config]}]
                                   (or instance
                                       (http/start-server! (:handler config)

@@ -187,11 +187,20 @@
                              (ask (str value))))))))]
     (ask initial)))
 
+(defn- matrix-space-error-message
+  [health]
+  (when (= "error" (get-in health [:matrix/space :status]))
+    (or (get-in health [:matrix/space :error :message])
+        "Matrix Space setup failed")))
+
 (defn- status-text
   [health]
-  (if-let [user-id (:user/id health)]
-    (str "matrix: " user-id)
-    "matrix: disconnected"))
+  (let [matrix-status (if-let [user-id (:user/id health)]
+                        (str "matrix: " user-id)
+                        "matrix: disconnected")]
+    (if (matrix-space-error-message health)
+      (str matrix-status " (Matrix Space error)")
+      matrix-status)))
 
 (defn- connected?
   [health]
@@ -319,11 +328,16 @@
         (.then (fn [_]
                  (poll-health! deps)))
         (.then (fn [health]
-                 (let [status (status-text health)]
+                 (let [status (status-text health)
+                       space-error (matrix-space-error-message health)]
                    (when set-status!
                      (set-status! status))
                    (when notify!
-                     (notify! (str "Matrix relay setup complete: " status) "info"))
+                     (notify! (if space-error
+                                (str "Matrix relay setup complete: " status
+                                     "\nMatrix Space setup failed: " space-error)
+                                (str "Matrix relay setup complete: " status))
+                              (if space-error "warning" "info")))
                    health)))
         (.catch (fn [err]
                   (when notify!
