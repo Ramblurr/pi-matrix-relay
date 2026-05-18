@@ -22,6 +22,7 @@ shadow-cljs.
 
 - Always acknowledge Matrix/user messages before long development or research stretches so the operator knows the relay is alive and work has started.
 - Do not ship best-effort placeholders, fake implementations, or degraded fallbacks as if they are complete. If a feature cannot be implemented properly with the available Pi/broker APIs, stop and raise the limitation for discussion before proceeding.
+- At this early stage: absolutely no backwards compatibility. If possible to an inplace migration of state, but if it is too much work just blow it away and start fresh.
 
 ## Local dev
 
