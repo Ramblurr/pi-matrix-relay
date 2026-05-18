@@ -1,9 +1,17 @@
 {:tasks
- {:init (do (def paths ["src/main" "src/test"]))
+ {:init (do (require '[clojure.string :as str])
+            (def paths ["src/main" "src/test"])
+            (defn assert-marked-bundled []
+              (let [bundle (slurp "dist/pi-matrix-relay.js")]
+                (when (or (str/includes? bundle "require(\"marked\")")
+                          (str/includes? bundle "require('marked')"))
+                  (throw (ex-info "dist/pi-matrix-relay.js must bundle marked; external require would fail when copied to .pi/extensions" {}))))))
 
   shadow-server (shell "./node_modules/.bin/shadow-cljs server")
   shadow-compile (shell "./node_modules/.bin/shadow-cljs compile :app")
-  shadow-release (shell "./node_modules/.bin/shadow-cljs release :app")
+  shadow-release (do
+                   (shell "./node_modules/.bin/shadow-cljs release :app")
+                   (assert-marked-bundled))
   shadow-test (do
                 (shell "./node_modules/.bin/shadow-cljs compile test")
                 (shell "node out/node-tests.js"))

@@ -11,6 +11,8 @@
  {:app {:target :node-library
         :output-to "dist/pi-matrix-relay.js"
         :exports-var pi-matrix-relay.extension/init
+        :js-options {:js-provider :shadow
+                     :keep-native-requires true}
         :compiler-options {:infer-externs :auto}}
   :test {:target :node-test
          :output-to "out/node-tests.js"
