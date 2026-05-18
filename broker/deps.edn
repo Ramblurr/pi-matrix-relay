@@ -1,7 +1,7 @@
 {:paths ["src" "resources"]
  :deps  {org.clojure/clojure               {:mvn/version "1.12.4"}
          party.donut/system                {:mvn/version "1.0.258"}
-         http-kit/http-kit                 {:mvn/version "2.8.1"}
+         http-kit/http-kit                 {:mvn/version "2.9.0-beta3"}
          metosin/reitit-ring               {:mvn/version "0.10.1"}
          ring/ring-core                    {:mvn/version "1.15.2"}
          com.cnuernber/charred             {:mvn/version "1.037"}
