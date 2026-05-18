@@ -312,6 +312,20 @@
               [?lease :lease/slot ?slot]]
             db project-id)))
 
+(defn- active-leases-for-project-client
+  [db project-id client-id]
+  (d/q '[:find ?lease ?slot ?state
+         :in $ ?project-id ?client-id
+         :where
+         [?project :project/id ?project-id]
+         [?client :client/instance-id ?client-id]
+         [?lease :lease/project ?project]
+         [?lease :lease/client ?client]
+         [?lease :lease/state ?state]
+         [(contains? #{:reserved :leased :suspect} ?state)]
+         [?lease :lease/slot ?slot]]
+       db project-id client-id))
+
 (defn- project-row
   [db key]
   (first (sort-by first
@@ -326,7 +340,9 @@
   [db {:keys [project-key project-root project-display-name project-id client-id lease-id reservation-id now]}]
   (let [[project-eid existing-project-id] (project-row db project-key)
         project-id (or existing-project-id project-id)
-        active-slots (active-slots-for-project-id db project-id)
+        client-active-leases (active-leases-for-project-client db project-id client-id)
+        client-active-slots (set (map second client-active-leases))
+        active-slots (set (remove client-active-slots (active-slots-for-project-id db project-id)))
         slot (slots/first-free-slot active-slots)
         project-ref [:project/id project-id]]
     (cond-> []
@@ -335,6 +351,13 @@
                      :project/key project-key}
               project-root (assoc :project/root project-root)
               project-display-name (assoc :project/display-name project-display-name)))
+
+      true
+      (into (mapcat (fn [[lease _slot state]]
+                      [[:db/cas lease :lease/state state :released]
+                       [:db/add lease :lease/released-at now]
+                       [:db/add lease :lease/release-reason :replaced]])
+                    client-active-leases))
 
       true
       (conj {:lease/id lease-id

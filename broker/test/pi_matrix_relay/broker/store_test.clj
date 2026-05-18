@@ -137,6 +137,40 @@
                                                   :project {:project/id "project"}})]
           (is (= "A" (:slot reservation-3))))))))
 
+(deftest reserving-slot-for-same-client-replaces-existing-active-lease
+  (with-conn
+    (fn [conn]
+      (store/register-client! conn {:now-ms 1000}
+                              {:client/instance-id "client-1"
+                               :protocol/version 1
+                               :project {:project/id "project"}})
+      (let [reservation-1 (store/reserve-slot! conn {:now-ms 1100}
+                                               {:client-id "client-1"
+                                                :project {:project/id "project"}})]
+        (store/complete-slot-reservation! conn {:now-ms 1200
+                                                :lease-id (:lease-id reservation-1)
+                                                :reservation-id (:reservation-id reservation-1)
+                                                :client-id "client-1"
+                                                :room-id "!project-A:example.org"
+                                                :room-name "project-A"})
+        (let [reservation-2 (store/reserve-slot! conn {:now-ms 1300}
+                                                 {:client-id "client-1"
+                                                  :project {:project/id "project"}})]
+          (is (= "A" (:slot reservation-2)))
+          (is (= [{:slot "A" :state :reserved}]
+                 (mapv #(select-keys % [:slot :state])
+                       (:slots (store/list-slots @conn "project")))))
+          (is (= [{:slot "A" :state :released :release-reason :replaced}
+                  {:slot "A" :state :reserved}]
+                 (mapv #(select-keys % [:slot :state :release-reason])
+                       (sort-by :reserved-at
+                                (filter #(= "A" (:slot %))
+                                        (mapv (fn [lease-id]
+                                                (#'store/lease-by-id @conn lease-id))
+                                              (d/q '[:find [?lease-id ...]
+                                                     :where [?lease :lease/id ?lease-id]]
+                                                   @conn))))))))))))
+
 (deftest stale-and-suspect-lease-transitions-are-cas-backed
   (with-conn
     (fn [conn]

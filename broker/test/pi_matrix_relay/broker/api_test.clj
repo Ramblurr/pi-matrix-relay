@@ -819,6 +819,11 @@
                            :client/instance-id "instance-slot"
                            :protocol/version 1
                            :project {:project/id "project"}})
+          (tu/edn-request app :post "/v1/clients"
+                          {:request/id "register-slot-2"
+                           :client/instance-id "instance-slot-2"
+                           :protocol/version 1
+                           :project {:project/id "project"}})
           (let [first-acquire (tu/edn-request app :post "/v1/slots/acquire"
                                               {:request/id "acquire-1"
                                                :client/id "instance-slot"
@@ -835,7 +840,7 @@
                                                     :project {:project/id "other-project"}})
                 second-acquire (tu/edn-request app :post "/v1/slots/acquire"
                                                {:request/id "acquire-2"
-                                                :client/id "instance-slot"
+                                                :client/id "instance-slot-2"
                                                 :project {:project/id "project"}})]
             (is (= {:first {:ok true
                             :data {:slot "A"
