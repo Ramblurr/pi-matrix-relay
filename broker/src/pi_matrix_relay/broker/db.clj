@@ -71,6 +71,24 @@
     :db/valueType :db.type/string
     :db/cardinality :db.cardinality/one}
 
+   {:db/ident :matrix-space/key
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :matrix-space/room-id
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/index true}
+   {:db/ident :matrix-space/source
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :matrix-space/created-at
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :matrix-space/updated-at
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
+
    {:db/ident :slot-room/project
     :db/valueType :db.type/ref
     :db/cardinality :db.cardinality/one

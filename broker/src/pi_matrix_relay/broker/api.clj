@@ -38,6 +38,7 @@
                  :idempotency_conflict 409
                  :request_in_progress 409
                  :matrix_http_failed 502
+                 :matrix_space_setup_failed 503
                  500)]
     (response/error-response status code (ex-message throwable) (dissoc data :code))))
 
@@ -211,7 +212,11 @@
   (fn [request]
     (let [body (body-params request)]
       (response/ok-response
-       (idempotent! env :matrix/create-room request #(matrix/create-room! matrix-gateway body))))))
+       (idempotent!
+        env :matrix/create-room request
+        #(let [created (matrix/create-room! matrix-gateway body)]
+           (matrix/ensure-room-in-space! matrix-gateway {:room/id (:room/id created)})
+           created))))))
 
 (defn- joined-room?
   [room]
@@ -336,6 +341,7 @@
       (matrix/ensure-users-power-level! matrix-gateway {:room/id (:room-id slot-room)
                                                         :users (vec invite)
                                                         :level 100}))
+    (matrix/ensure-room-in-space! matrix-gateway {:room/id (:room-id slot-room)})
     slot-room))
 
 (defn acquire-slot-handler

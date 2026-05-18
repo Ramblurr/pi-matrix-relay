@@ -93,6 +93,46 @@
   (d/transact conn [{:room/id room-id}])
   (room-by-id @conn room-id))
 
+(defn- matrix-space-from-entity
+  [db entity-id]
+  (when entity-id
+    (let [space (d/pull db [:matrix-space/key
+                            :matrix-space/room-id
+                            :matrix-space/source
+                            :matrix-space/created-at
+                            :matrix-space/updated-at]
+                        entity-id)]
+      {:space-key (:matrix-space/key space)
+       :room-id (:matrix-space/room-id space)
+       :source (:matrix-space/source space)
+       :created-at (instant->ms (:matrix-space/created-at space))
+       :updated-at (instant->ms (:matrix-space/updated-at space))})))
+
+(defn matrix-space
+  [db space-key]
+  (matrix-space-from-entity
+   db
+   (first-entity db
+                 '[:find ?space
+                   :in $ ?space-key
+                   :where [?space :matrix-space/key ?space-key]]
+                 space-key)))
+
+(defn remember-matrix-space!
+  [conn {:keys [space-key room-id source now-ms]}]
+  (when (str/blank? (str space-key))
+    (throw (ex-info "Matrix space key is required." {:code :invalid_request})))
+  (when (str/blank? (str room-id))
+    (throw (ex-info "Matrix space room ID is required." {:code :invalid_request})))
+  (let [now (now-date now-ms)
+        existing (matrix-space @conn space-key)]
+    (d/transact conn [(cond-> {:matrix-space/key space-key
+                               :matrix-space/room-id room-id
+                               :matrix-space/source (or source :existing)
+                               :matrix-space/updated-at now}
+                        (nil? existing) (assoc :matrix-space/created-at now))])
+    (matrix-space @conn space-key)))
+
 (defn ensure-project!
   [conn project]
   (let [key (project-key project)]

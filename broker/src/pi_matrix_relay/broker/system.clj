@@ -194,6 +194,12 @@
                                      :paths (ds/ref [:broker :paths])
                                      :db-conn (ds/ref [:broker :db-conn])
                                      :runtime (ds/ref [:broker :runtime])}}
+
+      :matrix-space #::ds{:start (fn [{::ds/keys [config]}]
+                                  (matrix/ensure-space! (:matrix-gateway config)
+                                                        {:db-conn (:db-conn config)}))
+                         :config {:matrix-gateway (ds/ref [:broker :matrix-gateway])
+                                  :db-conn (ds/ref [:broker :db-conn])}}
       :app #::ds{:start (fn [{::ds/keys [config]}]
                           (api/app {:db-conn (:db-conn config)
                                     :runtime (:runtime config)
@@ -202,7 +208,8 @@
                  :config {:db-conn (ds/ref [:broker :db-conn])
                           :runtime (ds/ref [:broker :runtime])
                           :matrix-gateway (ds/ref [:broker :matrix-gateway])
-                          :broker-config (ds/ref [:broker :config])}}
+                          :broker-config (ds/ref [:broker :config])
+                          :matrix-space (ds/ref [:broker :matrix-space])}}
       :http-server #::ds{:start (fn [{::ds/keys [instance config]}]
                                   (or instance
                                       (http/start-server! (:handler config)

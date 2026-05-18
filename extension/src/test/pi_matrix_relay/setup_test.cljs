@@ -19,6 +19,38 @@
                                     :operators ["@alice:example.org"]
                                     :encrypted? true}))))
 
+(deftest config-from-fields-writes-matrix-space-settings
+  (is (= {:enabled? true
+          :mode "existing"
+          :room-id-or-alias "#relay:example.org"}
+         (get-in (setup/config-from-fields {:homeserver-url "https://matrix.example.org"
+                                            :user-id "@bot:example.org"
+                                            :password "secret"
+                                            :operators []
+                                            :encrypted? true
+                                            :space {:mode "existing"
+                                                    :room-id-or-alias "#relay:example.org"}})
+                 [:matrix :space])))
+  (is (= {:enabled? true
+          :mode "create"
+          :name "Pi Relay"}
+         (get-in (setup/config-from-fields {:homeserver-url "https://matrix.example.org"
+                                            :user-id "@bot:example.org"
+                                            :password "secret"
+                                            :operators []
+                                            :encrypted? true
+                                            :space {:mode "create"
+                                                    :name "Pi Relay"}})
+                 [:matrix :space])))
+  (is (= {:enabled? false}
+         (get-in (setup/config-from-fields {:homeserver-url "https://matrix.example.org"
+                                            :user-id "@bot:example.org"
+                                            :password "secret"
+                                            :operators []
+                                            :encrypted? true
+                                            :space {:mode "none"}})
+                 [:matrix :space]))))
+
 (deftest setup-field-validation-rejects-bad-urls-and-mxids
   (testing "homeserver must be a real https URL"
     (try
@@ -287,7 +319,7 @@
 (deftest run-setup-writes-config-installs-service-and-checks-health
   (async done
     (let [calls* (atom [])
-          confirm-values (atom [true true])
+          confirm-values (atom [true false true])
           deps {:read-global-config! (constantly {})
                 :input! (fn [label placeholder]
                           (swap! calls* conj [:input label placeholder])
