@@ -180,7 +180,7 @@
 (defn open-event-stream!
   ([uri on-event]
    (open-event-stream! {:env (.-env js/process)} uri on-event))
-  ([{:keys [env on-error on-close diagnostics]} uri on-event]
+  ([{:keys [env on-error on-close on-open diagnostics]} uri on-event]
    (let [env (or env (.-env js/process))
          state* (atom (merge {:stream/path uri
                               :stream/started-at (now-ms)
@@ -214,6 +214,8 @@
                                   :http/status-code status-code
                                   :response/at (now-ms)
                                   :stream/connected? (= 200 status-code))
+                           (when (and (= 200 status-code) on-open)
+                             (on-open (event-stream-diagnostics @state*)))
                            (when (not= 200 status-code)
                              (record-error! (js/Error. (str "Event stream HTTP " status-code))))
                            (.setEncoding res "utf8")

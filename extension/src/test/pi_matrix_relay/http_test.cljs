@@ -172,6 +172,38 @@
         (is (not (contains? closed :sse/buffer)))
         (is (not (contains? closed :close/notified?)))))))
 
+(deftest event-stream-notifies-caller-when-http-stream-opens
+  (let [res-handlers* (atom {})
+        req-handlers* (atom {})
+        opened* (atom [])
+        fake-http #js {:request (fn [_opts callback]
+                                  (let [res #js {:statusCode 200
+                                                 :setEncoding (fn [_encoding])
+                                                 :on (fn [event handler]
+                                                       (swap! res-handlers* assoc event handler))}]
+                                    (callback res)
+                                    #js {:on (fn [event handler]
+                                               (swap! req-handlers* assoc event handler))
+                                         :end (fn [])
+                                         :destroy (fn [])}))}]
+    (with-redefs [http/node-http fake-http]
+      (http/open-event-stream! {:env #js {"XDG_RUNTIME_DIR" "/run/user/1000"}
+                                :diagnostics {:client/id "client-1"}
+                                :on-open #(swap! opened* conj %)}
+                               "/v1/clients/client-1/events"
+                               (fn [_event]))
+      (is (= 1 (count @opened*)))
+      (is (= {:client/id "client-1"
+              :stream/path "/v1/clients/client-1/events"
+              :stream/connected? true
+              :stream/closed? false
+              :http/status-code 200}
+             (select-keys (first @opened*) [:client/id
+                                            :stream/path
+                                            :stream/connected?
+                                            :stream/closed?
+                                            :http/status-code]))))))
+
 (deftest event-stream-parses-split-events-and-updates-diagnostics
   (let [res-handlers* (atom {})
         req-handlers* (atom {})

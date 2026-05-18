@@ -414,6 +414,11 @@
       (catch js/Error inject-err
         (record-diagnostic! diagnostics* :debug-context-error (error-summary inject-err))))))
 
+(defn- event-stream-close-error
+  [state]
+  (js/Error. (or (get-in state [:error/last :message])
+                 (str "Event stream closed: " (:stream/close-reason state)))))
+
 (defn- js->clj-safe
   [value]
   (try
@@ -1166,13 +1171,15 @@
         (reopen!)))))
 
 (defn- open-relay-event-stream!
-  [{:keys [open-event-stream! diagnostics*] :as deps} pi ctx relay-state* client-id]
-  (when open-event-stream!
+  ([deps pi ctx relay-state* client-id]
+   (open-relay-event-stream! deps pi ctx relay-state* client-id false))
+  ([{:keys [open-event-stream! diagnostics*] :as deps} pi ctx relay-state* client-id reconnect?]
+   (when open-event-stream!
     (let [stream* (atom nil)
           reopen! (fn []
                     (let [marker (reconnecting-stream-marker)]
                       (when (claim-empty-stream-slot! relay-state* client-id marker)
-                        (let [stream (open-relay-event-stream! deps pi ctx relay-state* client-id)]
+                        (let [stream (open-relay-event-stream! deps pi ctx relay-state* client-id true)]
                           (if stream
                             (if (replace-stream-marker! relay-state* marker stream)
                               (record-diagnostic! diagnostics* :event-stream-reopened {:client/id client-id})
@@ -1180,11 +1187,13 @@
                             (replace-stream-marker! relay-state* marker nil))))))
           stream (open-event-stream!
                   {:on-error (fn [err]
-                               (record-diagnostic! diagnostics* :event-stream-error (error-summary err))
-                               (inject-extension-error-notice! deps pi @relay-state* {:source "event-stream"} err)
-                               (notify! ctx (str "Matrix relay event stream failed: " (.-message err)) "warning"))
+                               (record-diagnostic! diagnostics* :event-stream-error (error-summary err)))
+                   :on-open (fn [_state]
+                              (when reconnect?
+                                (notify! ctx "Matrix relay event stream reconnected." "info")))
                    :on-close (fn [state]
                                (record-diagnostic! diagnostics* :event-stream-closed (select-keys state [:client/id
+                                                                                                           :stream/connected?
                                                                                                            :stream/close-reason
                                                                                                            :close/requested?
                                                                                                            :error/last]))
@@ -1195,14 +1204,16 @@
                                             (if (= (:stream relay-state) @stream*)
                                               (dissoc relay-state :stream)
                                               relay-state))))
-                                 (notify! ctx "Matrix relay event stream closed; reconnecting." "warning")
+                                 (when (:stream/connected? state)
+                                   (inject-extension-error-notice! deps pi @relay-state* {:source "event-stream"} (event-stream-close-error state))
+                                   (notify! ctx "Matrix relay event stream closed; reconnecting." "warning"))
                                  (schedule-event-stream-reconnect! deps relay-state* client-id reopen!)))}
                   client-id
                   (fn [event]
                     (when-let [relay-state (some-> relay-state* deref)]
                       (handle-broker-event! deps pi ctx relay-state event))))]
       (reset! stream* stream)
-      stream)))
+      stream))))
 
 (defn start-relay!
   [{:keys [read-project-config! health! register-client! acquire-slot!

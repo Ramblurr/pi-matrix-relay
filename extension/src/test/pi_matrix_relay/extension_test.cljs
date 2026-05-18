@@ -922,6 +922,147 @@
                     (is false (.-stack err))
                     (done)))))))
 
+(deftest event-stream-never-connected-errors-reconnect-silently
+  (async done
+    (let [calls* (atom [])
+          stream-opts* (atom [])
+          notifications* (atom [])
+          sent* (atom [])
+          relay-state* (atom nil)
+          stream-id* (atom 0)
+          deps {:relay-state* relay-state*
+                :event-stream-reconnect-ms 0
+                :read-project-config! (fn [_cwd] {})
+                :health! (fn [] (js/Promise.resolve {:matrix/connected? true
+                                                     :user/id "@bot:example.org"}))
+                :register-client! (fn [_request]
+                                    (js/Promise.resolve {:client/id "client-1"
+                                                         :heartbeat/seconds 30
+                                                         :matrix/global-operators []}))
+                :acquire-slot! (fn [_client-id _project _invite]
+                                 (js/Promise.resolve {:slot "A"
+                                                      :room/id "!slot:example.org"
+                                                      :room/name "project-A"}))
+                :update-subscriptions! (fn [_client-id _rooms]
+                                         (js/Promise.resolve {:rooms []}))
+                :send-message! (fn [_room-id _message _opts]
+                                (js/Promise.resolve {:event/id "$start:example.org"}))
+                :heartbeat! (fn [_client-id]
+                              (js/Promise.resolve {:heartbeat/seconds 30}))
+                :set-interval! (fn [_f _ms] :interval-1)
+                :set-timeout! (fn [f ms]
+                                (swap! calls* conj [:set-timeout ms])
+                                (f)
+                                :timeout-1)
+                :open-event-stream! (fn [opts client-id _on-event]
+                                      (let [stream-id (swap! stream-id* inc)]
+                                        (swap! calls* conj [:open-event-stream client-id stream-id])
+                                        (swap! stream-opts* conj opts)
+                                        #js {:close (fn [])
+                                             :diagnostics (fn []
+                                                            (clj->js {:stream/id stream-id
+                                                                      :stream/connected? false
+                                                                      :stream/closed? true}))}))}
+          pi #js {:sendUserMessage (fn [message options]
+                                     (swap! sent* conj {:message message
+                                                        :options (some-> options (js->clj :keywordize-keys true))}))}
+          ctx #js {:cwd "/work/project"
+                   :ui #js {:notify (fn [message level]
+                                      (swap! notifications* conj [message level]))
+                            :setStatus (fn [_id _status])}}]
+      (-> (extension/start-relay! deps pi ctx)
+          (.then (fn [_]
+                   (let [first-opts (first @stream-opts*)
+                         error (js/Error. "connect ECONNREFUSED /run/user/1000/pi-matrix-relay/broker.sock")]
+                     ((:on-error first-opts) error)
+                     ((:on-close first-opts) {:stream/connected? false
+                                              :stream/closed? true
+                                              :stream/close-reason "request-error"
+                                              :error/last {:message (.-message error)}})
+                     (let [second-opts (second @stream-opts*)]
+                       ((:on-error second-opts) error)
+                       ((:on-close second-opts) {:stream/connected? false
+                                                 :stream/closed? true
+                                                 :stream/close-reason "request-error"
+                                                 :error/last {:message (.-message error)}}))
+                     (is (= [] @sent*))
+                     (is (= [] @notifications*))
+                     (is (= [[:open-event-stream "client-1" 1]
+                             [:set-timeout 0]
+                             [:open-event-stream "client-1" 2]
+                             [:set-timeout 0]
+                             [:open-event-stream "client-1" 3]]
+                            @calls*)))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest connected-event-stream-close-reports-once-and-reconnect-reports-recovery
+  (async done
+    (let [stream-opts* (atom [])
+          notifications* (atom [])
+          sent* (atom [])
+          relay-state* (atom nil)
+          stream-id* (atom 0)
+          deps {:relay-state* relay-state*
+                :event-stream-reconnect-ms 0
+                :read-project-config! (fn [_cwd] {})
+                :health! (fn [] (js/Promise.resolve {:matrix/connected? true
+                                                     :user/id "@bot:example.org"}))
+                :register-client! (fn [_request]
+                                    (js/Promise.resolve {:client/id "client-1"
+                                                         :heartbeat/seconds 30
+                                                         :matrix/global-operators []}))
+                :acquire-slot! (fn [_client-id _project _invite]
+                                 (js/Promise.resolve {:slot "A"
+                                                      :room/id "!slot:example.org"
+                                                      :room/name "project-A"}))
+                :update-subscriptions! (fn [_client-id _rooms]
+                                         (js/Promise.resolve {:rooms []}))
+                :send-message! (fn [_room-id _message _opts]
+                                (js/Promise.resolve {:event/id "$start:example.org"}))
+                :heartbeat! (fn [_client-id]
+                              (js/Promise.resolve {:heartbeat/seconds 30}))
+                :set-interval! (fn [_f _ms] :interval-1)
+                :set-timeout! (fn [f _ms]
+                                (f)
+                                :timeout-1)
+                :open-event-stream! (fn [opts _client-id _on-event]
+                                      (let [stream-id (swap! stream-id* inc)]
+                                        (swap! stream-opts* conj opts)
+                                        #js {:close (fn [])
+                                             :diagnostics (fn []
+                                                            (clj->js {:stream/id stream-id
+                                                                      :stream/connected? true
+                                                                      :stream/closed? false}))}))}
+          pi #js {:sendUserMessage (fn [message options]
+                                     (swap! sent* conj {:message message
+                                                        :options (some-> options (js->clj :keywordize-keys true))}))}
+          ctx #js {:cwd "/work/project"
+                   :ui #js {:notify (fn [message level]
+                                      (swap! notifications* conj [message level]))
+                            :setStatus (fn [_id _status])}}]
+      (-> (extension/start-relay! deps pi ctx)
+          (.then (fn [_]
+                   ((:on-close (first @stream-opts*)) {:stream/connected? true
+                                                       :stream/closed? true
+                                                       :stream/close-reason "response-close"
+                                                       :error/last {:message "socket hang up"}})
+                   (when-let [on-open (:on-open (second @stream-opts*))]
+                     (on-open {:stream/connected? true}))
+                   (is (= 1 (count @sent*)))
+                   (is (str/includes? (:message (first @sent*)) "source: event-stream"))
+                   (is (str/includes? (:message (first @sent*)) "socket hang up"))
+                   (is (= {:deliverAs "followUp"} (:options (first @sent*))))
+                   (is (= [["Matrix relay event stream closed; reconnecting." "warning"]
+                           ["Matrix relay event stream reconnected." "info"]]
+                          @notifications*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
 (deftest event-stream-requested-close-does-not-reopen
   (async done
     (let [calls* (atom [])
