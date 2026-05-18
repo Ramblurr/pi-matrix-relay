@@ -593,7 +593,14 @@
     :names ["status"]
     :usage "status"
     :summary "Show relay status for this Pi session."
-    :details ["Reports the project, slot room, delivery mode, heartbeat, stream, model, context, and usage."]}
+    :details ["Reports the project, slot room, prompt mode, delivery mode, heartbeat, stream, model, context, and usage."]}
+   {:command :prompt
+    :names ["prompt"]
+    :usage "prompt <mode>"
+    :summary "Set this room's prompt mode."
+    :details ["Allowed modes: all, mentions, commands-only."
+              "Use mentions to require addressing the bot before a message becomes a prompt."
+              "Use commands-only to process remote commands while ignoring ordinary prompt messages."]}
    {:command :steer
     :names ["steer"]
     :usage "steer [message]"
@@ -641,7 +648,7 @@
 
 (defn- remote-command-usage-line
   [usage]
-  (str "/" usage " or !" usage))
+  (str "!" usage))
 
 (defn- formatted-message
   [body formatted-body]
@@ -650,7 +657,7 @@
 
 (defn- remote-command-usage-html
   [usage]
-  (str "<code>/" (html-escape usage) "</code> or <code>!" (html-escape usage) "</code>"))
+  (str "<code>!" (html-escape usage) "</code>"))
 
 (defn- remote-command-list-body
   []
@@ -660,7 +667,7 @@
                  (map (fn [doc]
                         (str (remote-command-usage-line (:usage doc)) " — " (:summary doc)))
                       remote-command-docs))
-       "\n\nUse /help <command> or !help <command> for details."))
+       "\n\nUse !help <command> for details."))
 
 (defn- remote-command-list-html
   []
@@ -675,7 +682,7 @@
                              "<td>" (html-escape (:summary doc)) "</td></tr>"))
                       remote-command-docs))
        "</tbody></table>"
-       "<p>Use <code>/help &lt;command&gt;</code> or <code>!help &lt;command&gt;</code> for details.</p>"))
+       "<p>Use <code>!help &lt;command&gt;</code> for details.</p>"))
 
 (defn- remote-command-list-message
   []
@@ -886,6 +893,27 @@
                                   (str "Default delivery mode update failed: " (or (.-message err) (str err))))
                   true)))))
 
+(def prompt-mode-usage-message
+  "Usage: !prompt <mode>\nAllowed modes: all, mentions, commands-only.")
+
+(defn- persist-room-prompt-mode-command!
+  [{:keys [set-room-prompt-mode!] :as deps} relay-state room-id event-id sender prompt-mode]
+  (if-not set-room-prompt-mode!
+    (do
+      (send-room-ack! deps relay-state room-id event-id
+                      "Prompt mode update failed: broker client is not available.")
+      (promise true))
+    (-> (promise (set-room-prompt-mode! (:client-id relay-state) room-id prompt-mode sender))
+        (.then (fn [result]
+                 (let [persisted-mode (or (:room/prompt-mode result) prompt-mode)]
+                   (cache-room-prompt-mode! relay-state room-id persisted-mode)
+                   (send-room-ack! deps relay-state room-id event-id
+                                   (str "Prompt mode for this room is now " persisted-mode "."))
+                   true)))
+        (.catch (fn [err]
+                  (send-room-ack! deps relay-state room-id event-id
+                                  (str "Prompt mode update failed: " (or (.-message err) (str err))))
+                  true)))))
 (defn- handle-remote-command!
   [deps pi ctx relay-state binding matrix-event]
   (let [room-id (:room/id matrix-event)
@@ -904,6 +932,14 @@
           (do
             (send-room-ack! deps relay-state room-id event-id (remote-status-message relay-state binding room-id ctx))
             true)
+
+          :prompt
+          (let [mode (config/normalize-prompt-mode args)]
+            (if (config/valid-room-prompt-mode? mode)
+              (persist-room-prompt-mode-command! deps relay-state room-id event-id (:event/sender matrix-event) mode)
+              (do
+                (send-room-ack! deps relay-state room-id event-id prompt-mode-usage-message)
+                true)))
 
           :abort
           (handle-abort-command! deps ctx relay-state room-id event-id)

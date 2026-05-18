@@ -1525,12 +1525,16 @@
              (select-keys (:opts ack) [:client/id :reply-to/event-id])))
       (is (str/includes? (:message ack) "Matrix relay commands"))
       (is (str/includes? (:message ack) "Prefixes: / or !"))
-      (is (str/includes? (:message ack) "/status or !status"))
-      (is (str/includes? (:message ack) "/help <command> or !help <command>"))
+      (is (str/includes? (:message ack) "!status"))
+      (is (str/includes? (:message ack) "!prompt <mode>"))
+      (is (not (str/includes? (:message ack) "/status or !status")))
+      (is (str/includes? (:message ack) "Use !help <command> for details."))
       (is (str/includes? formatted-body "<h3>Matrix relay commands</h3>"))
       (is (str/includes? formatted-body "<table>"))
-      (is (str/includes? formatted-body "<code>/status</code> or <code>!status</code>"))
-      (is (str/includes? formatted-body "<code>/help &lt;command&gt;</code> or <code>!help &lt;command&gt;</code>")))))
+      (is (str/includes? formatted-body "<code>!status</code>"))
+      (is (str/includes? formatted-body "<code>!prompt &lt;mode&gt;</code>"))
+      (is (not (str/includes? formatted-body "<code>/status</code> or <code>!status</code>")))
+      (is (str/includes? formatted-body "<code>!help &lt;command&gt;</code>")))))
 
 (deftest matrix-help-command-shows-subcommand-help-and-accepts-bang-prefix
   (let [acks* (atom [])
@@ -1561,10 +1565,12 @@
     (let [ack (first @acks*)
           formatted-body (str (get-in ack [:opts :formatted-body]))]
       (is (str/includes? (:message ack) "Matrix relay command: steer"))
-      (is (str/includes? (:message ack) "Usage: /steer [message] or !steer [message]"))
+      (is (str/includes? (:message ack) "Usage: !steer [message]"))
+      (is (not (str/includes? (:message ack) "/steer [message] or !steer [message]")))
       (is (str/includes? (:message ack) "With a message, steer it into the current Pi turn."))
       (is (str/includes? formatted-body "<h3>Matrix relay command: <code>steer</code></h3>"))
-      (is (str/includes? formatted-body "<code>/steer [message]</code> or <code>!steer [message]</code>"))
+      (is (str/includes? formatted-body "<code>!steer [message]</code>"))
+      (is (not (str/includes? formatted-body "<code>/steer [message]</code> or <code>!steer [message]</code>")))
       (is (str/includes? formatted-body "<li>With a message, steer it into the current Pi turn.</li>")))))
 
 (deftest bang-prefixed-matrix-status-command-sends-room-ack
@@ -2038,6 +2044,100 @@
           (.catch (fn [err]
                     (is false (.-stack err))
                     (done)))))))
+
+(deftest matrix-prompt-command-persists-room-prompt-mode-before-acking
+  (async done
+    (let [sent* (atom [])
+          acks* (atom [])
+          prompt-modes* (atom {"!room:example.org" {:mode "commands-only" :source "broker"}})
+          persist* (atom nil)
+          pi #js {:sendUserMessage (fn [message options]
+                                     (swap! sent* conj {:message message
+                                                        :options (some-> options (js->clj :keywordize-keys true))}))}
+          ctx #js {:cwd "/work/project"
+                   :isIdle (fn [] true)}
+          relay-state {:client-id "client-1"
+                       :project-config {:rooms {"ops" {:alias "ops"
+                                                        :room/id "!room:example.org"
+                                                        :mode "commands-only"}}}
+                       :global-operators #{"@alice:example.org"}
+                       :bot-user-id "@bot:example.org"
+                       :room-prompt-modes* prompt-modes*}
+          deps {:set-room-prompt-mode! (fn [client-id room-id mode updated-by-user]
+                                         (reset! persist* {:client-id client-id
+                                                          :room-id room-id
+                                                          :mode mode
+                                                          :updated-by-user updated-by-user})
+                                         (js/Promise.resolve {:room/id room-id
+                                                              :room/prompt-mode mode}))
+                :send-message! (fn [room-id message opts]
+                                (swap! acks* conj {:room-id room-id
+                                                   :message message
+                                                   :opts opts})
+                                (js/Promise.resolve {:event/id "$ack:example.org"}))}
+          prompt-event {:type "matrix.message"
+                        :room/id "!room:example.org"
+                        :event/id "$set-prompt:example.org"
+                        :event/sender "@alice:example.org"
+                        :event/timestamp "2026-05-16T12:34:56Z"
+                        :event/text "!prompt all"}
+          message-event {:type "matrix.message"
+                         :room/id "!room:example.org"
+                         :event/id "$ordinary:example.org"
+                         :event/sender "@alice:example.org"
+                         :event/timestamp "2026-05-16T12:34:57Z"
+                         :event/text "ordinary project prompt"}]
+      (-> (js/Promise.resolve (extension/handle-broker-event! deps pi ctx relay-state prompt-event))
+          (.then (fn [_]
+                   (is (= {:client-id "client-1"
+                           :room-id "!room:example.org"
+                           :mode "all"
+                           :updated-by-user "@alice:example.org"}
+                          @persist*))
+                   (is (= {"!room:example.org" {:mode "all" :source "broker"}}
+                          @prompt-modes*))
+                   (is (= 1 (count @acks*)))
+                   (is (str/includes? (:message (first @acks*))
+                                      "Prompt mode for this room is now all"))
+                   (extension/handle-broker-event! deps pi ctx relay-state message-event)
+                   (is (= 1 (count @sent*)))
+                   (is (str/includes? (:message (first @sent*)) "ordinary project prompt"))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest invalid-matrix-prompt-command-acks-usage-without-changing-cache
+  (let [acks* (atom [])
+        prompt-modes* (atom {"!room:example.org" {:mode "commands-only" :source "broker"}})
+        pi #js {:sendUserMessage (fn [_message _options])}
+        ctx #js {:cwd "/work/project"}
+        relay-state {:client-id "client-1"
+                     :project-config {:rooms {"ops" {:alias "ops"
+                                                      :room/id "!room:example.org"
+                                                      :mode "commands-only"}}}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"
+                     :room-prompt-modes* prompt-modes*}
+        deps {:set-room-prompt-mode! (fn [& _]
+                                       (throw (js/Error. "should not persist invalid mode")))
+              :send-message! (fn [room-id message opts]
+                              (swap! acks* conj {:room-id room-id
+                                                 :message message
+                                                 :opts opts})
+                              (js/Promise.resolve {:event/id "$ack:example.org"}))}
+        event {:type "matrix.message"
+               :room/id "!room:example.org"
+               :event/id "$bad-prompt:example.org"
+               :event/sender "@alice:example.org"
+               :event/timestamp "2026-05-16T12:34:56Z"
+               :event/text "!prompt interrupt"}]
+    (extension/handle-broker-event! deps pi ctx relay-state event)
+    (is (= {"!room:example.org" {:mode "commands-only" :source "broker"}}
+           @prompt-modes*))
+    (is (= 1 (count @acks*)))
+    (is (str/includes? (:message (first @acks*))
+                       "Usage: !prompt <mode>"))))
 
 (deftest matrix-abort-command-aborts-current-turn-and-sends-ack
   (let [aborted? (atom false)
