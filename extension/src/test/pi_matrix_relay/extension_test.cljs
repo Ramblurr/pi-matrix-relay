@@ -1027,6 +1027,102 @@
     (is (str/includes? (:message (first @acks*)) "context: 123456 tokens (45%/272k)"))
     (is (str/includes? (:message (first @acks*)) "usage: ↑360.0k ↓14.0k $4.591"))))
 
+(deftest matrix-help-command-lists-commands-and-prefixes
+  (let [sent* (atom [])
+        acks* (atom [])
+        pi #js {:sendUserMessage (fn [message options]
+                                   (swap! sent* conj {:message message
+                                                      :options (some-> options (js->clj :keywordize-keys true))}))}
+        ctx #js {:cwd "/work/project"
+                 :isIdle (fn [] true)}
+        relay-state {:client-id "client-1"
+                     :project-config {}
+                     :project {:project/id "project"}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"
+                     :slot "A"
+                     :room-id "!slot:example.org"
+                     :room-name "project-A"}
+        deps {:send-message! (fn [room-id message opts]
+                              (swap! acks* conj {:room-id room-id
+                                                 :message message
+                                                 :opts opts})
+                              (js/Promise.resolve {:event/id "$ack:example.org"}))}
+        event {:type "matrix.message"
+               :room/id "!slot:example.org"
+               :event/id "$help:example.org"
+               :event/sender "@alice:example.org"
+               :event/timestamp "2026-05-16T12:34:56Z"
+               :event/text "/help"}]
+    (extension/handle-broker-event! deps pi ctx relay-state event)
+    (is (= [] @sent*))
+    (is (= [{:room-id "!slot:example.org"
+             :opts {:client/id "client-1"
+                    :reply-to/event-id "$help:example.org"}}]
+           (mapv #(select-keys % [:room-id :opts]) @acks*)))
+    (is (str/includes? (:message (first @acks*)) "Matrix relay commands"))
+    (is (str/includes? (:message (first @acks*)) "Prefixes: / or !"))
+    (is (str/includes? (:message (first @acks*)) "/status or !status"))
+    (is (str/includes? (:message (first @acks*)) "/help <command> or !help <command>"))))
+
+(deftest matrix-help-command-shows-subcommand-help-and-accepts-bang-prefix
+  (let [acks* (atom [])
+        pi #js {:sendUserMessage (fn [_message _options])}
+        ctx #js {:cwd "/work/project"
+                 :isIdle (fn [] true)}
+        relay-state {:client-id "client-1"
+                     :project-config {}
+                     :project {:project/id "project"}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"
+                     :slot "A"
+                     :room-id "!slot:example.org"
+                     :room-name "project-A"}
+        deps {:send-message! (fn [room-id message opts]
+                              (swap! acks* conj {:room-id room-id
+                                                 :message message
+                                                 :opts opts})
+                              (js/Promise.resolve {:event/id "$ack:example.org"}))}
+        event {:type "matrix.message"
+               :room/id "!slot:example.org"
+               :event/id "$help-steer:example.org"
+               :event/sender "@alice:example.org"
+               :event/timestamp "2026-05-16T12:34:56Z"
+               :event/text "!help steer"}]
+    (extension/handle-broker-event! deps pi ctx relay-state event)
+    (is (= 1 (count @acks*)))
+    (is (str/includes? (:message (first @acks*)) "Matrix relay command: steer"))
+    (is (str/includes? (:message (first @acks*)) "Usage: /steer [message] or !steer [message]"))
+    (is (str/includes? (:message (first @acks*)) "With a message, steer it into the current Pi turn."))))
+
+(deftest bang-prefixed-matrix-status-command-sends-room-ack
+  (let [acks* (atom [])
+        pi #js {:sendUserMessage (fn [_message _options])}
+        ctx #js {:cwd "/work/project"
+                 :isIdle (fn [] true)}
+        relay-state {:client-id "client-1"
+                     :project-config {}
+                     :project {:project/id "project"}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"
+                     :slot "A"
+                     :room-id "!slot:example.org"
+                     :room-name "project-A"}
+        deps {:send-message! (fn [room-id message opts]
+                              (swap! acks* conj {:room-id room-id
+                                                 :message message
+                                                 :opts opts})
+                              (js/Promise.resolve {:event/id "$ack:example.org"}))}
+        event {:type "matrix.message"
+               :room/id "!slot:example.org"
+               :event/id "$bang-status:example.org"
+               :event/sender "@alice:example.org"
+               :event/timestamp "2026-05-16T12:34:56Z"
+               :event/text "!status"}]
+    (extension/handle-broker-event! deps pi ctx relay-state event)
+    (is (= 1 (count @acks*)))
+    (is (str/includes? (:message (first @acks*)) "pi-matrix-relay status"))))
+
 (deftest matrix-status-command-still-acks-when-context-usage-is-unavailable
   (let [sent* (atom [])
         acks* (atom [])

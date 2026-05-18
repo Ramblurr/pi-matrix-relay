@@ -195,21 +195,33 @@
     (boolean (or (and (seq bot-user-id) (str/includes? text bot-user-id))
                  (and (seq user) (re-find (js/RegExp. (str "(^|[^A-Za-z0-9_-])@?" user "([^A-Za-z0-9_-]|$)") "i") text))))))
 
+(def remote-command-prefixes ["/" "!"])
+
+(defn- remote-command-text?
+  [text]
+  (let [trimmed (str/trim (str text))]
+    (boolean (some #(str/starts-with? trimmed %) remote-command-prefixes))))
+
 (defn- message-allowed-by-mode?
   [binding text bot-user-id]
   (case (or (:mode binding) config/default-room-mode)
     "all" true
     "mentions" (mentions-bot? text bot-user-id)
-    "commands-only" (str/starts-with? (str/trim (str text)) "/")
+    "commands-only" (remote-command-text? text)
     false))
+
+(defn- remote-command-body
+  [trimmed]
+  (cond
+    (str/starts-with? trimmed "//") (subs trimmed 2)
+    (str/starts-with? trimmed "/") (subs trimmed 1)
+    (str/starts-with? trimmed "!") (subs trimmed 1)
+    :else nil))
 
 (defn- parse-remote-command
   [text]
   (let [trimmed (str/trim (str text))
-        command-text (cond
-                       (str/starts-with? trimmed "//") (subs trimmed 2)
-                       (str/starts-with? trimmed "/") (subs trimmed 1)
-                       :else nil)]
+        command-text (remote-command-body trimmed)]
     (when (seq command-text)
       (let [[name args] (str/split command-text #"\s+" 2)
             name (some-> name str/lower-case)
@@ -461,18 +473,98 @@
                                             :source "broker"})
       (swap! delivery-modes* dissoc room-id))))
 
+(def remote-command-docs
+  [{:command :help
+    :names ["help"]
+    :usage "help [command]"
+    :summary "List commands or show command help."
+    :details ["Without an argument, list Matrix relay commands."
+              "With a command name, show detailed help for that command."]}
+   {:command :status
+    :names ["status"]
+    :usage "status"
+    :summary "Show relay status for this Pi session."
+    :details ["Reports the project, slot room, delivery mode, heartbeat, stream, model, context, and usage."]}
+   {:command :steer
+    :names ["steer"]
+    :usage "steer [message]"
+    :summary "Steer a message into the current Pi turn, or set this room's default delivery mode to steer."
+    :details ["With no message, set this room's default delivery mode to steer."
+              "With a message, steer it into the current Pi turn."]}
+   {:command :follow-up
+    :names ["follow-up" "followup"]
+    :usage "follow-up [message]"
+    :summary "Queue a follow-up message, or set this room's default delivery mode to follow-up."
+    :details ["With no message, set this room's default delivery mode to follow-up."
+              "With a message, queue it as a follow-up after the current turn."]}
+   {:command :reject
+    :names ["reject"]
+    :usage "reject"
+    :summary "Set this room's default delivery mode to reject while Pi is busy."
+    :details ["Reject ignores non-command Matrix messages while Pi is busy."]}
+   {:command :abort
+    :names ["abort"]
+    :usage "abort"
+    :summary "Abort the current Pi turn when supported by this context."
+    :details ["Requests cancellation of the active Pi turn."]}
+   {:command :compact
+    :names ["compact"]
+    :usage "compact [instructions]"
+    :summary "Compact the current Pi conversation."
+    :details ["Optionally include custom compaction instructions after the command."]}
+   {:command :new
+    :names ["new"]
+    :usage "new"
+    :summary "Start a new Pi session after the current turn is idle."
+    :details ["Queues a new-session request and acknowledges when the new session starts."]}])
+
+(def remote-command-doc-by-name
+  (into {}
+        (mapcat (fn [doc]
+                  (map (fn [name] [name doc]) (:names doc)))
+                remote-command-docs)))
+
+(defn- normalize-command-target
+  [target]
+  (let [trimmed (str/lower-case (str/trim (str target)))]
+    (or (remote-command-body trimmed)
+        trimmed)))
+
+(defn- remote-command-usage-line
+  [usage]
+  (str "/" usage " or !" usage))
+
+(defn- remote-command-list-message
+  []
+  (str "Matrix relay commands\n"
+       "Prefixes: / or !\n"
+       (str/join "\n"
+                 (map (fn [doc]
+                        (str (remote-command-usage-line (:usage doc)) " — " (:summary doc)))
+                      remote-command-docs))
+       "\n\nUse /help <command> or !help <command> for details."))
+
+(defn- remote-command-detail-message
+  [doc]
+  (str "Matrix relay command: " (first (:names doc)) "\n"
+       "Usage: " (remote-command-usage-line (:usage doc)) "\n"
+       (when (< 1 (count (:names doc)))
+         (str "Aliases: " (str/join ", " (rest (:names doc))) "\n"))
+       (str/join "\n" (:details doc))))
+
+(defn- remote-help-message
+  [target]
+  (let [target (normalize-command-target target)]
+    (if (str/blank? target)
+      (remote-command-list-message)
+      (if-let [doc (get remote-command-doc-by-name target)]
+        (remote-command-detail-message doc)
+        (str "Unknown Matrix relay command: " target "\n\n"
+             (remote-command-list-message))))))
+
 (defn- remote-command-name
   [name]
-  (case name
-    "status" :status
-    "steer" :steer
-    "follow-up" :follow-up
-    "followup" :follow-up
-    "reject" :reject
-    "abort" :abort
-    "compact" :compact
-    "new" :new
-    nil))
+  (some-> name normalize-command-target remote-command-doc-by-name :command))
 
 (defn- command-prompt-event
   [event text]
@@ -642,6 +734,11 @@
     (if command
       (try
         (case command
+          :help
+          (do
+            (send-room-ack! deps relay-state room-id event-id (remote-help-message args))
+            true)
+
           :status
           (do
             (send-room-ack! deps relay-state room-id event-id (remote-status-message relay-state binding room-id ctx))
