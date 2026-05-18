@@ -497,7 +497,7 @@
           (.then (fn [result]
                    (is (some #{[:close-old-stream]} @calls*))
                    (is (some #{[:release-slot "client-1" "!old-slot:example.org" "A"]} @calls*))
-                   (is (some #{[:register "matrix-relay-/work/project"]} @calls*))
+                   (is (some #{[:register extension/client-instance-id]} @calls*))
                    (is (= "client-2" (:client-id @relay-state*)))
                    (is (str/includes? (get-in result [:content 0 :text])
                                       "extension: running slot B project-B"))
@@ -783,7 +783,7 @@
       (-> (extension/start-relay! deps pi ctx)
           (.then (fn [relay-state]
                    (is (= [[:health]
-                           [:register {:client/instance-id "matrix-relay-/work/project"
+                           [:register {:client/instance-id extension/client-instance-id
                                        :protocol/version 1
                                        :project {:project/root "/work/project"
                                                  :project/id "project"}
@@ -1220,7 +1220,7 @@
       (-> (extension/start-relay! deps pi ctx)
           (.then (fn [_relay-state]
                    (is (= [[:health]
-                           [:register {:client/instance-id "matrix-relay-/work/project"
+                           [:register {:client/instance-id extension/client-instance-id
                                        :protocol/version 1
                                        :project {:project/root "/work/project"
                                                  :project/id "project"}

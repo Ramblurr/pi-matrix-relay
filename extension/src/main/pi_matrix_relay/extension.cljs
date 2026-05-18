@@ -8,6 +8,8 @@
 (defn greeting [name]
   (str "Hello, " name ", from ClojureScript!"))
 
+(defonce client-instance-id (str (random-uuid)))
+
 (def default-deps
   {:health! broker-client/health!
    :register-client! broker-client/register-client!
@@ -1115,7 +1117,7 @@
         (.then
          (fn [health]
            (record-diagnostic! diagnostics* :health-ok {:matrix (select-keys health [:matrix/connected? :user/id])})
-           (let [request {:client/instance-id (str "matrix-relay-" cwd)
+           (let [request {:client/instance-id client-instance-id
                           :protocol/version 1
                           :project (select-keys project [:project/root :project/id])
                           :subscriptions {:rooms room-ids}}]
