@@ -321,17 +321,31 @@
     (swap! (:pending-auto-replies* relay-state) conj {:room-id room-id
                                                       :event-id event-id})))
 
+(defn- message-body
+  [message]
+  (if (map? message)
+    (or (:body message) (:message message) "")
+    message))
+
+(defn- message-formatted-body
+  [message]
+  (when (map? message)
+    (or (:formatted-body message) (:formattedBody message))))
+
 (defn- send-room-ack!
   [{:keys [send-message! diagnostics*]} relay-state room-id event-id message]
   (when send-message!
     (-> (promise (send-message! room-id
-                                message
+                                (message-body message)
                                 (cond-> {}
                                   (:client-id relay-state)
                                   (assoc :client/id (:client-id relay-state))
 
                                   event-id
-                                  (assoc :reply-to/event-id event-id))))
+                                  (assoc :reply-to/event-id event-id)
+
+                                  (message-formatted-body message)
+                                  (assoc :formatted-body (message-formatted-body message)))))
         (.catch (fn [err]
                   (record-diagnostic! diagnostics* :remote-command-ack-error (error-summary err))
                   nil)))))
@@ -534,7 +548,25 @@
   [usage]
   (str "/" usage " or !" usage))
 
-(defn- remote-command-list-message
+(defn- html-escape
+  [value]
+  (str/escape (str value)
+              {\& "&amp;"
+               \< "&lt;"
+               \> "&gt;"
+               \" "&quot;"
+               \' "&#39;"}))
+
+(defn- formatted-message
+  [body formatted-body]
+  {:body body
+   :formatted-body formatted-body})
+
+(defn- remote-command-usage-html
+  [usage]
+  (str "<code>/" (html-escape usage) "</code> or <code>!" (html-escape usage) "</code>"))
+
+(defn- remote-command-list-body
   []
   (str "Matrix relay commands\n"
        "Prefixes: / or !\n"
@@ -544,13 +576,57 @@
                       remote-command-docs))
        "\n\nUse /help <command> or !help <command> for details."))
 
-(defn- remote-command-detail-message
+(defn- remote-command-list-html
+  []
+  (str "<h3>Matrix relay commands</h3>"
+       "<p><strong>Prefixes:</strong> <code>/</code> or <code>!</code></p>"
+       "<table>"
+       "<thead><tr><th>Command</th><th>Description</th></tr></thead>"
+       "<tbody>"
+       (str/join ""
+                 (map (fn [doc]
+                        (str "<tr><td>" (remote-command-usage-html (:usage doc)) "</td>"
+                             "<td>" (html-escape (:summary doc)) "</td></tr>"))
+                      remote-command-docs))
+       "</tbody></table>"
+       "<p>Use <code>/help &lt;command&gt;</code> or <code>!help &lt;command&gt;</code> for details.</p>"))
+
+(defn- remote-command-list-message
+  []
+  (formatted-message (remote-command-list-body)
+                     (remote-command-list-html)))
+
+(defn- remote-command-detail-body
   [doc]
   (str "Matrix relay command: " (first (:names doc)) "\n"
        "Usage: " (remote-command-usage-line (:usage doc)) "\n"
        (when (< 1 (count (:names doc)))
          (str "Aliases: " (str/join ", " (rest (:names doc))) "\n"))
        (str/join "\n" (:details doc))))
+
+(defn- remote-command-detail-html
+  [doc]
+  (str "<h3>Matrix relay command: <code>" (html-escape (first (:names doc))) "</code></h3>"
+       "<p><strong>Usage:</strong> " (remote-command-usage-html (:usage doc)) "</p>"
+       (when (< 1 (count (:names doc)))
+         (str "<p><strong>Aliases:</strong> "
+              (str/join ", " (map #(str "<code>" (html-escape %) "</code>") (rest (:names doc))))
+              "</p>"))
+       "<ul>"
+       (str/join "" (map #(str "<li>" (html-escape %) "</li>") (:details doc)))
+       "</ul>"))
+
+(defn- remote-command-detail-message
+  [doc]
+  (formatted-message (remote-command-detail-body doc)
+                     (remote-command-detail-html doc)))
+
+(defn- unknown-command-message
+  [target]
+  (formatted-message (str "Unknown Matrix relay command: " target "\n\n"
+                          (remote-command-list-body))
+                     (str "<p>Unknown Matrix relay command: <code>" (html-escape target) "</code></p>"
+                          (remote-command-list-html))))
 
 (defn- remote-help-message
   [target]
@@ -559,8 +635,7 @@
       (remote-command-list-message)
       (if-let [doc (get remote-command-doc-by-name target)]
         (remote-command-detail-message doc)
-        (str "Unknown Matrix relay command: " target "\n\n"
-             (remote-command-list-message))))))
+        (unknown-command-message target)))))
 
 (defn- remote-command-name
   [name]
@@ -1450,6 +1525,8 @@
         cwd (ctx-cwd ctx)
         target (:target params)
         message (:message params)
+        formatted-body (or (:formattedBody params)
+                           (:formatted-body params))
         reply-to-event-id (or (:replyToEventId params)
                               (:reply-to/event-id params))
         client-id (relay-client-id deps)]
@@ -1469,7 +1546,8 @@
                                       message
                                       (cond-> {}
                                         client-id (assoc :client/id client-id)
-                                        reply-to-event-id (assoc :reply-to/event-id reply-to-event-id))))
+                                        reply-to-event-id (assoc :reply-to/event-id reply-to-event-id)
+                                        formatted-body (assoc :formatted-body formatted-body))))
               (.then (fn [result]
                        {:content [{:type "text"
                                    :text (str "Sent Matrix message " (:event/id result)
@@ -1507,6 +1585,12 @@
                               :key key}})))
       (js/Promise.reject (js/Error. (str "No Matrix room binding for target " target))))))
 
+(def matrix-html-formatted-body-description
+  (str "Optional Matrix HTML formatted_body; message is the plaintext fallback. "
+       "Matrix-safe tags: del, h1-h6, blockquote, p, a, ul, ol, sup, sub, li, b, i, u, strong, em, s, code, hr, br, div, table, thead, tbody, tr, th, td, caption, pre, span, img, details, summary. "
+       "Allowed attrs only: span data-mx-bg-color/data-mx-color/data-mx-spoiler/data-mx-maths; a target and absolute href with scheme https/http/ftp/mailto/magnet; img width/height/alt/title/src where src is mxc://; ol start; code class language-*; div data-mx-maths. "
+       "Use valid HTML; nesting <=100; omit mx-reply. Clients sanitize unsupported HTML."))
+
 (def send-matrix-message-parameters
   #js {:type "object"
        :additionalProperties false
@@ -1514,7 +1598,9 @@
        :properties #js {:target #js {:type "string"
                                      :description "Bound local alias or Matrix room id to send to"}
                         :message #js {:type "string"
-                                      :description "Plain text Matrix message body"}
+                                      :description "Plain text Matrix message body; also used as fallback when formattedBody is provided"}
+                        :formattedBody #js {:type "string"
+                                            :description matrix-html-formatted-body-description}
                         :replyToEventId #js {:type "string"
                                              :description "Optional Matrix event id to reply to using Matrix-native reply metadata"}}})
 
@@ -1523,9 +1609,11 @@
   (.registerTool pi
     #js {:name "send_matrix_message"
          :label "Send Matrix Message"
-         :description "Send a plain text Matrix message through the local pi-matrix-relay broker."
+         :description (str "Send a Matrix message through the local pi-matrix-relay broker. Supports optional Matrix HTML formattedBody with plaintext message fallback. "
+                           matrix-html-formatted-body-description)
          :promptSnippet "Send a Matrix message to a bound project room alias."
          :promptGuidelines #js ["Use send_matrix_message only when the user explicitly asks to send a Matrix message."
+                                "Use formattedBody for Matrix HTML formatting only when useful; always make message a readable plaintext fallback."
                                 "Use replyToEventId when replying to a Matrix message that included an eventId in the prompt metadata."]
          :parameters send-matrix-message-parameters
          :execute (fn [_tool-call-id params _signal _on-update ctx]

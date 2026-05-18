@@ -29,7 +29,16 @@
            (set (keys @tools*))))
     (is (= ["read" "bash"] @active-tools*)
         "extension load must not call runtime action methods such as setActiveTools")
-    (is (fn? (.-execute ^js (get @tools* "send_matrix_message"))))
+    (let [send-tool ^js (get @tools* "send_matrix_message")
+          params (js->clj (.-parameters send-tool) :keywordize-keys true)
+          formatted-desc (str (get-in params [:properties :formattedBody :description]))]
+      (is (fn? (.-execute send-tool)))
+      (is (= {:type "string"}
+             (select-keys (get-in params [:properties :formattedBody]) [:type])))
+      (is (every? #(str/includes? formatted-desc %)
+                  ["del" "h1" "h6" "blockquote" "table" "caption" "pre" "img" "details" "summary"
+                   "data-mx-bg-color" "data-mx-color" "data-mx-spoiler" "data-mx-maths"
+                   "https" "mailto" "magnet" "mxc://" "language-" "100"])))
     (is (fn? (.-execute ^js (get @tools* "send_matrix_reaction"))))
     (is (fn? (.-execute ^js (get @tools* "matrix_relay_diagnostics"))))
     (is (fn? (.-execute ^js (get @tools* "matrix_relay_control"))))))
@@ -221,6 +230,39 @@
                                      :target "ops"
                                      :reply-to/event-id "$parent:example.org"}}
                           result))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest send-matrix-message-tool-passes-formatted-body-to-broker
+  (async done
+    (let [sent* (atom nil)
+          deps {:relay-state* (atom {:client-id "client-1"})
+                :read-project-config! (fn [_cwd]
+                                        {:rooms {"ops" {:alias "ops"
+                                                        :room/id "!room:example.org"}}})
+                :send-message! (fn [room-id message opts]
+                                (reset! sent* {:room-id room-id :message message :opts opts})
+                                (js/Promise.resolve {:event/id "$event:example.org"}))}
+          ctx #js {:cwd "/work/project"}]
+      (-> (extension/execute-send-matrix-message! deps {:target "ops"
+                                                        :message "plain fallback"
+                                                        :formattedBody "<strong>formatted</strong>"
+                                                        :replyToEventId "$parent:example.org"}
+                                                ctx)
+          (.then (fn [result]
+                   (is (= {:room-id "!room:example.org"
+                           :message "plain fallback"
+                           :opts {:client/id "client-1"
+                                  :reply-to/event-id "$parent:example.org"
+                                  :formatted-body "<strong>formatted</strong>"}}
+                          @sent*))
+                   (is (= {:room/id "!room:example.org"
+                           :event/id "$event:example.org"
+                           :target "ops"
+                           :reply-to/event-id "$parent:example.org"}
+                          (:details result)))
                    (done)))
           (.catch (fn [err]
                     (is false (.-stack err))
@@ -1226,14 +1268,20 @@
                :event/text "/help"}]
     (extension/handle-broker-event! deps pi ctx relay-state event)
     (is (= [] @sent*))
-    (is (= [{:room-id "!slot:example.org"
-             :opts {:client/id "client-1"
-                    :reply-to/event-id "$help:example.org"}}]
-           (mapv #(select-keys % [:room-id :opts]) @acks*)))
-    (is (str/includes? (:message (first @acks*)) "Matrix relay commands"))
-    (is (str/includes? (:message (first @acks*)) "Prefixes: / or !"))
-    (is (str/includes? (:message (first @acks*)) "/status or !status"))
-    (is (str/includes? (:message (first @acks*)) "/help <command> or !help <command>"))))
+    (let [ack (first @acks*)
+          formatted-body (str (get-in ack [:opts :formatted-body]))]
+      (is (= "!slot:example.org" (:room-id ack)))
+      (is (= {:client/id "client-1"
+              :reply-to/event-id "$help:example.org"}
+             (select-keys (:opts ack) [:client/id :reply-to/event-id])))
+      (is (str/includes? (:message ack) "Matrix relay commands"))
+      (is (str/includes? (:message ack) "Prefixes: / or !"))
+      (is (str/includes? (:message ack) "/status or !status"))
+      (is (str/includes? (:message ack) "/help <command> or !help <command>"))
+      (is (str/includes? formatted-body "<h3>Matrix relay commands</h3>"))
+      (is (str/includes? formatted-body "<table>"))
+      (is (str/includes? formatted-body "<code>/status</code> or <code>!status</code>"))
+      (is (str/includes? formatted-body "<code>/help &lt;command&gt;</code> or <code>!help &lt;command&gt;</code>")))))
 
 (deftest matrix-help-command-shows-subcommand-help-and-accepts-bang-prefix
   (let [acks* (atom [])
@@ -1261,9 +1309,14 @@
                :event/text "!help steer"}]
     (extension/handle-broker-event! deps pi ctx relay-state event)
     (is (= 1 (count @acks*)))
-    (is (str/includes? (:message (first @acks*)) "Matrix relay command: steer"))
-    (is (str/includes? (:message (first @acks*)) "Usage: /steer [message] or !steer [message]"))
-    (is (str/includes? (:message (first @acks*)) "With a message, steer it into the current Pi turn."))))
+    (let [ack (first @acks*)
+          formatted-body (str (get-in ack [:opts :formatted-body]))]
+      (is (str/includes? (:message ack) "Matrix relay command: steer"))
+      (is (str/includes? (:message ack) "Usage: /steer [message] or !steer [message]"))
+      (is (str/includes? (:message ack) "With a message, steer it into the current Pi turn."))
+      (is (str/includes? formatted-body "<h3>Matrix relay command: <code>steer</code></h3>"))
+      (is (str/includes? formatted-body "<code>/steer [message]</code> or <code>!steer [message]</code>"))
+      (is (str/includes? formatted-body "<li>With a message, steer it into the current Pi turn.</li>")))))
 
 (deftest bang-prefixed-matrix-status-command-sends-room-ack
   (let [acks* (atom [])

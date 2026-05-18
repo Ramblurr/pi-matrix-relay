@@ -28,6 +28,37 @@
                     :keywordize-keys true)
               :headers))))
 
+(deftest send-message-includes-optional-formatted-body
+  (async done
+    (let [calls* (atom [])
+          opts {:env #js {"XDG_RUNTIME_DIR" "/run/user/1000"}}]
+      (with-redefs [broker-client/request-edn! (fn
+                                                  ([method uri body]
+                                                   (swap! calls* conj [{} method uri body])
+                                                   (js/Promise.resolve {:event/id "$event:example.org"}))
+                                                  ([opts method uri body]
+                                                   (swap! calls* conj [opts method uri body])
+                                                   (js/Promise.resolve {:event/id "$event:example.org"})))]
+        (-> (broker-client/send-message! opts
+                                          "!room:example.org"
+                                          "plain fallback"
+                                          {:client/id "client-1"
+                                           :reply-to/event-id "$parent:example.org"
+                                           :formatted-body "<strong>formatted</strong>"})
+            (.then (fn [_]
+                     (is (= [[opts "POST" "/v1/matrix/messages"
+                              {:target {:room/id "!room:example.org"}
+                               :body "plain fallback"
+                               :client/id "client-1"
+                               :reply-to {:room/id "!room:example.org"
+                                          :event/id "$parent:example.org"}
+                               :formatted-body "<strong>formatted</strong>"}]]
+                            @calls*))
+                     (done)))
+            (.catch (fn [err]
+                      (is false (.-stack err))
+                      (done))))))))
+
 (deftest unwrap-envelope-returns-data-or-throws-error
   (is (= {:status "ok"}
          (broker-client/unwrap-envelope {:ok true :data {:status "ok"}})))

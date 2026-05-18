@@ -305,7 +305,11 @@
 
                     (:reply-to/event-id send-opts)
                     (assoc :reply-to {:room/id room-id
-                                      :event/id (:reply-to/event-id send-opts)})))))
+                                      :event/id (:reply-to/event-id send-opts)})
+
+                    (or (:formatted-body send-opts) (:formattedBody send-opts))
+                    (assoc :formatted-body (or (:formatted-body send-opts)
+                                               (:formattedBody send-opts)))))))
 
 (defn send-reaction!
   ([room-id event-id key]
