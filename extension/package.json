@@ -4,5 +4,8 @@
   "private": true,
   "devDependencies": {
     "shadow-cljs": "3.4.9"
+  },
+  "dependencies": {
+    "marked": "15.0.12"
   }
 }

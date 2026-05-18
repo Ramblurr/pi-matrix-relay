@@ -2753,13 +2753,14 @@
           event {:messages [{:role "user" :content "prompt"}
                             {:role "assistant"
                              :stopReason "stop"
-                             :content [{:type "text" :text "Final answer"}]}]}]
+                             :content [{:type "text" :text "Final **answer**"}]}]}]
       (-> (extension/handle-agent-end! deps relay-state event)
           (.then (fn [_]
                    (is (= [{:room-id "!slot:example.org"
-                            :message "Final answer"
+                            :message "Final **answer**"
                             :opts {:client/id "client-1"
-                                   :reply-to/event-id "$slot-event:example.org"}}]
+                                   :reply-to/event-id "$slot-event:example.org"
+                                   :formatted-body "<p>Final <strong>answer</strong></p>"}}]
                           @sent*))
                    (is (= [] @pending*))
                    (done)))

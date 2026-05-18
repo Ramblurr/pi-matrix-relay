@@ -3,6 +3,7 @@
             [pi-matrix-relay.broker-client :as broker-client]
             [pi-matrix-relay.commands :as commands]
             [pi-matrix-relay.config :as config]
+            [pi-matrix-relay.markdown :as markdown]
             [pi-matrix-relay.setup :as setup]))
 
 (defn greeting [name]
@@ -1510,12 +1511,14 @@
   [{:keys [send-message!]} relay-state event]
   (let [pending* (:pending-auto-replies* relay-state)
         target (first @pending*)
-        text (assistant-final-text event)]
+        text (assistant-final-text event)
+        formatted-body (when text (markdown/markdown->matrix-html text))]
     (if (and send-message! target text)
       (-> (promise (send-message! (:room-id target)
                                   text
                                   {:client/id (:client-id relay-state)
-                                   :reply-to/event-id (:event-id target)}))
+                                   :reply-to/event-id (:event-id target)
+                                   :formatted-body formatted-body}))
           (.then (fn [_]
                    (swap! pending* #(vec (rest %)))
                    nil))
