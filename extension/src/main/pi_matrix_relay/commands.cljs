@@ -20,6 +20,9 @@
       (= "setup" args)
       {:op :setup}
 
+      (= "help" args)
+      {:op :help}
+
       (= "status" args)
       {:op :status}
 

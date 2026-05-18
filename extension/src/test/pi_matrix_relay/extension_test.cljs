@@ -553,6 +553,87 @@
                     (is false (.-stack err))
                     (done)))))))
 
+(deftest tui-help-command-shows-cli-style-help
+  (async done
+    (let [notifications* (atom [])
+          ctx #js {:cwd "/work/project"
+                   :ui #js {:notify (fn [message level]
+                                      (swap! notifications* conj [message level]))}}]
+      (-> (extension/handle-command! {} "help" ctx)
+          (.then (fn [_]
+                   (is (= 1 (count @notifications*)))
+                   (let [[message level] (first @notifications*)]
+                     (is (= "info" level))
+                     (is (str/includes? message "Usage:"))
+                     (is (str/includes? message "/mr [command]"))
+                     (is (str/includes? message "Commands:"))
+                     (is (str/includes? message "connect"))
+                     (is (str/includes? message "disconnect"))
+                     (is (str/includes? message "reconnect"))
+                     (is (str/includes? message "room bind <room> [alias]"))
+                     (is (str/includes? message "send <alias-or-room-id> <message>")))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest tui-empty-command-shows-same-cli-style-help-as-help
+  (async done
+    (let [notifications* (atom [])
+          ctx #js {:cwd "/work/project"
+                   :ui #js {:notify (fn [message level]
+                                      (swap! notifications* conj [message level]))}}]
+      (-> (extension/handle-command! {} "" ctx)
+          (.then (fn [_]
+                   (let [blank-message (ffirst @notifications*)]
+                     (reset! notifications* [])
+                     (-> (extension/handle-command! {} "help" ctx)
+                         (.then (fn [_]
+                                  (is (= blank-message (ffirst @notifications*)))
+                                  (done)))))))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest tui-status-shows-broker-identity-slot-room-and-listening-rooms
+  (async done
+    (let [notifications* (atom [])
+          deps {:relay-state* (atom {:client-id "client-1"
+                                     :project-config {:rooms {"ops" {:alias "ops"
+                                                                     :room/id "!ops:example.org"
+                                                                     :room/name "Ops Room"}
+                                                             "live" {:alias "live"
+                                                                      :room/id "!live:example.org"}}}
+                                     :project {:project/id "project"}
+                                     :slot "A"
+                                     :room-id "!slot:example.org"
+                                     :room-name "project-A"
+                                     :heartbeat-id :heartbeat-1
+                                     :stream #js {}})
+                :health! (fn []
+                           (js/Promise.resolve {:matrix/connected? true
+                                                :user/id "@bot:example.org"}))}
+          ctx #js {:cwd "/work/project"
+                   :ui #js {:notify (fn [message level]
+                                      (swap! notifications* conj [message level]))}}]
+      (-> (extension/handle-command! deps "status" ctx)
+          (.then (fn [_]
+                   (is (= 1 (count @notifications*)))
+                   (let [[message level] (first @notifications*)]
+                     (is (= "info" level))
+                     (is (str/includes? message "broker: Matrix connected as @bot:example.org"))
+                     (is (str/includes? message "extension: connected to broker"))
+                     (is (str/includes? message "slot: A project-A"))
+                     (is (str/includes? message "slot room: !slot:example.org"))
+                     (is (str/includes? message "listening rooms:"))
+                     (is (str/includes? message "- !slot:example.org (slot project-A)"))
+                     (is (str/includes? message "- !ops:example.org (ops / Ops Room)"))
+                     (is (str/includes? message "- !live:example.org (live)")))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
 (deftest send-command-resolves-bound-target-and-posts-message
   (async done
     (let [sent* (atom nil)

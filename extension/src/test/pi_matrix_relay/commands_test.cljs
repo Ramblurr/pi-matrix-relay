@@ -5,6 +5,7 @@
 (deftest parse-command-subcommands
   (testing "setup/status/help and connection controls"
     (is (= {:op :help} (commands/parse "")))
+    (is (= {:op :help} (commands/parse "help")))
     (is (= {:op :setup} (commands/parse "setup")))
     (is (= {:op :status} (commands/parse "status")))
     (is (= {:op :control :action "connect"} (commands/parse "connect")))

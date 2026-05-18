@@ -1261,10 +1261,27 @@
 
       (js/Promise.reject (js/Error. (str "Unknown matrix relay control action: " action))))))
 
+(def tui-help-text
+  (str "Usage:\n"
+       "  /mr [command]\n"
+       "  /matrix-relay [command]\n\n"
+       "Commands:\n"
+       "  help                              Show this help.\n"
+       "  setup                             Configure Matrix broker credentials.\n"
+       "  status                            Show broker, slot, and listening-room status.\n"
+       "  connect                           Connect this Pi extension instance to the broker.\n"
+       "  disconnect                        Disconnect this Pi extension instance from the broker.\n"
+       "  reconnect                         Reconnect this Pi extension instance to the broker.\n"
+       "  room bind <room> [alias]           Bind a Matrix room alias/id to a local target.\n"
+       "  send <alias-or-room-id> <message>  Send a message to a bound room or raw room id.\n\n"
+       "Examples:\n"
+       "  /mr status\n"
+       "  /mr room bind #ops:example.org ops\n"
+       "  /mr send ops hello from Pi"))
+
 (defn- handle-help!
   [ctx]
-  (notify! ctx (str "Matrix relay commands: setup, status, connect, disconnect, reconnect, "
-                    "room bind <room> [alias], send <alias-or-room-id> <message>"))
+  (notify! ctx tui-help-text)
   (promise nil))
 
 (defn- handle-setup!
@@ -1283,15 +1300,64 @@
              :set-status! (fn [status]
                             (.setStatus ui "pi-matrix-relay" status))}))))
 
+(defn- listening-room-label
+  [binding]
+  (let [labels (->> [(:alias binding)
+                     (:room/name binding)
+                     (:room/canonical-alias binding)]
+                    (remove str/blank?)
+                    distinct
+                    vec)]
+    (when (seq labels)
+      (str " (" (str/join " / " labels) ")"))))
+
+(defn- listening-room-lines
+  [relay-state]
+  (let [slot-room-id (:room-id relay-state)
+        slot-line (when slot-room-id
+                    (str "- " slot-room-id " (slot " (or (:room-name relay-state) (:slot relay-state) "?") ")"))
+        project-lines (->> (room-bindings (:project-config relay-state))
+                           (keep (fn [binding]
+                                   (when-let [room-id (:room/id binding)]
+                                     (when (not= room-id slot-room-id)
+                                       (str "- " room-id (or (listening-room-label binding) "")))))))]
+    (vec (cond-> []
+           slot-line (conj slot-line)
+           true (into project-lines)))))
+
+(defn- tui-status-message
+  [health relay-state]
+  (let [broker-line (cond
+                      (:matrix/connected? health)
+                      (str "broker: Matrix connected as " (:user/id health))
+
+                      (contains? health :matrix/connected?)
+                      "broker: Matrix not connected"
+
+                      :else
+                      "broker: status unknown")]
+    (str "Matrix relay status\n"
+         broker-line "\n"
+         (if relay-state
+           (str "extension: connected to broker\n"
+                "project: " (or (get-in relay-state [:project :project/id]) "unknown") "\n"
+                "slot: " (or (:slot relay-state) "?") " " (or (:room-name relay-state) "unknown") "\n"
+                "slot room: " (or (:room-id relay-state) "unknown") "\n"
+                "heartbeat: " (if (:heartbeat-id relay-state) "active" "inactive") "\n"
+                "stream: " (if (:stream relay-state) "active" "inactive") "\n"
+                "listening rooms:\n"
+                (str/join "\n" (or (seq (listening-room-lines relay-state))
+                                    ["- none"])))
+           "extension: not connected to broker"))))
+
 (defn- handle-status!
-  [{:keys [health!]} ctx]
-  (-> (promise (health!))
-      (.then (fn [health]
-               (notify! ctx
-                        (if (:matrix/connected? health)
-                          (str "Matrix connected as " (:user/id health))
-                          "Matrix broker is not connected")
-                        (if (:matrix/connected? health) "info" "warning"))))))
+  [{:keys [health! relay-state*]} ctx]
+  (let [relay-state (some-> relay-state* deref)]
+    (-> (promise (health!))
+        (.then (fn [health]
+                 (notify! ctx
+                          (tui-status-message health relay-state)
+                          (if (:matrix/connected? health) "info" "warning")))))))
 
 (defn- tui-control-action
   [action]
