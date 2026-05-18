@@ -676,6 +676,35 @@
                     (is false (.-stack err))
                     (done)))))))
 
+(deftest tui-status-reports-closed-event-stream-as-inactive
+  (async done
+    (let [notifications* (atom [])
+          deps {:relay-state* (atom {:client-id "client-1"
+                                     :project-config {}
+                                     :project {:project/id "project"}
+                                     :slot "A"
+                                     :room-id "!slot:example.org"
+                                     :room-name "project-A"
+                                     :heartbeat-id :heartbeat-1
+                                     :stream #js {:diagnostics (fn []
+                                                                 (clj->js {:stream/closed? true
+                                                                           :stream/close-reason "response-close"}))}})
+                :health! (fn []
+                           (js/Promise.resolve {:matrix/connected? true
+                                                :user/id "@bot:example.org"}))}
+          ctx #js {:cwd "/work/project"
+                   :ui #js {:notify (fn [message level]
+                                      (swap! notifications* conj [message level]))}}]
+      (-> (extension/handle-command! deps "status" ctx)
+          (.then (fn [_]
+                   (let [[message level] (first @notifications*)]
+                     (is (= "warning" level))
+                     (is (str/includes? message "stream: inactive")))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
 (deftest send-command-resolves-bound-target-and-posts-message
   (async done
     (let [sent* (atom nil)
@@ -773,6 +802,141 @@
                           (select-keys relay-state [:slot :room-id :room-name :heartbeat-id])))
                    (is (= [["pi-matrix-relay" "matrix: slot A project-A; rooms: ops"]]
                           @statuses*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest event-stream-close-marks-stream-inactive-and-reopens-without-new-slot
+  (async done
+    (let [calls* (atom [])
+          close-handlers* (atom [])
+          relay-state* (atom nil)
+          stream-id* (atom 0)
+          deps {:relay-state* relay-state*
+                :event-stream-reconnect-ms 0
+                :read-project-config! (fn [_cwd] {})
+                :health! (fn []
+                           (swap! calls* conj [:health])
+                           (js/Promise.resolve {:matrix/connected? true
+                                                :user/id "@bot:example.org"}))
+                :register-client! (fn [_request]
+                                    (swap! calls* conj [:register])
+                                    (js/Promise.resolve {:client/id "client-1"
+                                                         :heartbeat/seconds 30
+                                                         :matrix/global-operators []}))
+                :acquire-slot! (fn [_client-id _project _invite]
+                                 (swap! calls* conj [:acquire-slot])
+                                 (js/Promise.resolve {:slot "A"
+                                                      :room/id "!slot:example.org"
+                                                      :room/name "project-A"}))
+                :update-subscriptions! (fn [_client-id _rooms]
+                                         (swap! calls* conj [:update-subscriptions])
+                                         (js/Promise.resolve {:rooms []}))
+                :send-message! (fn [_room-id _message _opts]
+                                (swap! calls* conj [:send-message])
+                                (js/Promise.resolve {:event/id "$start:example.org"}))
+                :heartbeat! (fn [_client-id]
+                              (js/Promise.resolve {:heartbeat/seconds 30}))
+                :set-interval! (fn [_f _ms] :interval-1)
+                :set-timeout! (fn [f ms]
+                                (swap! calls* conj [:set-timeout ms])
+                                (f)
+                                :timeout-1)
+                :open-event-stream! (fn [opts client-id _on-event]
+                                      (let [stream-id (swap! stream-id* inc)
+                                            closed? (atom false)
+                                            close-requested? (atom false)
+                                            stream #js {:close (fn []
+                                                                 (reset! close-requested? true)
+                                                                 (reset! closed? true))
+                                                        :diagnostics (fn []
+                                                                       (clj->js {:stream/id stream-id
+                                                                                 :stream/closed? @closed?
+                                                                                 :close/requested? @close-requested?}))}]
+                                        (swap! calls* conj [:open-event-stream client-id stream-id])
+                                        (swap! close-handlers* conj (:on-close opts))
+                                        stream))}
+          pi #js {:sendUserMessage (fn [_message _options])}
+          ctx #js {:cwd "/work/project"
+                   :ui #js {:notify (fn [_message _level])
+                            :setStatus (fn [_id _status])}}]
+      (-> (extension/start-relay! deps pi ctx)
+          (.then (fn [_]
+                   (let [first-stream (:stream @relay-state*)
+                         first-close-handler (first @close-handlers*)]
+                     (is (= [[:health]
+                             [:register]
+                             [:acquire-slot]
+                             [:update-subscriptions]
+                             [:send-message]
+                             [:open-event-stream "client-1" 1]]
+                            @calls*))
+                     (first-close-handler {:stream/closed? true
+                                           :stream/close-reason "response-close"})
+                     (is (= [[:health]
+                             [:register]
+                             [:acquire-slot]
+                             [:update-subscriptions]
+                             [:send-message]
+                             [:open-event-stream "client-1" 1]
+                             [:set-timeout 0]
+                             [:open-event-stream "client-1" 2]]
+                            @calls*))
+                     (is (not= first-stream (:stream @relay-state*)))
+                     (is (= 2 (count @close-handlers*)))
+                     (done))))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest event-stream-requested-close-does-not-reopen
+  (async done
+    (let [calls* (atom [])
+          close-handler* (atom nil)
+          relay-state* (atom nil)
+          stream-id* (atom 0)
+          deps {:relay-state* relay-state*
+                :event-stream-reconnect-ms 0
+                :read-project-config! (fn [_cwd] {})
+                :health! (fn [] (js/Promise.resolve {:matrix/connected? true
+                                                     :user/id "@bot:example.org"}))
+                :register-client! (fn [_request]
+                                    (js/Promise.resolve {:client/id "client-1"
+                                                         :heartbeat/seconds 30
+                                                         :matrix/global-operators []}))
+                :acquire-slot! (fn [_client-id _project _invite]
+                                 (js/Promise.resolve {:slot "A"
+                                                      :room/id "!slot:example.org"
+                                                      :room/name "project-A"}))
+                :update-subscriptions! (fn [_client-id _rooms]
+                                         (js/Promise.resolve {:rooms []}))
+                :send-message! (fn [_room-id _message _opts]
+                                (js/Promise.resolve {:event/id "$start:example.org"}))
+                :heartbeat! (fn [_client-id]
+                              (js/Promise.resolve {:heartbeat/seconds 30}))
+                :set-interval! (fn [_f _ms] :interval-1)
+                :set-timeout! (fn [f ms]
+                                (swap! calls* conj [:set-timeout ms])
+                                (f)
+                                :timeout-1)
+                :open-event-stream! (fn [opts client-id _on-event]
+                                      (let [stream-id (swap! stream-id* inc)]
+                                        (swap! calls* conj [:open-event-stream client-id stream-id])
+                                        (reset! close-handler* (:on-close opts))
+                                        #js {:close (fn [])
+                                             :diagnostics (fn []
+                                                            (clj->js {:stream/id stream-id}))}))}
+          pi #js {:sendUserMessage (fn [_message _options])}
+          ctx #js {:cwd "/work/project"
+                   :ui #js {:notify (fn [_message _level])
+                            :setStatus (fn [_id _status])}}]
+      (-> (extension/start-relay! deps pi ctx)
+          (.then (fn [_]
+                   (@close-handler* {:stream/closed? true
+                                     :close/requested? true
+                                     :stream/close-reason "response-close"})
+                   (is (= [[:open-event-stream "client-1" 1]] @calls*))
                    (done)))
           (.catch (fn [err]
                     (is false (.-stack err))

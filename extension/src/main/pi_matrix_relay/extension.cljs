@@ -26,6 +26,7 @@
    :send-reaction! broker-client/send-reaction!
    :set-interval! js/setInterval
    :clear-interval! js/clearInterval
+   :set-timeout! js/setTimeout
    :read-project-config! config/read-project-config!
    :write-project-config! config/write-project-config!
    :run-setup! setup/run-setup!})
@@ -1001,9 +1002,57 @@
                      (record-diagnostic! diagnostics* :room-delivery-modes-loaded {:rooms (keys cache)})
                      (atom cache))))))))
 
+(defn- schedule-event-stream-reconnect!
+  [{:keys [set-timeout! event-stream-reconnect-ms diagnostics*]} relay-state* client-id reopen!]
+  (when (and relay-state*
+             (= client-id (:client-id @relay-state*)))
+    (let [delay-ms (or event-stream-reconnect-ms 1000)]
+      (record-diagnostic! diagnostics* :event-stream-reconnect-scheduled {:client/id client-id
+                                                                           :delay/ms delay-ms})
+      (if set-timeout!
+        (set-timeout! reopen! delay-ms)
+        (reopen!)))))
+
+(defn- open-relay-event-stream!
+  [{:keys [open-event-stream! diagnostics*] :as deps} pi ctx relay-state* client-id]
+  (when open-event-stream!
+    (let [stream* (atom nil)
+          reopen! (fn []
+                    (when (and relay-state*
+                               (= client-id (:client-id @relay-state*)))
+                      (let [stream (open-relay-event-stream! deps pi ctx relay-state* client-id)]
+                        (when stream
+                          (swap! relay-state* assoc :stream stream)
+                          (record-diagnostic! diagnostics* :event-stream-reopened {:client/id client-id})))))
+          stream (open-event-stream!
+                  {:on-error (fn [err]
+                               (record-diagnostic! diagnostics* :event-stream-error (error-summary err))
+                               (inject-extension-error-notice! deps pi @relay-state* {:source "event-stream"} err)
+                               (notify! ctx (str "Matrix relay event stream failed: " (.-message err)) "warning"))
+                   :on-close (fn [state]
+                               (record-diagnostic! diagnostics* :event-stream-closed (select-keys state [:client/id
+                                                                                                           :stream/close-reason
+                                                                                                           :close/requested?
+                                                                                                           :error/last]))
+                               (when-not (:close/requested? state)
+                                 (when relay-state*
+                                   (swap! relay-state*
+                                          (fn [relay-state]
+                                            (if (= (:stream relay-state) @stream*)
+                                              (dissoc relay-state :stream)
+                                              relay-state))))
+                                 (notify! ctx "Matrix relay event stream closed; reconnecting." "warning")
+                                 (schedule-event-stream-reconnect! deps relay-state* client-id reopen!)))}
+                  client-id
+                  (fn [event]
+                    (when-let [relay-state (some-> relay-state* deref)]
+                      (handle-broker-event! deps pi ctx relay-state event))))]
+      (reset! stream* stream)
+      stream)))
+
 (defn start-relay!
   [{:keys [read-project-config! health! register-client! acquire-slot!
-           update-subscriptions! send-message! open-event-stream! diagnostics*] :as deps}
+           update-subscriptions! send-message! diagnostics* relay-state*] :as deps}
    pi ctx]
   (let [cwd (ctx-cwd ctx)
         project-config (read-project-config! cwd)
@@ -1061,14 +1110,9 @@
                                                                 :pending-auto-replies* (atom [])
                                                                 :last-start-banner banner
                                                                 :heartbeat-id heartbeat-id}
-                                                   relay-state* (atom relay-state)
-                                                   stream (open-event-stream!
-                                                           {:on-error (fn [err]
-                                                                        (record-diagnostic! diagnostics* :event-stream-error (error-summary err))
-                                                                        (inject-extension-error-notice! deps pi @relay-state* {:source "event-stream"} err)
-                                                                        (notify! ctx (str "Matrix relay event stream failed: " (.-message err)) "warning"))}
-                                                           client-id
-                                                           #(handle-broker-event! deps pi ctx @relay-state* %))
+                                                   relay-state* (or relay-state* (atom relay-state))
+                                                   _ (reset! relay-state* relay-state)
+                                                   stream (open-relay-event-stream! deps pi ctx relay-state* client-id)
                                                    relay-state (assoc relay-state :stream stream)]
                                                (reset! relay-state* relay-state)
                                                (record-diagnostic! diagnostics* :event-stream-opened {:client/id client-id})
@@ -1178,6 +1222,19 @@
     (when-let [diagnostics (.-diagnostics stream)]
       (js->clj (diagnostics) :keywordize-keys true))))
 
+(defn- event-stream-diagnostic-flag
+  [diagnostics names]
+  (some #(get diagnostics %) names))
+
+(defn- event-stream-active?
+  [relay-state]
+  (boolean
+   (when (:stream relay-state)
+     (let [diagnostics (stream-diagnostics relay-state)]
+       (or (nil? diagnostics)
+           (and (not (event-stream-diagnostic-flag diagnostics [:stream/closed? :closed?]))
+                (not (event-stream-diagnostic-flag diagnostics [:close/requested? :requested?]))))))))
+
 (defn- relay-snapshot
   [relay-state]
   (if relay-state
@@ -1195,7 +1252,7 @@
                :status/text (status-text project-config {:slot (:slot relay-state)
                                                           :room/name (:room-name relay-state)})
                :heartbeat/active? (boolean (:heartbeat-id relay-state))
-               :stream/active? (boolean (:stream relay-state))
+               :stream/active? (event-stream-active? relay-state)
                :pending-auto-replies/count (if pending* (count @pending*) 0)}
         (:last-start-banner relay-state)
         (assoc :last-start-banner (:last-start-banner relay-state))
@@ -1461,11 +1518,19 @@
                 "slot: " (or (:slot relay-state) "?") " " (or (:room-name relay-state) "unknown") "\n"
                 "slot room: " (or (:room-id relay-state) "unknown") "\n"
                 "heartbeat: " (if (:heartbeat-id relay-state) "active" "inactive") "\n"
-                "stream: " (if (:stream relay-state) "active" "inactive") "\n"
+                "stream: " (if (event-stream-active? relay-state) "active" "inactive") "\n"
                 "listening rooms:\n"
                 (str/join "\n" (or (seq (listening-room-lines relay-state))
                                     ["- none"])))
            "extension: not connected to broker"))))
+
+(defn- tui-status-level
+  [health relay-state]
+  (if (and (:matrix/connected? health)
+           relay-state
+           (event-stream-active? relay-state))
+    "info"
+    "warning"))
 
 (defn- handle-status!
   [{:keys [health! relay-state*]} ctx]
@@ -1474,7 +1539,7 @@
         (.then (fn [health]
                  (notify! ctx
                           (tui-status-message health relay-state)
-                          (if (:matrix/connected? health) "info" "warning")))))))
+                          (tui-status-level health relay-state)))))))
 
 (defn- tui-control-action
   [action]

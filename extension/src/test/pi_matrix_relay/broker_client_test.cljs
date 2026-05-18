@@ -90,6 +90,37 @@
            (:events result)))
     (is (= "id: evt-2\n" (:buffer result)))))
 
+(deftest event-stream-close-notifies-caller-with-diagnostics
+  (let [res-handlers* (atom {})
+        req-handlers* (atom {})
+        closed* (atom nil)
+        fake-http #js {:request (fn [_opts callback]
+                                  (let [res #js {:statusCode 200
+                                                 :setEncoding (fn [_encoding])
+                                                 :on (fn [event handler]
+                                                       (swap! res-handlers* assoc event handler))}]
+                                    (callback res)
+                                    #js {:on (fn [event handler]
+                                               (swap! req-handlers* assoc event handler))
+                                         :end (fn [])
+                                         :destroy (fn [])}))}]
+    (with-redefs [broker-client/http fake-http]
+      (broker-client/open-event-stream! {:env #js {"XDG_RUNTIME_DIR" "/run/user/1000"}
+                                         :on-close #(reset! closed* %)}
+                                        "client-1"
+                                        (fn [_event]))
+      ((get @res-handlers* "close"))
+      (is (= {:client/id "client-1"
+              :stream/connected? true
+              :stream/closed? true
+              :stream/close-reason "response-close"
+              :http/status-code 200}
+             (select-keys @closed* [:client/id
+                                    :stream/connected?
+                                    :stream/closed?
+                                    :stream/close-reason
+                                    :http/status-code]))))))
+
 (deftest slot-lifecycle-helpers-use-versioned-endpoints
   (async done
     (let [calls* (atom [])

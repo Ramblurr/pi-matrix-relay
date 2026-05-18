@@ -216,15 +216,24 @@
 (defn open-event-stream!
   ([client-id on-event]
    (open-event-stream! {:env (.-env js/process)} client-id on-event))
-  ([{:keys [env on-error]} client-id on-event]
+  ([{:keys [env on-error on-close]} client-id on-event]
    (let [env (or env (.-env js/process))
          buffer* (atom "")
+         close-notified?* (atom false)
          state* (atom {:client/id client-id
                        :stream/started-at (now-ms)
                        :stream/connected? false
                        :stream/closed? false
                        :chunk/count 0
                        :event/count 0})
+         notify-close! (fn [reason]
+                         (let [state (swap! state* assoc
+                                            :stream/closed? true
+                                            :stream/closed-at (now-ms)
+                                            :stream/close-reason reason)]
+                           (when (and on-close
+                                      (compare-and-set! close-notified?* false true))
+                             (on-close state))))
          record-error! (fn [err]
                          (swap! state* assoc
                                 :error/last (error-data err)
@@ -261,17 +270,13 @@
                                       (record-error! err)))))
                            (.on res "end"
                                 (fn []
-                                  (swap! state* assoc
-                                         :stream/closed? true
-                                         :stream/closed-at (now-ms)
-                                         :stream/close-reason "response-end")))
+                                  (notify-close! "response-end")))
                            (.on res "close"
                                 (fn []
-                                  (swap! state* assoc
-                                         :stream/closed? true
-                                         :stream/closed-at (now-ms)
-                                         :stream/close-reason "response-close"))))))]
-     (.on req "error" record-error!)
+                                  (notify-close! "response-close"))))))]
+     (.on req "error" (fn [err]
+                         (record-error! err)
+                         (notify-close! "request-error")))
      (.on req "close" (fn []
                          (swap! state* assoc :request/closed-at (now-ms))))
      (.end req)
