@@ -699,6 +699,31 @@
                     :created (filterv #(= :create-room (first %)) (tu/calls gateway))
                     :slots (:slots (store/list-slots @conn "project"))}))))))))
 
+(deftest slot-acquire-adds-created-room-to-configured-space
+  (testing "new broker-created slot rooms are linked into the configured Matrix Space"
+    (with-env
+      (tu/fake-gateway {:space-id "!space:example.org"})
+      (fn [env _]
+        (let [gateway (:matrix-gateway env)
+              app (api/app env)]
+          (tu/edn-request app :post "/v1/clients"
+                          {:request/id "register-space-slot"
+                           :client/instance-id "instance-space-slot"
+                           :protocol/version 1
+                           :project {:project/id "project"}})
+          (let [acquire (tu/edn-request app :post "/v1/slots/acquire"
+                                        {:request/id "acquire-space-slot"
+                                         :client/id "instance-space-slot"
+                                         :project {:project/id "project"}})]
+            (is (= {:acquire {:ok true
+                              :data {:slot "A"
+                                     :room/id "!project-A:example.org"
+                                     :room/name "project-A"}}
+                    :space-links [{:room/id "!project-A:example.org"}]}
+                   {:acquire acquire
+                    :space-links (mapv second (filter #(= :ensure-room-in-space (first %))
+                                                      (tu/calls gateway)))}))))))))
+
 (deftest slot-acquire-is-idempotent-and-allocates-next-free-slot
   (testing "slot leases are coordinated by Datahike and mutating requestIds are replay-safe"
     (with-env

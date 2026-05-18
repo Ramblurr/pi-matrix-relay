@@ -7,6 +7,7 @@
 (def fs (js/require "fs"))
 
 (def mxid-pattern #"^@[^:\s]+:[^:\s]+$")
+(def room-id-or-alias-pattern #"^[!#][^:\s]+:[^:\s]+$")
 
 (defn parse-operators
   [text]
@@ -19,6 +20,11 @@
   [value]
   (boolean (and (string? value)
                 (re-matches mxid-pattern value))))
+
+(defn room-id-or-alias?
+  [value]
+  (boolean (and (string? value)
+                (re-matches room-id-or-alias-pattern value))))
 
 (defn https-url?
   [value]
@@ -75,22 +81,58 @@
   [operator-text]
   (validate-operators! (parse-operators operator-text)))
 
+(defn- validate-space-room-id-or-alias!
+  [room-id-or-alias]
+  (when-not (room-id-or-alias? room-id-or-alias)
+    (throw (js/Error. "Matrix Space room ID/alias must look like !room:server or #alias:server.")))
+  room-id-or-alias)
+
+(defn- validate-space-name!
+  [name]
+  (when (str/blank? (str name))
+    (throw (js/Error. "Matrix Space name is required.")))
+  name)
+
+(defn- validate-space-config!
+  [space]
+  (case (:mode space)
+    "existing" (validate-space-room-id-or-alias! (:room-id-or-alias space))
+    "create" (validate-space-name! (:name space))
+    "none" true
+    nil true
+    (throw (js/Error. "Matrix Space mode must be none, existing, or create.")))
+  space)
+
 (defn validate-fields!
   [{:keys [homeserver-url user-id password operators] :as fields}]
   (validate-homeserver! homeserver-url)
   (validate-user-id! user-id)
   (validate-password! password)
   (validate-operators! operators)
+  (validate-space-config! (:space fields))
   fields)
 
+(defn- config-space
+  [space]
+  (case (:mode space)
+    "existing" {:enabled? true
+                :mode "existing"
+                :room-id-or-alias (:room-id-or-alias space)}
+    "create" {:enabled? true
+              :mode "create"
+              :name (:name space)}
+    "none" {:enabled? false}
+    nil nil))
+
 (defn config-from-fields
-  [{:keys [homeserver-url user-id password operators encrypted?]}]
-  {:matrix {:homeserver-url homeserver-url
-            :user-id user-id
-            :password password
-            :operators (vec operators)
-            :encrypted? (boolean encrypted?)
-            :device-name "pi-matrix-relay-broker"}})
+  [{:keys [homeserver-url user-id password operators encrypted? space]}]
+  (cond-> {:matrix {:homeserver-url homeserver-url
+                    :user-id user-id
+                    :password password
+                    :operators (vec operators)
+                    :encrypted? (boolean encrypted?)
+                    :device-name "pi-matrix-relay-broker"}}
+    (config-space space) (assoc-in [:matrix :space] (config-space space))))
 
 (defn read-global-config!
   []
@@ -170,6 +212,37 @@
                                (throw (js/Error. "Matrix broker did not report connected after setup."))))))))]
       (attempt 1))))
 
+(defn- collect-space-fields!
+  [{:keys [editor! confirm! notify!]} existing-matrix]
+  (let [existing-space (:space existing-matrix)
+        existing-room-id-or-alias (:room-id-or-alias existing-space)
+        existing-name (:name existing-space)]
+    (-> (confirm! "Organize relay-created rooms in a Matrix Space?"
+                 "A Matrix Space keeps all relay-created rooms under one flat parent space.")
+        (.then (fn [enabled?]
+                 (if-not enabled?
+                   {:mode "none"}
+                   (-> (confirm! "Use an existing Matrix Space?"
+                                "Choose No to create a new private Matrix Space for pi-matrix-relay.")
+                       (.then (fn [use-existing?]
+                                (if use-existing?
+                                  (-> (prompt-valid! {:notify! notify!}
+                                                     editor!
+                                                     "Existing Matrix Space room ID or alias"
+                                                     (or existing-room-id-or-alias "#pi-relay:example.org")
+                                                     validate-space-room-id-or-alias!)
+                                      (.then (fn [room-id-or-alias]
+                                               {:mode "existing"
+                                                :room-id-or-alias room-id-or-alias})))
+                                  (-> (prompt-valid! {:notify! notify!}
+                                                     editor!
+                                                     "New Matrix Space name"
+                                                     (or existing-name "pi-matrix-relay")
+                                                     validate-space-name!)
+                                      (.then (fn [name]
+                                               {:mode "create"
+                                                :name name})))))))))))))
+
 (defn- collect-fields!
   [{:keys [input! editor! confirm! notify!]} existing]
   (let [existing-matrix (:matrix existing)
@@ -212,12 +285,18 @@
                               (str "Encrypted rooms are the default for pi-matrix-relay. Current: "
                                    (if existing-encrypted? "enabled" "disabled")))
                      (.then (fn [encrypted?]
-                              (validate-fields!
-                               {:homeserver-url homeserver-url
-                                :user-id user-id
-                                :password password
-                                :operators operators
-                                :encrypted? encrypted?})))))))))
+                              (-> (collect-space-fields! {:editor! editor!
+                                                          :confirm! confirm!
+                                                          :notify! notify!}
+                                                         existing-matrix)
+                                  (.then (fn [space]
+                                           (validate-fields!
+                                            {:homeserver-url homeserver-url
+                                             :user-id user-id
+                                             :password password
+                                             :operators operators
+                                             :encrypted? encrypted?
+                                             :space space}))))))))))))
 
 (defn run-setup!
   "Prompt for global broker config, optionally install the user service, and

@@ -9,6 +9,8 @@
   (resolve-room! [gateway room])
   (create-room! [gateway request])
   (ensure-users-power-level! [gateway request])
+  (ensure-space! [gateway request])
+  (ensure-room-in-space! [gateway request])
   (leave-room! [gateway request])
   (send-message! [gateway request])
   (set-typing! [gateway request])
@@ -46,6 +48,11 @@
     (unavailable :matrix_not_configured "Matrix client is not configured." {:request request}))
   (ensure-users-power-level! [_ request]
     (unavailable :matrix_not_configured "Matrix client is not configured." {:request request}))
+  (ensure-space! [_ _]
+    {:space/enabled? false})
+  (ensure-room-in-space! [_ request]
+    {:room/id (:room/id request)
+     :linked? false})
   (leave-room! [_ request]
     (unavailable :matrix_not_configured "Matrix client is not configured." {:request request}))
   (send-message! [_ request]

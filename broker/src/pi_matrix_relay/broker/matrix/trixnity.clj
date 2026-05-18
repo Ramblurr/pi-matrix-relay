@@ -6,8 +6,10 @@
             [ol.trixnity.repo :as repo]
             [ol.trixnity.room :as room]
             [ol.trixnity.room.message :as msg]
+            [ol.trixnity.space :as space]
             [ol.trixnity.schemas :as mx]
-            [pi-matrix-relay.broker.matrix :as matrix])
+            [pi-matrix-relay.broker.matrix :as matrix]
+            [pi-matrix-relay.broker.store :as store])
   (:import [java.time Duration Instant]))
 
 (defn- require-nonblank
@@ -146,6 +148,174 @@
             client
             {::mx/decryption-timeout (Duration/ofSeconds 8)}))))))))
 
+(def ^:private default-space-key "default")
+(def ^:private space-join-timeout (Duration/ofSeconds 15))
+(def ^:private space-child-timeout (Duration/ofSeconds 10))
+
+(defn- nonblank-string
+  [value]
+  (let [trimmed (str/trim (str value))]
+    (when-not (str/blank? trimmed)
+      trimmed)))
+
+(defn- keyword-mode
+  [mode]
+  (cond
+    (keyword? mode) mode
+    (string? mode) (keyword mode)
+    :else mode))
+
+(defn- configured-space
+  [config]
+  (let [space (get-in config [:matrix :space])
+        mode (keyword-mode (:mode space))]
+    (when (and (:enabled? space) (contains? #{:existing :create} mode))
+      (assoc space :mode mode))))
+
+(defn- bot-user-id
+  [runtime* config]
+  (str (or (:user-id @runtime*)
+           (get-in config [:matrix :user-id]))))
+
+(defn- operators
+  [config]
+  (vec (get-in config [:matrix :operators] [])))
+
+(defn- space-setup-ex
+  ([message details]
+   (space-setup-ex message details nil))
+  ([message details cause]
+   (ex-info message (merge {:code :matrix_space_setup_failed} details) cause)))
+
+(defn- membership-join?
+  [membership]
+  (= "join" (some-> membership name)))
+
+(defn- known-joined-space?
+  [c space-id]
+  (let [spaces (or (flow-value (space/get-all-flat c)) [])]
+    (boolean
+     (some (fn [candidate]
+             (and (= space-id (str (::mx/room-id candidate)))
+                  (membership-join? (::mx/membership candidate))))
+           spaces))))
+
+(defn- required-child-level
+  [content]
+  (long (or (get-in content [::mx/event-levels "m.space.child"])
+            (::mx/state-default-level content)
+            50)))
+
+(defn- bot-level
+  [content bot]
+  (long (or (get-in content [::mx/user-levels bot])
+            (::mx/users-default-level content)
+            0)))
+
+(defn- validate-space-manageable!
+  [c config runtime* space-id]
+  (when-not (known-joined-space? c space-id)
+    (throw (space-setup-ex
+            (str "Configured Matrix space " space-id " is not a joined Matrix Space for the bot. "
+                 "Invite the bot and ensure the room is a Matrix Space.")
+            {:space-id space-id
+             :bot-user-id (bot-user-id runtime* config)})))
+  (let [content (power-level-content-for-set (flow-value (room/get-power-levels c space-id)))
+        bot (bot-user-id runtime* config)
+        required (required-child-level content)
+        actual (bot-level content bot)]
+    (when (< actual required)
+      (throw (space-setup-ex
+              (str "Configured Matrix space " space-id " is not manageable by the bot. "
+                   "Please invite/promote " bot " so it can manage m.space.child state events.")
+              {:space-id space-id
+               :bot-user-id bot
+               :bot-level actual
+               :required-level required}))))
+  space-id)
+
+(defn- resolve-existing-space-id!
+  [c room-id-or-alias]
+  (try
+    (str (m/? (room/join-room c room-id-or-alias {::mx/timeout space-join-timeout})))
+    (catch Throwable cause
+      (throw (space-setup-ex
+              (str "Could not join or resolve configured Matrix space " room-id-or-alias
+                   ". Invite the bot to the space before setup, or use a room id/alias it can join.")
+              {:room-id-or-alias room-id-or-alias}
+              cause)))))
+
+(defn- space-admin-power-levels
+  [config runtime*]
+  {::mx/user-levels (into {(bot-user-id runtime* config) 100}
+                          (map (fn [operator]
+                                 [operator 100]))
+                          (operators config))})
+
+(defn- create-space-opts
+  [config runtime* space-config]
+  (cond-> {::mx/room-name (or (nonblank-string (:name space-config)) "pi-matrix-relay")
+           ::mx/visibility :private
+           ::mx/preset :private-chat
+           ::mx/invite (operators config)
+           ::mx/power-levels (space-admin-power-levels config runtime*)}
+    (empty? (operators config)) (dissoc ::mx/invite)))
+
+(defn- create-and-remember-space!
+  [c config runtime* db-conn space-config]
+  (when-not db-conn
+    (throw (space-setup-ex
+            "Matrix Space creation requires the broker database so the created space can be reused on restart."
+            {:space-mode :create})))
+  (let [room-id (str (m/? (space/create-space c (create-space-opts config runtime* space-config))))]
+    (store/remember-matrix-space! db-conn {:space-key default-space-key
+                                           :room-id room-id
+                                           :source :created
+                                           :now-ms (System/currentTimeMillis)})
+    room-id))
+
+(defn- ensure-configured-space!
+  [{:keys [config runtime*]} {:keys [db-conn]}]
+  (if-let [space-config (configured-space config)]
+    (let [c (:client @runtime*)
+          mode (:mode space-config)]
+      (when-not c
+        (throw (space-setup-ex "Matrix client must be started before Matrix Space setup."
+                               {:space-mode mode})))
+      (if-let [room-id (:space/id @runtime*)]
+        {:space/id room-id
+         :space/mode (:space/mode @runtime*)}
+        (let [room-id (case mode
+                        :existing (resolve-existing-space-id! c (:room-id-or-alias space-config))
+                        :create (or (:room-id (when db-conn
+                                                (store/matrix-space @db-conn default-space-key)))
+                                    (create-and-remember-space! c config runtime* db-conn space-config)))]
+          (validate-space-manageable! c config runtime* room-id)
+          (swap! runtime* assoc :space/id room-id :space/mode mode)
+          {:space/id room-id
+           :space/mode mode})))
+    {:space/enabled? false}))
+
+(defn- child-via
+  [room-id]
+  (if-let [server (second (str/split (str room-id) #":" 2))]
+    #{server}
+    (throw (matrix/ex :invalid_request
+                      "Matrix room IDs must include a server name for Matrix Space child links."
+                      {:room/id room-id}))))
+
+(defn- ensure-room-linked-to-space!
+  [{:keys [runtime*]} request]
+  (if-let [space-id (:space/id @runtime*)]
+    (let [c (:client @runtime*)
+          room-id (:room/id request)]
+      (m/? (space/set-child c space-id room-id {::mx/via (child-via room-id)} {::mx/timeout space-child-timeout}))
+      {:space/id space-id
+       :room/id room-id
+       :linked? true})
+    {:room/id (:room/id request)
+     :linked? false}))
+
 (defrecord TrixnityGateway [config paths event-sink runtime*]
   matrix/MatrixGateway
   (start! [this]
@@ -220,6 +390,10 @@
       {:room/id room-id
        :users users
        :level level}))
+  (ensure-space! [this request]
+    (ensure-configured-space! this request))
+  (ensure-room-in-space! [this request]
+    (ensure-room-linked-to-space! this request))
   (leave-room! [_ request]
     (let [c (:client @runtime*)
           room-id (:room/id request)]

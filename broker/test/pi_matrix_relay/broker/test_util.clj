@@ -16,7 +16,7 @@
   (db/start-conn! {:paths {:state-dir (temp-dir "pi-matrix-relay-test-state")
                            :broker-db-store-id (random-uuid)}}))
 
-(defrecord FakeGateway [calls* rooms on-create-room]
+(defrecord FakeGateway [calls* rooms on-create-room space-id]
   matrix/MatrixGateway
   (start! [this] this)
   (stop! [_] (swap! calls* conj [:stop]) nil)
@@ -38,6 +38,16 @@
     {:room/id (:room/id request)
      :users (:users request)
      :level (:level request)})
+  (ensure-space! [_ request]
+    (swap! calls* conj [:ensure-space request])
+    (if space-id
+      {:space/id space-id :space/mode :existing}
+      {:space/enabled? false}))
+  (ensure-room-in-space! [_ request]
+    (swap! calls* conj [:ensure-room-in-space request])
+    (cond-> {:room/id (:room/id request)
+             :linked? (boolean space-id)}
+      space-id (assoc :space/id space-id)))
   (leave-room! [_ request]
     (swap! calls* conj [:leave-room request])
     {:room/id (:room/id request)
@@ -78,8 +88,8 @@
 (defn fake-gateway
   ([]
    (fake-gateway {}))
-  ([{:keys [rooms on-create-room]}]
-   (->FakeGateway (atom []) rooms on-create-room)))
+  ([{:keys [rooms on-create-room space-id]}]
+   (->FakeGateway (atom []) rooms on-create-room space-id)))
 
 (defn calls
   [gateway]

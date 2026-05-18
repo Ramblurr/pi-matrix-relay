@@ -4,8 +4,12 @@
             [ol.trixnity.event :as event]
             [ol.trixnity.room :as room]
             [ol.trixnity.schemas :as mx]
+            [ol.trixnity.space :as space]
             [org.httpkit.client :as http]
+            [pi-matrix-relay.broker.db :as db]
             [pi-matrix-relay.broker.matrix :as matrix]
+            [pi-matrix-relay.broker.store :as store]
+            [pi-matrix-relay.broker.test-util :as tu]
             [pi-matrix-relay.broker.matrix.trixnity :as sut])
   (:import [java.time Duration]))
 
@@ -95,4 +99,148 @@
                                                 :users ["@alice:example.org"]
                                                 :level 50})))
       (is (= [[:get-power-levels :client "!room:example.org"]]
+             @calls*)))))
+
+(defn- gateway-config
+  [space-config]
+  {:matrix {:homeserver-url "https://matrix.example.org"
+            :user-id "@bot:example.org"
+            :password "secret"
+            :operators ["@alice:example.org" "@bob:example.org"]
+            :space space-config}})
+
+(deftest existing-space-setup-validates-joined-space-and-child-power
+  (let [gateway (sut/gateway (gateway-config {:enabled? true
+                                              :mode :existing
+                                              :room-id-or-alias "#relay:example.org"})
+                             {})
+        calls* (atom [])]
+    (reset! (:runtime* gateway) {:client :client})
+    (with-redefs [room/join-room (fn [client room-id-or-alias opts]
+                                   (swap! calls* conj [:join-room client room-id-or-alias opts])
+                                   (m/sp "!space:example.org"))
+                  space/get-all-flat (fn [client]
+                                       (swap! calls* conj [:get-spaces client])
+                                       (m/seed [[{::mx/room-id "!space:example.org"
+                                                  ::mx/membership "join"}]]))
+                  room/get-power-levels (fn [client room-id]
+                                          (swap! calls* conj [:get-power-levels client room-id])
+                                          (m/seed [{::mx/user-levels {"@bot:example.org" 75}
+                                                    ::mx/event-levels {"m.space.child" 75}}]))]
+      (is (= {:space/id "!space:example.org"
+              :space/mode :existing}
+             (matrix/ensure-space! gateway {})))
+      (is (= "!space:example.org" (:space/id @(:runtime* gateway))))
+      (is (= [[:join-room :client "#relay:example.org" {::mx/timeout (Duration/ofSeconds 15)}]
+              [:get-spaces :client]
+              [:get-power-levels :client "!space:example.org"]]
+             @calls*)))))
+
+(deftest existing-space-setup-fails-when-bot-cannot-manage-children
+  (let [gateway (sut/gateway (gateway-config {:enabled? true
+                                              :mode :existing
+                                              :room-id-or-alias "!space:example.org"})
+                             {})]
+    (reset! (:runtime* gateway) {:client :client})
+    (with-redefs [room/join-room (fn [& _] (m/sp "!space:example.org"))
+                  space/get-all-flat (fn [_]
+                                       (m/seed [[{::mx/room-id "!space:example.org"
+                                                  ::mx/membership "join"}]]))
+                  room/get-power-levels (fn [_ _]
+                                          (m/seed [{::mx/user-levels {"@bot:example.org" 10}
+                                                    ::mx/state-default-level 50}]))]
+      (let [ex (try
+                 (matrix/ensure-space! gateway {})
+                 nil
+                 (catch clojure.lang.ExceptionInfo ex
+                   ex))]
+        (is (= :matrix_space_setup_failed (:code (ex-data ex))))
+        (is (re-find #"invite/promote" (ex-message ex)))
+        (is (= {:space-id "!space:example.org"
+                :bot-user-id "@bot:example.org"
+                :bot-level 10
+                :required-level 50}
+               (select-keys (ex-data ex) [:space-id :bot-user-id :bot-level :required-level])))))))
+
+(deftest existing-space-setup-fails-clearly-when-space-cannot-be-joined
+  (let [gateway (sut/gateway (gateway-config {:enabled? true
+                                              :mode :existing
+                                              :room-id-or-alias "#missing:example.org"})
+                             {})]
+    (reset! (:runtime* gateway) {:client :client})
+    (with-redefs [room/join-room (fn [& _]
+                                   (m/sp
+                                    (throw (ex-info "M_FORBIDDEN" {:errcode "M_FORBIDDEN"}))))]
+      (let [ex (try
+                 (matrix/ensure-space! gateway {})
+                 nil
+                 (catch clojure.lang.ExceptionInfo ex
+                   ex))]
+        (is (= :matrix_space_setup_failed (:code (ex-data ex))))
+        (is (re-find #"Invite the bot" (ex-message ex)))
+        (is (= {:room-id-or-alias "#missing:example.org"}
+               (select-keys (ex-data ex) [:room-id-or-alias])))))))
+
+(deftest create-space-setup-invites-promotes-and-persists-operators
+  (let [conn (tu/test-db-conn)
+        created* (atom [])]
+    (try
+      (let [config (gateway-config {:enabled? true
+                                    :mode :create
+                                    :name "Pi Relay"})
+            gateway-1 (sut/gateway config {})
+            gateway-2 (sut/gateway config {})]
+        (doseq [gateway [gateway-1 gateway-2]]
+          (reset! (:runtime* gateway) {:client :client}))
+        (with-redefs [space/create-space (fn [client opts]
+                                           (swap! created* conj [:create-space client opts])
+                                           (m/sp "!created-space:example.org"))
+                      space/get-all-flat (fn [_]
+                                           (m/seed [[{::mx/room-id "!created-space:example.org"
+                                                      ::mx/membership "join"}]]))
+                      room/get-power-levels (fn [_ _]
+                                              (m/seed [{::mx/user-levels {"@bot:example.org" 100
+                                                                        "@alice:example.org" 100
+                                                                        "@bob:example.org" 100}
+                                                        ::mx/state-default-level 50}]))]
+          (is (= {:space/id "!created-space:example.org"
+                  :space/mode :create}
+                 (matrix/ensure-space! gateway-1 {:db-conn conn})))
+          (is (= {:space/id "!created-space:example.org"
+                  :space/mode :create}
+                 (matrix/ensure-space! gateway-2 {:db-conn conn})))
+          (is (= [{:space-key "default"
+                   :room-id "!created-space:example.org"
+                   :source :created}]
+                 [(select-keys (store/matrix-space @conn "default") [:space-key :room-id :source])]))
+          (is (= [[:create-space :client
+                   {::mx/room-name "Pi Relay"
+                    ::mx/visibility :private
+                    ::mx/preset :private-chat
+                    ::mx/invite ["@alice:example.org" "@bob:example.org"]
+                    ::mx/power-levels {::mx/user-levels {"@bot:example.org" 100
+                                                        "@alice:example.org" 100
+                                                        "@bob:example.org" 100}}}]]
+                 @created*))))
+      (finally
+        (db/release-conn! conn)))))
+
+(deftest ensure-room-in-space-writes-idempotent-child-relation
+  (let [gateway (sut/gateway (gateway-config {:enabled? true
+                                              :mode :existing
+                                              :room-id-or-alias "!space:example.org"})
+                             {})
+        calls* (atom [])]
+    (reset! (:runtime* gateway) {:client :client
+                                 :space/id "!space:example.org"})
+    (with-redefs [space/set-child (fn [client space-id child-room-id content opts]
+                                    (swap! calls* conj [:set-child client space-id child-room-id content opts])
+                                    (m/sp "$child:example.org"))]
+      (is (= {:space/id "!space:example.org"
+              :room/id "!project-A:example.org"
+              :linked? true}
+             (matrix/ensure-room-in-space! gateway {:room/id "!project-A:example.org"})))
+      (is (= [[:set-child :client "!space:example.org" "!project-A:example.org"
+               {::mx/via #{"example.org"}}
+               {::mx/timeout (Duration/ofSeconds 10)}]]
              @calls*)))))

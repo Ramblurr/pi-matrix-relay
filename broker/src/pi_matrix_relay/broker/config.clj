@@ -7,7 +7,8 @@
 (def default-config
   {:matrix {:encrypted? true
             :operators []
-            :device-name "pi-matrix-relay-broker"}
+            :device-name "pi-matrix-relay-broker"
+            :space {:enabled? false}}
    :http {:transport :uds}
    :leases {:heartbeat-seconds 30
             :suspect-after-missed 2
@@ -34,10 +35,40 @@
     (when (.exists file)
       (not-empty (str/trim (slurp file))))))
 
+(def space-modes #{:existing :create})
+
+(defn- normalize-space-mode
+  [mode]
+  (cond
+    (keyword? mode) mode
+    (string? mode) (keyword mode)
+    :else mode))
+
+(defn- nonblank
+  [value]
+  (let [trimmed (str/trim (str value))]
+    (when-not (str/blank? trimmed)
+      trimmed)))
+
+(defn- normalize-space-config
+  [space]
+  (let [space (or space {})
+        mode (or (normalize-space-mode (:mode space))
+                 (cond
+                   (nonblank (:room-id-or-alias space)) :existing
+                   (:enabled? space) :create))]
+    (if (and (not (false? (:enabled? space))) (contains? space-modes mode))
+      (cond-> (assoc space :enabled? true :mode mode)
+        (= mode :create) (update :name #(or (nonblank %) "pi-matrix-relay")))
+      {:enabled? false})))
+
 (defn normalize-config
   [config token]
-  (cond-> (deep-merge default-config config)
-    token (assoc-in [:matrix :access-token] token)))
+  (let [merged (deep-merge default-config config)
+        normalized (assoc-in merged [:matrix :space]
+                             (normalize-space-config (get-in config [:matrix :space])))]
+    (cond-> normalized
+      token (assoc-in [:matrix :access-token] token))))
 
 (defn load-config
   ([]
