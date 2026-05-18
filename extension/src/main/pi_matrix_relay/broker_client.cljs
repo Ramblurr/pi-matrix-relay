@@ -134,9 +134,8 @@
                        (assoc :reply-to {:room/id room-id
                                          :event/id (:reply-to/event-id send-opts)})
 
-                       (or (:formatted-body send-opts) (:formattedBody send-opts))
-                       (assoc :formatted-body (or (:formatted-body send-opts)
-                                                  (:formattedBody send-opts)))))))
+                       (:formatted-body send-opts)
+                       (assoc :formatted-body (:formatted-body send-opts))))))
 
 (defn set-typing!
   ([room-id typing?]

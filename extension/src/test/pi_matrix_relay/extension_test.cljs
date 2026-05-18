@@ -89,14 +89,16 @@
         "extension load must not call runtime action methods such as setActiveTools")
     (let [send-tool ^js (get @tools* "send_matrix_message")
           params (js->clj (.-parameters send-tool) :keywordize-keys true)
-          formatted-desc (str (get-in params [:properties :formattedBody :description]))]
+          format-desc (str (get-in params [:properties :format :description]))]
       (is (fn? (.-execute send-tool)))
-      (is (= {:type "string"}
-             (select-keys (get-in params [:properties :formattedBody]) [:type])))
-      (is (every? #(str/includes? formatted-desc %)
-                  ["del" "h1" "h6" "blockquote" "table" "caption" "pre" "img" "details" "summary"
-                   "data-mx-bg-color" "data-mx-color" "data-mx-spoiler" "data-mx-maths"
-                   "https" "mailto" "magnet" "mxc://" "language-" "100"])))
+      (is (= {:type "string"
+              :enum ["text/markdown" "text/plain" "text/html"]
+              :default "text/markdown"}
+             (select-keys (get-in params [:properties :format]) [:type :enum :default])))
+      (is (= #{:target :message :format :replyToEventId}
+             (set (keys (:properties params)))))
+      (is (every? #(str/includes? format-desc %)
+                  ["Defaults to text/markdown" "text/plain" "text/html" "Matrix-safe HTML"])))
     (is (fn? (.-execute ^js (get @tools* "send_matrix_reaction"))))
     (is (fn? (.-execute ^js (get @tools* "matrix_relay_diagnostics"))))
     (is (fn? (.-execute ^js (get @tools* "matrix_relay_control"))))))
@@ -406,7 +408,8 @@
                    (is (= {:room-id "!room:example.org"
                            :message "tool says hello"
                            :opts {:client/id "client-1"
-                                  :reply-to/event-id "$parent:example.org"}}
+                                  :reply-to/event-id "$parent:example.org"
+                                  :formatted-body "<p>tool says hello</p>"}}
                           @sent*))
                    (is (= {:content [{:type "text"
                                       :text "Sent Matrix message $event:example.org to !room:example.org"}]
@@ -420,7 +423,7 @@
                     (is false (.-stack err))
                     (done)))))))
 
-(deftest send-matrix-message-tool-passes-formatted-body-to-broker
+(deftest send-matrix-message-tool-renders-message-according-to-format
   (async done
     (let [sent* (atom nil)
           deps {:relay-state* (atom {:client-id "client-1"})
@@ -432,13 +435,13 @@
                                 (js/Promise.resolve {:event/id "$event:example.org"}))}
           ctx #js {:cwd "/work/project"}]
       (-> (extension/execute-send-matrix-message! deps {:target "ops"
-                                                        :message "plain fallback"
-                                                        :formattedBody "<strong>formatted</strong>"
+                                                        :message "<strong>formatted</strong>"
+                                                        :format "text/html"
                                                         :replyToEventId "$parent:example.org"}
                                                 ctx)
           (.then (fn [result]
                    (is (= {:room-id "!room:example.org"
-                           :message "plain fallback"
+                           :message "<strong>formatted</strong>"
                            :opts {:client/id "client-1"
                                   :reply-to/event-id "$parent:example.org"
                                   :formatted-body "<strong>formatted</strong>"}}
@@ -464,6 +467,7 @@
           ctx #js {:cwd "/work/project"}]
       (-> (extension/execute-send-matrix-message! deps {:target "!slot:example.org"
                                                         :message "raw room hello"
+                                                        :format "text/plain"
                                                         :reply-to/event-id "$parent:example.org"}
                                                 ctx)
           (.then (fn [result]

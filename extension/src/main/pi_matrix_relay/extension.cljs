@@ -367,7 +367,7 @@
 (defn- message-formatted-body
   [message]
   (when (map? message)
-    (or (:formatted-body message) (:formattedBody message))))
+    (:formatted-body message)))
 
 (defn- send-room-ack!
   [{:keys [send-message! diagnostics*]} relay-state room-id event-id message]
@@ -2071,18 +2071,33 @@
         {:alias target
          :room/id target})))
 
+(def default-send-message-format "text/markdown")
+
+(def ^:private supported-send-message-formats
+  #{"text/markdown" "text/plain" "text/html"})
+
+
+(defn- formatted-body-for-send-format
+  [format message]
+  (case format
+    "text/markdown" (markdown/markdown->matrix-html message)
+    "text/html" message
+    "text/plain" nil))
+
 (defn execute-send-matrix-message!
   [deps params ^js ctx]
   (let [{:keys [read-project-config! send-message! pi]} deps
         cwd (ctx-cwd ctx)
         target (:target params)
         message (:message params)
-        formatted-body (or (:formattedBody params)
-                           (:formatted-body params))
+        format (or (:format params) default-send-message-format)
         reply-to-event-id (or (:replyToEventId params)
                               (:reply-to/event-id params))
         client-id (relay-client-id deps)]
     (cond
+      (not (contains? supported-send-message-formats format))
+      (js/Promise.reject (js/Error. (str "Unsupported Matrix message format " format "; use text/markdown, text/plain, or text/html.")))
+
       (contains? diagnostic-targets target)
       (execute-matrix-relay-diagnostics! deps {:includeBroker true
                                                :includeRooms true}
@@ -2092,7 +2107,8 @@
       (execute-matrix-relay-control! deps {:action (control-action message)} pi ctx)
 
       :else
-      (let [project-config (read-project-config! cwd)]
+      (let [project-config (read-project-config! cwd)
+            formatted-body (formatted-body-for-send-format format message)]
         (if-let [binding (resolve-send-target project-config target)]
           (-> (promise (send-message! (:room/id binding)
                                       message
@@ -2137,22 +2153,26 @@
                               :key key}})))
       (js/Promise.reject (js/Error. (str "No Matrix room binding for target " target))))))
 
-(def matrix-html-formatted-body-description
-  (str "Optional Matrix HTML formatted_body; message is the plaintext fallback. "
-       "Matrix-safe tags: del, h1-h6, blockquote, p, a, ul, ol, sup, sub, li, b, i, u, strong, em, s, code, hr, br, div, table, thead, tbody, tr, th, td, caption, pre, span, img, details, summary. "
-       "Allowed attrs only: span data-mx-bg-color/data-mx-color/data-mx-spoiler/data-mx-maths; a target and absolute href with scheme https/http/ftp/mailto/magnet; img width/height/alt/title/src where src is mxc://; ol start; code class language-*; div data-mx-maths. "
-       "Use valid HTML; nesting <=100; omit mx-reply. Clients sanitize unsupported HTML."))
+(def send-message-format-description
+  (str "Message format. Defaults to text/markdown. "
+       "text/markdown renders message with the built-in Matrix-safe Markdown renderer while keeping message as the plaintext fallback. "
+       "text/plain sends message as plaintext only. "
+       "text/html treats message as already-rendered Matrix-safe HTML and also sends it as formatted_body. "
+       "For text/html, use only Matrix-safe HTML tags/attrs: del, h1-h6, blockquote, p, a, ul, ol, sup, sub, li, b, i, u, strong, em, s, code, hr, br, div, table, thead, tbody, tr, th, td, caption, pre, span, img, details, summary; "
+       "a href must be absolute with scheme https/http/ftp/mailto/magnet; code class language-* is allowed."))
 
 (def send-matrix-message-parameters
   #js {:type "object"
        :additionalProperties false
        :required #js ["target" "message"]
        :properties #js {:target #js {:type "string"
-                                     :description "Bound local alias or Matrix room id to send to"}
+                                      :description "Bound local alias or Matrix room id to send to"}
                         :message #js {:type "string"
-                                      :description "Plain text Matrix message body; also used as fallback when formattedBody is provided"}
-                        :formattedBody #js {:type "string"
-                                            :description matrix-html-formatted-body-description}
+                                      :description "Message content. Interpreted according to format; default format is text/markdown."}
+                        :format #js {:type "string"
+                                     :enum #js ["text/markdown" "text/plain" "text/html"]
+                                     :default default-send-message-format
+                                     :description send-message-format-description}
                         :replyToEventId #js {:type "string"
                                              :description "Optional Matrix event id to reply to using Matrix-native reply metadata"}}})
 
@@ -2161,11 +2181,14 @@
   (.registerTool pi
     #js {:name "send_matrix_message"
          :label "Send Matrix Message"
-         :description (str "Send a Matrix message through the local pi-matrix-relay broker. Supports optional Matrix HTML formattedBody with plaintext message fallback. "
-                           matrix-html-formatted-body-description)
+         :description (str "Send a Matrix message through the local pi-matrix-relay broker. "
+                           "The message field contains the content; format defaults to text/markdown. "
+                           send-message-format-description)
          :promptSnippet "Send a Matrix message to a bound project room alias."
          :promptGuidelines #js ["Use send_matrix_message only when the user explicitly asks to send a Matrix message."
-                                "Use formattedBody for Matrix HTML formatting only when useful; always make message a readable plaintext fallback."
+                                "Default format is text/markdown; put Markdown in message and omit format unless you need literal plaintext or pre-rendered Matrix HTML."
+                                "Use format text/plain when Markdown syntax must be sent literally."
+                                "Use format text/html only when message already contains Matrix-safe HTML."
                                 "Use replyToEventId when replying to a Matrix message that included an eventId in the prompt metadata."]
          :parameters send-matrix-message-parameters
          :execute (fn [_tool-call-id params _signal _on-update ctx]
