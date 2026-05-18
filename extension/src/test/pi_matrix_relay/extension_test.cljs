@@ -91,14 +91,22 @@
           params (js->clj (.-parameters send-tool) :keywordize-keys true)
           format-desc (str (get-in params [:properties :format :description]))]
       (is (fn? (.-execute send-tool)))
+      (is (= "Send a Matrix message. `message` content is interpreted by `format`; default is Markdown."
+             (.-description send-tool)))
+      (is (= "Send a Matrix message."
+             (.-promptSnippet send-tool)))
+      (is (= ["Use only when explicitly asked to message Matrix."
+              "Omit format for Markdown; use text/plain for literal text, text/html for pre-rendered Matrix-safe HTML."
+              "For Matrix replies, set replyToEventId."]
+             (js->clj (.-promptGuidelines send-tool))))
       (is (= {:type "string"
               :enum ["text/markdown" "text/plain" "text/html"]
               :default "text/markdown"}
              (select-keys (get-in params [:properties :format]) [:type :enum :default])))
       (is (= #{:target :message :format :replyToEventId}
              (set (keys (:properties params)))))
-      (is (every? #(str/includes? format-desc %)
-                  ["Defaults to text/markdown" "text/plain" "text/html" "Matrix-safe HTML"])))
+      (is (= "text/markdown (default): render Markdown to Matrix HTML; text/plain: literal text; text/html: pre-rendered Matrix-safe HTML."
+             format-desc)))
     (is (fn? (.-execute ^js (get @tools* "send_matrix_reaction"))))
     (is (fn? (.-execute ^js (get @tools* "matrix_relay_diagnostics"))))
     (is (fn? (.-execute ^js (get @tools* "matrix_relay_control"))))))

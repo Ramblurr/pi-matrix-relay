@@ -304,8 +304,8 @@
          text "\n\n"
          "Matrix metadata:\n"
          (str/join "\n" (cond-> metadata
-                           (:event/reply-to-id event)
-                           (conj (str "replyToEventId: " (:event/reply-to-id event))))))))
+                          (:event/reply-to-id event)
+                          (conj (str "replyToEventId: " (:event/reply-to-id event))))))))
 
 (defn- matrix-reaction-prompt
   [project-config binding event]
@@ -336,11 +336,11 @@
       true)
     (case (:delivery-mode (effective-room-delivery-mode relay-state room-id))
       "steer" (do
-                 (.sendUserMessage pi prompt #js {:deliverAs "steer"})
-                 true)
+                (.sendUserMessage pi prompt #js {:deliverAs "steer"})
+                true)
       "reject" (do
-                  (notify! ctx "Matrix message ignored because the agent is busy." "warning")
-                  false)
+                 (notify! ctx "Matrix message ignored because the agent is busy." "warning")
+                 false)
       (do
         (.sendUserMessage pi prompt #js {:deliverAs "followUp"})
         true))))
@@ -479,7 +479,6 @@
     (str (:provider model) "/" (:id model))
     "none"))
 
-
 (defn- ctx-context-value
   [^js ctx]
   (let [get-usage (.-getContextUsage ctx)
@@ -491,7 +490,6 @@
     (if (and tokens context-window (some? percent))
       (str tokens " tokens (" (js/Math.round percent) "%/" (.toFixed (/ context-window 1000) 0) "k)")
       "?")))
-
 
 (defn- assistant-usage
   [entry]
@@ -518,9 +516,7 @@
   (let [{:keys [input output cost]} (or (branch-usage ctx) {:input 0 :output 0 :cost 0})]
     (str "↑" (format-count input) " ↓" (format-count output) " " (format-currency cost))))
 
-
 (declare relay-progress-verbosity)
-
 
 (defn- remote-status-values
   [relay-state binding room-id ctx]
@@ -732,7 +728,7 @@
   (when-let [room-prompt-modes* (:room-prompt-modes* relay-state)]
     (if (some? room-prompt-mode)
       (swap! room-prompt-modes* assoc room-id {:mode room-prompt-mode
-                                         :source "broker"})
+                                               :source "broker"})
       (swap! room-prompt-modes* dissoc room-id))))
 
 (def remote-command-docs
@@ -937,7 +933,7 @@
                           (send-room-ack! deps relay-state room-id event-id (compact-complete-message result)))
             :onError (fn [err]
                        (send-room-ack! deps relay-state room-id event-id
-                                       (str "Compaction failed: " (or (.-message err) (str err)))))} )
+                                       (str "Compaction failed: " (or (.-message err) (str err)))))})
       (send-room-ack! deps relay-state room-id event-id "Compaction started.")
       true)))
 
@@ -1010,8 +1006,8 @@
           (.then (fn [_]
                    ((.-newSession ctx)
                     #js {:withSession (fn [_new-ctx]
-                                         (send-room-ack! deps nil (:room-id request) (:event-id request)
-                                                         "New session started."))})))
+                                        (send-room-ack! deps nil (:room-id request) (:event-id request)
+                                                        "New session started."))})))
           (.then (fn [result]
                    (when (:cancelled (js->clj-safe result))
                      (send-room-ack! deps nil (:room-id request) (:event-id request)
@@ -1138,10 +1134,10 @@
                                       :event/id event-id}
                                      (error-summary err)))
           (inject-extension-error-notice! deps pi relay-state {:source "remote-command"
-                                                              :command name
-                                                              :room-id room-id
-                                                              :event-id event-id
-                                                              :sender (:event/sender matrix-event)}
+                                                               :command name
+                                                               :room-id room-id
+                                                               :event-id event-id
+                                                               :sender (:event/sender matrix-event)}
                                           err)
           (send-room-ack! deps relay-state room-id event-id
                           (str "Remote command /" name " failed: " (or (.-message err) (str err))))
@@ -1195,9 +1191,9 @@
                                     :event/id (:event/id matrix-event)}
                                    (error-summary err)))
         (inject-extension-error-notice! deps pi relay-state {:source "broker-event"
-                                                            :room-id room-id
-                                                            :event-id (:event/id matrix-event)
-                                                            :sender (:event/sender matrix-event)}
+                                                             :room-id room-id
+                                                             :event-id (:event/id matrix-event)
+                                                             :sender (:event/sender matrix-event)}
                                         err)
         nil))))
 
@@ -1313,7 +1309,7 @@
              (= client-id (:client-id @relay-state*)))
     (let [delay-ms (or event-stream-reconnect-ms 1000)]
       (record-diagnostic! diagnostics* :event-stream-reconnect-scheduled {:client/id client-id
-                                                                           :delay/ms delay-ms})
+                                                                          :delay/ms delay-ms})
       (if set-timeout!
         (set-timeout! reopen! delay-ms)
         (reopen!)))))
@@ -1323,45 +1319,45 @@
    (open-relay-event-stream! deps pi ctx relay-state* client-id false))
   ([{:keys [open-event-stream! diagnostics*] :as deps} pi ctx relay-state* client-id reconnect?]
    (when open-event-stream!
-    (let [stream* (atom nil)
-          reopen! (fn []
-                    (let [marker (reconnecting-stream-marker)]
-                      (when (claim-empty-stream-slot! relay-state* client-id marker)
-                        (let [stream (open-relay-event-stream! deps pi ctx relay-state* client-id true)]
-                          (if stream
-                            (if (replace-stream-marker! relay-state* marker stream)
-                              (record-diagnostic! diagnostics* :event-stream-reopened {:client/id client-id})
-                              (close-event-stream! stream))
-                            (replace-stream-marker! relay-state* marker nil))))))
-          stream (open-event-stream!
-                  {:on-error (fn [err]
-                               (record-diagnostic! diagnostics* :event-stream-error (error-summary err)))
-                   :on-open (fn [_state]
-                              (when reconnect?
-                                (notify! ctx "Matrix relay event stream reconnected." "info")))
-                   :on-close (fn [state]
-                               (record-diagnostic! diagnostics* :event-stream-closed (select-keys state [:client/id
-                                                                                                           :stream/connected?
-                                                                                                           :stream/close-reason
-                                                                                                           :close/requested?
-                                                                                                           :error/last]))
-                               (when-not (:close/requested? state)
-                                 (when relay-state*
-                                   (swap! relay-state*
-                                          (fn [relay-state]
-                                            (if (= (:stream relay-state) @stream*)
-                                              (dissoc relay-state :stream)
-                                              relay-state))))
-                                 (when (:stream/connected? state)
-                                   (inject-extension-error-notice! deps pi @relay-state* {:source "event-stream"} (event-stream-close-error state))
-                                   (notify! ctx "Matrix relay event stream closed; reconnecting." "warning"))
-                                 (schedule-event-stream-reconnect! deps relay-state* client-id reopen!)))}
-                  client-id
-                  (fn [event]
-                    (when-let [relay-state (some-> relay-state* deref)]
-                      (handle-broker-event! deps pi ctx relay-state event))))]
-      (reset! stream* stream)
-      stream))))
+     (let [stream* (atom nil)
+           reopen! (fn []
+                     (let [marker (reconnecting-stream-marker)]
+                       (when (claim-empty-stream-slot! relay-state* client-id marker)
+                         (let [stream (open-relay-event-stream! deps pi ctx relay-state* client-id true)]
+                           (if stream
+                             (if (replace-stream-marker! relay-state* marker stream)
+                               (record-diagnostic! diagnostics* :event-stream-reopened {:client/id client-id})
+                               (close-event-stream! stream))
+                             (replace-stream-marker! relay-state* marker nil))))))
+           stream (open-event-stream!
+                   {:on-error (fn [err]
+                                (record-diagnostic! diagnostics* :event-stream-error (error-summary err)))
+                    :on-open (fn [_state]
+                               (when reconnect?
+                                 (notify! ctx "Matrix relay event stream reconnected." "info")))
+                    :on-close (fn [state]
+                                (record-diagnostic! diagnostics* :event-stream-closed (select-keys state [:client/id
+                                                                                                          :stream/connected?
+                                                                                                          :stream/close-reason
+                                                                                                          :close/requested?
+                                                                                                          :error/last]))
+                                (when-not (:close/requested? state)
+                                  (when relay-state*
+                                    (swap! relay-state*
+                                           (fn [relay-state]
+                                             (if (= (:stream relay-state) @stream*)
+                                               (dissoc relay-state :stream)
+                                               relay-state))))
+                                  (when (:stream/connected? state)
+                                    (inject-extension-error-notice! deps pi @relay-state* {:source "event-stream"} (event-stream-close-error state))
+                                    (notify! ctx "Matrix relay event stream closed; reconnecting." "warning"))
+                                  (schedule-event-stream-reconnect! deps relay-state* client-id reopen!)))}
+                   client-id
+                   (fn [event]
+                     (when-let [relay-state (some-> relay-state* deref)]
+                       (handle-broker-event! deps pi ctx relay-state event))))]
+       (reset! stream* stream)
+       stream))))
 
 (defn start-relay!
   [{:keys [read-project-config! health! register-client! acquire-slot!
@@ -1388,8 +1384,8 @@
                           global-operators (vec (:matrix/global-operators registration))]
                       (record-diagnostic! diagnostics* :client-registered {:client/id client-id})
                       (-> (promise (acquire-slot! client-id
-                                                   (select-keys project [:project/id :project/display-name])
-                                                   global-operators))
+                                                  (select-keys project [:project/id :project/display-name])
+                                                  global-operators))
                           (.then
                            (fn [slot]
                              (record-diagnostic! diagnostics* :slot-acquired {:slot (:slot slot)
@@ -1411,31 +1407,31 @@
                                       (let [room-delivery-modes* (aget room-settings 0)
                                             room-prompt-modes* (aget room-settings 1)]
                                         (-> (promise (send-message! slot-room-id banner {:client/id client-id}))
-                                          (.then
-                                           (fn [_]
-                                             (record-diagnostic! diagnostics* :start-banner-sent {:room/id slot-room-id})
-                                             (let [heartbeat-id (start-heartbeat! deps ctx client-id (:heartbeat/seconds registration))
-                                                   relay-state {:client-id client-id
-                                                                :project-config project-config
-                                                                :project project
-                                                                :global-operators (set global-operators)
-                                                                :bot-user-id (:user/id health)
-                                                                :slot (:slot slot)
-                                                                :room-id slot-room-id
-                                                                :room-name (:room/name slot)
-                                                                :room-delivery-modes* room-delivery-modes*
-                                                                :room-prompt-modes* room-prompt-modes*
-                                                                :pending-auto-replies* (atom [])
-                                                                :last-start-banner banner
-                                                                :heartbeat-id heartbeat-id}
-                                                   relay-state* (or relay-state* (atom relay-state))
-                                                   _ (reset! relay-state* relay-state)
-                                                   stream (open-relay-event-stream! deps pi ctx relay-state* client-id)
-                                                   relay-state (assoc relay-state :stream stream)]
-                                               (reset! relay-state* relay-state)
-                                               (record-diagnostic! diagnostics* :event-stream-opened {:client/id client-id})
-                                               (set-status! ctx (status-text project-config slot))
-                                              relay-state))))))))))))))))))))))
+                                            (.then
+                                             (fn [_]
+                                               (record-diagnostic! diagnostics* :start-banner-sent {:room/id slot-room-id})
+                                               (let [heartbeat-id (start-heartbeat! deps ctx client-id (:heartbeat/seconds registration))
+                                                     relay-state {:client-id client-id
+                                                                  :project-config project-config
+                                                                  :project project
+                                                                  :global-operators (set global-operators)
+                                                                  :bot-user-id (:user/id health)
+                                                                  :slot (:slot slot)
+                                                                  :room-id slot-room-id
+                                                                  :room-name (:room/name slot)
+                                                                  :room-delivery-modes* room-delivery-modes*
+                                                                  :room-prompt-modes* room-prompt-modes*
+                                                                  :pending-auto-replies* (atom [])
+                                                                  :last-start-banner banner
+                                                                  :heartbeat-id heartbeat-id}
+                                                     relay-state* (or relay-state* (atom relay-state))
+                                                     _ (reset! relay-state* relay-state)
+                                                     stream (open-relay-event-stream! deps pi ctx relay-state* client-id)
+                                                     relay-state (assoc relay-state :stream stream)]
+                                                 (reset! relay-state* relay-state)
+                                                 (record-diagnostic! diagnostics* :event-stream-opened {:client/id client-id})
+                                                 (set-status! ctx (status-text project-config slot))
+                                                 relay-state))))))))))))))))))))))
 
 (defn- ignore-errors
   [thunk]
@@ -1570,7 +1566,7 @@
                :room/id (:room-id relay-state)
                :room/name (:room-name relay-state)
                :status/text (status-text project-config {:slot (:slot relay-state)
-                                                          :room/name (:room-name relay-state)})
+                                                         :room/name (:room-name relay-state)})
                :heartbeat/active? (boolean (:heartbeat-id relay-state))
                :stream/active? (event-stream-active? relay-state)
                :pending-auto-replies/count (if pending* (count @pending*) 0)}
@@ -1628,8 +1624,8 @@
   [broker]
   (if-let [slots (seq (get-in broker [:slots :slots]))]
     (str "slots: " (str/join ", " (map (fn [slot]
-                                           (str (:slot slot) " " (:state slot) " " (:room/name slot)))
-                                         slots)))
+                                         (str (:slot slot) " " (:state slot) " " (:room/name slot)))
+                                       slots)))
     "slots: none visible"))
 
 (defn- diagnostic-error-event?
@@ -1702,7 +1698,7 @@
                        details {:cwd cwd
                                 :project project
                                 :project/config {:rooms (vec (room-bindings project-config))
-                                                :allowed-users (vec (:allowed-users project-config))}
+                                                 :allowed-users (vec (:allowed-users project-config))}
                                 :relay relay
                                 :diagnostics {:events diagnostic-events
                                               :recent-errors (recent-error-events diagnostic-events)}
@@ -1868,7 +1864,7 @@
                 "stream: " (if (event-stream-active? relay-state) "active" "inactive") "\n"
                 "listening rooms:\n"
                 (str/join "\n" (or (seq (listening-room-lines relay-state))
-                                    ["- none"])))
+                                   ["- none"])))
            "extension: not connected to broker"))))
 
 (defn- tui-status-level
@@ -1997,7 +1993,6 @@
             (notify-error! ctx (str "No Matrix room binding for target " target))
             (promise nil)))))))
 
-
 (defn- handle-progress-verbosity!
   [{:keys [read-project-config! write-project-config!] :as deps} {:keys [verbosity]} ctx]
   (let [cwd (ctx-cwd ctx)
@@ -2076,7 +2071,6 @@
 (def ^:private supported-send-message-formats
   #{"text/markdown" "text/plain" "text/html"})
 
-
 (defn- formatted-body-for-send-format
   [format message]
   (case format
@@ -2138,10 +2132,10 @@
         project-config (read-project-config! cwd)]
     (if-let [binding (resolve-send-target project-config target)]
       (-> (promise (send-reaction! (:room/id binding)
-                                    event-id
-                                    key
-                                    (cond-> {}
-                                      client-id (assoc :client/id client-id))))
+                                   event-id
+                                   key
+                                   (cond-> {}
+                                     client-id (assoc :client/id client-id))))
           (.then (fn [result]
                    {:content [{:type "text"
                                :text (str "Sent Matrix reaction " key " to " event-id
@@ -2154,46 +2148,37 @@
       (js/Promise.reject (js/Error. (str "No Matrix room binding for target " target))))))
 
 (def send-message-format-description
-  (str "Message format. Defaults to text/markdown. "
-       "text/markdown renders message with the built-in Matrix-safe Markdown renderer while keeping message as the plaintext fallback. "
-       "text/plain sends message as plaintext only. "
-       "text/html treats message as already-rendered Matrix-safe HTML and also sends it as formatted_body. "
-       "For text/html, use only Matrix-safe HTML tags/attrs: del, h1-h6, blockquote, p, a, ul, ol, sup, sub, li, b, i, u, strong, em, s, code, hr, br, div, table, thead, tbody, tr, th, td, caption, pre, span, img, details, summary; "
-       "a href must be absolute with scheme https/http/ftp/mailto/magnet; code class language-* is allowed."))
+  "text/markdown (default): render Markdown to Matrix HTML; text/plain: literal text; text/html: pre-rendered Matrix-safe HTML.")
 
 (def send-matrix-message-parameters
   #js {:type "object"
        :additionalProperties false
        :required #js ["target" "message"]
        :properties #js {:target #js {:type "string"
-                                      :description "Bound local alias or Matrix room id to send to"}
+                                     :description "Bound alias or Matrix room id"}
                         :message #js {:type "string"
-                                      :description "Message content. Interpreted according to format; default format is text/markdown."}
+                                      :description "Source content"}
                         :format #js {:type "string"
                                      :enum #js ["text/markdown" "text/plain" "text/html"]
                                      :default default-send-message-format
                                      :description send-message-format-description}
                         :replyToEventId #js {:type "string"
-                                             :description "Optional Matrix event id to reply to using Matrix-native reply metadata"}}})
+                                             :description "Matrix event id to reply to"}}})
 
 (defn register-send-tool!
   [^js pi deps]
   (.registerTool pi
-    #js {:name "send_matrix_message"
-         :label "Send Matrix Message"
-         :description (str "Send a Matrix message through the local pi-matrix-relay broker. "
-                           "The message field contains the content; format defaults to text/markdown. "
-                           send-message-format-description)
-         :promptSnippet "Send a Matrix message to a bound project room alias."
-         :promptGuidelines #js ["Use send_matrix_message only when the user explicitly asks to send a Matrix message."
-                                "Default format is text/markdown; put Markdown in message and omit format unless you need literal plaintext or pre-rendered Matrix HTML."
-                                "Use format text/plain when Markdown syntax must be sent literally."
-                                "Use format text/html only when message already contains Matrix-safe HTML."
-                                "Use replyToEventId when replying to a Matrix message that included an eventId in the prompt metadata."]
-         :parameters send-matrix-message-parameters
-         :execute (fn [_tool-call-id params _signal _on-update ctx]
-                    (-> (execute-send-matrix-message! deps (js->clj params :keywordize-keys true) ctx)
-                        (.then clj->js)))}))
+                 #js {:name "send_matrix_message"
+                      :label "Send Matrix Message"
+                      :description "Send a Matrix message. `message` content is interpreted by `format`; default is Markdown."
+                      :promptSnippet "Send a Matrix message."
+                      :promptGuidelines #js ["Use send_matrix_message only when explicitly asked to message Matrix, or when replying to a message from Matrix"
+                                             "send_matrix_message formatting: omit format for Markdown; use text/plain for literal text, text/html for pre-rendered Matrix-safe HTML."
+                                             "For send_matrix_message replies, set replyToEventId."]
+                      :parameters send-matrix-message-parameters
+                      :execute (fn [_tool-call-id params _signal _on-update ctx]
+                                 (-> (execute-send-matrix-message! deps (js->clj params :keywordize-keys true) ctx)
+                                     (.then clj->js)))}))
 
 (def send-matrix-reaction-parameters
   #js {:type "object"
@@ -2209,15 +2194,15 @@
 (defn register-reaction-tool!
   [^js pi deps]
   (.registerTool pi
-    #js {:name "send_matrix_reaction"
-         :label "Send Matrix Reaction"
-         :description "Send a Matrix reaction through the local pi-matrix-relay broker."
-         :promptSnippet "React to a Matrix event in a bound project room."
-         :promptGuidelines #js ["Use send_matrix_reaction only when the user explicitly asks to react to a Matrix message."]
-         :parameters send-matrix-reaction-parameters
-         :execute (fn [_tool-call-id params _signal _on-update ctx]
-                    (-> (execute-send-matrix-reaction! deps (js->clj params :keywordize-keys true) ctx)
-                        (.then clj->js)))}))
+                 #js {:name "send_matrix_reaction"
+                      :label "Send Matrix Reaction"
+                      :description "Send a Matrix reaction through the local pi-matrix-relay broker."
+                      :promptSnippet "React to a Matrix event in a bound project room."
+                      :promptGuidelines #js ["Use send_matrix_reaction only when the user explicitly asks to react to a Matrix message."]
+                      :parameters send-matrix-reaction-parameters
+                      :execute (fn [_tool-call-id params _signal _on-update ctx]
+                                 (-> (execute-send-matrix-reaction! deps (js->clj params :keywordize-keys true) ctx)
+                                     (.then clj->js)))}))
 
 (def matrix-relay-diagnostics-parameters
   #js {:type "object"
@@ -2230,16 +2215,16 @@
 (defn register-diagnostics-tool!
   [^js pi deps]
   (.registerTool pi
-    #js {:name "matrix_relay_diagnostics"
-         :label "Matrix Relay Diagnostics"
-         :description "Inspect this Pi process' pi-matrix-relay extension state and optionally compare it with broker state."
-         :promptSnippet "Use matrix_relay_diagnostics to debug whether this Pi session is listening to Matrix rooms, which slot it has, and what the broker sees."
-         :promptGuidelines #js ["Use matrix_relay_diagnostics instead of /mr status when debugging Matrix relay state from an agent."
-                                "Do not rely on slash commands for relay troubleshooting; this tool returns the running extension internals."]
-         :parameters matrix-relay-diagnostics-parameters
-         :execute (fn [_tool-call-id params _signal _on-update ctx]
-                    (-> (execute-matrix-relay-diagnostics! deps (js->clj params :keywordize-keys true) ctx)
-                        (.then clj->js)))}))
+                 #js {:name "matrix_relay_diagnostics"
+                      :label "Matrix Relay Diagnostics"
+                      :description "Inspect this Pi process' pi-matrix-relay extension state and optionally compare it with broker state."
+                      :promptSnippet "Use matrix_relay_diagnostics to debug whether this Pi session is listening to Matrix rooms, which slot it has, and what the broker sees."
+                      :promptGuidelines #js ["Use matrix_relay_diagnostics instead of /mr status when debugging Matrix relay state from an agent."
+                                             "Do not rely on slash commands for relay troubleshooting; this tool returns the running extension internals."]
+                      :parameters matrix-relay-diagnostics-parameters
+                      :execute (fn [_tool-call-id params _signal _on-update ctx]
+                                 (-> (execute-matrix-relay-diagnostics! deps (js->clj params :keywordize-keys true) ctx)
+                                     (.then clj->js)))}))
 
 (def matrix-relay-control-parameters
   #js {:type "object"
@@ -2252,16 +2237,16 @@
 (defn register-control-tool!
   [^js pi deps]
   (.registerTool pi
-    #js {:name "matrix_relay_control"
-         :label "Matrix Relay Control"
-         :description "Start, stop, restart, or inspect this Pi process' Matrix relay without using slash commands."
-         :promptSnippet "Use matrix_relay_control when the relay needs to be started or restarted for this Pi session during debugging."
-         :promptGuidelines #js ["Use status or matrix_relay_diagnostics before mutating relay state."
-                                "Use restart only when the current relay state is stale or failed and the user is debugging the relay."]
-         :parameters matrix-relay-control-parameters
-         :execute (fn [_tool-call-id params _signal _on-update ctx]
-                    (-> (execute-matrix-relay-control! deps (js->clj params :keywordize-keys true) pi ctx)
-                        (.then clj->js)))}))
+                 #js {:name "matrix_relay_control"
+                      :label "Matrix Relay Control"
+                      :description "Start, stop, restart, or inspect this Pi process' Matrix relay without using slash commands."
+                      :promptSnippet "Use matrix_relay_control when the relay needs to be started or restarted for this Pi session during debugging."
+                      :promptGuidelines #js ["Use status or matrix_relay_diagnostics before mutating relay state."
+                                             "Use restart only when the current relay state is stale or failed and the user is debugging the relay."]
+                      :parameters matrix-relay-control-parameters
+                      :execute (fn [_tool-call-id params _signal _on-update ctx]
+                                 (-> (execute-matrix-relay-control! deps (js->clj params :keywordize-keys true) pi ctx)
+                                     (.then clj->js)))}))
 
 (def relay-tool-names
   ["send_matrix_message"
@@ -2298,9 +2283,9 @@
                                         :pi pi})]
      (doseq [command-name ["matrix-relay" "mr"]]
        (.registerCommand pi command-name
-         #js {:description "Control the Pi Matrix relay"
-              :handler (fn [args ctx]
-                         (handle-command! deps args ctx))}))
+                         #js {:description "Control the Pi Matrix relay"
+                              :handler (fn [args ctx]
+                                         (handle-command! deps args ctx))}))
      (register-send-tool! pi deps)
      (register-reaction-tool! pi deps)
      (register-diagnostics-tool! pi deps)
