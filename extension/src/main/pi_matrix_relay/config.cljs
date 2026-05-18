@@ -41,8 +41,22 @@
   [cwd]
   (.basename path cwd))
 
-(def default-room-mode "mentions")
+(def default-room-prompt-mode "mentions")
 (def default-delivery-mode "follow-up")
+(def allowed-room-prompt-modes #{"all" "mentions" "commands-only"})
+
+(defn normalize-prompt-mode
+  [mode]
+  (let [mode (some-> mode str str/trim str/lower-case)]
+    (case mode
+      nil nil
+      "" nil
+      "mention" "mentions"
+      mode)))
+
+(defn valid-room-prompt-mode?
+  [mode]
+  (contains? allowed-room-prompt-modes (normalize-prompt-mode mode)))
 
 (defn- nonblank
   [value]
@@ -57,19 +71,24 @@
       (project-id cwd)))
 
 (defn room-binding
-  [room-result explicit-alias cwd]
-  (let [alias (derive-local-alias room-result explicit-alias cwd)]
-    (cond-> {:alias alias
-             :room/id (:room/id room-result)
-             :mode default-room-mode}
-      (:room/canonical-alias room-result) (assoc :room/canonical-alias (:room/canonical-alias room-result))
-      (:room/name room-result) (assoc :room/name (:room/name room-result)))))
+  ([room-result explicit-alias cwd]
+   (room-binding room-result explicit-alias cwd nil))
+  ([room-result explicit-alias cwd explicit-mode]
+   (let [alias (derive-local-alias room-result explicit-alias cwd)
+         mode (or (normalize-prompt-mode explicit-mode) default-room-prompt-mode)]
+     (cond-> {:alias alias
+              :room/id (:room/id room-result)
+              :mode mode}
+       (:room/canonical-alias room-result) (assoc :room/canonical-alias (:room/canonical-alias room-result))
+       (:room/name room-result) (assoc :room/name (:room/name room-result))))))
 
 (defn bind-room
   "Return project config with `room-result` saved under a local alias."
-  [project-config room-result explicit-alias cwd]
-  (let [binding (room-binding room-result explicit-alias cwd)]
-    (assoc-in (or project-config {}) [:rooms (:alias binding)] binding)))
+  ([project-config room-result explicit-alias cwd]
+   (bind-room project-config room-result explicit-alias cwd nil))
+  ([project-config room-result explicit-alias cwd explicit-mode]
+   (let [binding (room-binding room-result explicit-alias cwd explicit-mode)]
+     (assoc-in (or project-config {}) [:rooms (:alias binding)] binding))))
 
 (defn resolve-target
   "Resolve a send target by local alias or by a room id already present in config."

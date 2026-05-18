@@ -16,6 +16,8 @@
    :update-subscriptions! broker-client/update-subscriptions!
    :get-room-delivery-mode! broker-client/get-room-delivery-mode!
    :set-room-delivery-mode! broker-client/set-room-delivery-mode!
+   :get-room-prompt-mode! broker-client/get-room-prompt-mode!
+   :set-room-prompt-mode! broker-client/set-room-prompt-mode!
    :heartbeat! broker-client/heartbeat!
    :unregister-client! broker-client/unregister-client!
    :acquire-slot! broker-client/acquire-slot!
@@ -167,10 +169,32 @@
       {:delivery-mode config/default-delivery-mode
        :source "system-default"}))
 
+(defn- cached-room-prompt-mode
+  [relay-state room-id]
+  (when-let [room-prompt-modes* (:room-prompt-modes* relay-state)]
+    (get @room-prompt-modes* room-id)))
+
+(defn- configured-room-prompt-mode
+  [binding]
+  (or (config/normalize-prompt-mode (:mode binding))
+      config/default-room-prompt-mode))
+
+(defn- effective-room-prompt-mode
+  [relay-state binding room-id]
+  (or (cached-room-prompt-mode relay-state room-id)
+      {:mode (if (= "slot" (:room/class binding))
+               "all"
+               (configured-room-prompt-mode binding))
+       :source (cond
+                 (= "slot" (:room/class binding)) "slot-default"
+                 (:mode binding) "project-config"
+                 :else "system-default")}))
+
 (defn- binding-for-relay-room
   [relay-state room-id]
-  (or (slot-binding-for-room-id relay-state room-id)
-      (binding-for-room-id (:project-config relay-state) room-id)))
+  (when-let [binding (or (slot-binding-for-room-id relay-state room-id)
+                         (binding-for-room-id (:project-config relay-state) room-id))]
+    (assoc binding :mode (:mode (effective-room-prompt-mode relay-state binding room-id)))))
 
 (defn- authorized-sender?
   [{:keys [project-config global-operators]} sender]
@@ -207,11 +231,15 @@
 
 (defn- message-allowed-by-mode?
   [binding text bot-user-id]
-  (case (or (:mode binding) config/default-room-mode)
+  (case (or (:mode binding) config/default-room-prompt-mode)
     "all" true
     "mentions" (mentions-bot? text bot-user-id)
     "commands-only" (remote-command-text? text)
     false))
+
+(defn- reaction-allowed-by-mode?
+  [binding]
+  (= "all" (or (:mode binding) config/default-room-prompt-mode)))
 
 (defn- remote-command-body
   [trimmed]
@@ -481,12 +509,15 @@
 
 
 (defn- remote-status-values
-  [relay-state room-id ctx]
-  (let [{:keys [delivery-mode source]} (effective-room-delivery-mode relay-state room-id)]
+  [relay-state binding room-id ctx]
+  (let [{:keys [delivery-mode source]} (effective-room-delivery-mode relay-state room-id)
+        {room-prompt-mode :mode room-prompt-mode-source :source} (effective-room-prompt-mode relay-state binding room-id)]
     {:project (or (get-in relay-state [:project :project/id]) "unknown")
      :slot (or (:slot relay-state) "?")
      :slot-room (or (:room-name relay-state) "unknown")
      :room (or room-id "unknown")
+     :room-prompt-mode room-prompt-mode
+     :room-prompt-mode-source room-prompt-mode-source
      :delivery-mode delivery-mode
      :delivery-source source
      :heartbeat (if (:heartbeat-id relay-state) "active" "inactive")
@@ -496,11 +527,12 @@
      :usage (ctx-usage-value ctx)}))
 
 (defn- remote-status-body
-  [{:keys [project slot slot-room room delivery-mode delivery-source heartbeat stream model context usage]}]
+  [{:keys [project slot slot-room room room-prompt-mode room-prompt-mode-source delivery-mode delivery-source heartbeat stream model context usage]}]
   (str "pi-matrix-relay status\n"
        "project: " project "\n"
        "slot: " slot " " slot-room "\n"
        "room: " room "\n"
+       "prompt mode: " room-prompt-mode " (" room-prompt-mode-source ")\n"
        "default delivery mode: " delivery-mode " (" delivery-source ")\n"
        "heartbeat: " heartbeat "\n"
        "stream: " stream "\n"
@@ -513,12 +545,13 @@
   (str "<tr><th>" (html-escape label) "</th><td>" value "</td></tr>"))
 
 (defn- remote-status-html
-  [{:keys [project slot slot-room room delivery-mode delivery-source heartbeat stream model context usage]}]
+  [{:keys [project slot slot-room room room-prompt-mode room-prompt-mode-source delivery-mode delivery-source heartbeat stream model context usage]}]
   (str "<h3>pi-matrix-relay status</h3>"
        "<table><tbody>"
        (status-row "Project" (str "<code>" (html-escape project) "</code>"))
        (status-row "Slot" (str "<code>" (html-escape slot) "</code> " (html-escape slot-room)))
        (status-row "Room" (str "<code>" (html-escape room) "</code>"))
+       (status-row "Prompt mode" (str "<code>" (html-escape room-prompt-mode) "</code> <em>" (html-escape room-prompt-mode-source) "</em>"))
        (status-row "Default delivery mode" (str "<code>" (html-escape delivery-mode) "</code> <em>" (html-escape delivery-source) "</em>"))
        (status-row "Heartbeat" (html-escape heartbeat))
        (status-row "Stream" (html-escape stream))
@@ -528,8 +561,8 @@
        "</tbody></table>"))
 
 (defn- remote-status-message
-  [relay-state _binding room-id ctx]
-  (let [values (remote-status-values relay-state room-id ctx)]
+  [relay-state binding room-id ctx]
+  (let [values (remote-status-values relay-state binding room-id ctx)]
     {:body (remote-status-body values)
      :formatted-body (remote-status-html values)}))
 
@@ -540,6 +573,14 @@
       (swap! delivery-modes* assoc room-id {:delivery-mode delivery-mode
                                             :source "broker"})
       (swap! delivery-modes* dissoc room-id))))
+
+(defn- cache-room-prompt-mode!
+  [relay-state room-id room-prompt-mode]
+  (when-let [room-prompt-modes* (:room-prompt-modes* relay-state)]
+    (if (some? room-prompt-mode)
+      (swap! room-prompt-modes* assoc room-id {:mode room-prompt-mode
+                                         :source "broker"})
+      (swap! room-prompt-modes* dissoc room-id))))
 
 (def remote-command-docs
   [{:command :help
@@ -942,7 +983,8 @@
           binding (binding-for-relay-room relay-state room-id)]
       (when (and binding
                  (not (:event/sender-is-bot? reaction))
-                 (authorized-sender? relay-state (:event/sender reaction)))
+                 (authorized-sender? relay-state (:event/sender reaction))
+                 (reaction-allowed-by-mode? binding))
         (deliver-user-message! pi ctx relay-state room-id (matrix-reaction-prompt (:project-config relay-state) binding event))))
 
     "broker.notice"
@@ -1002,6 +1044,29 @@
                                                         :source "broker"}])))
                                     (into {}))]
                      (record-diagnostic! diagnostics* :room-delivery-modes-loaded {:rooms (keys cache)})
+                     (atom cache))))))))
+
+(defn- load-room-prompt-modes!
+  [{:keys [get-room-prompt-mode! diagnostics*]} client-id room-ids]
+  (let [room-ids (vec (distinct (remove str/blank? room-ids)))]
+    (if-not get-room-prompt-mode!
+      (promise (atom {}))
+      (-> (js/Promise.all
+           (clj->js
+            (mapv (fn [room-id]
+                    (-> (promise (get-room-prompt-mode! client-id room-id))
+                        (.then (fn [result]
+                                 {:room-id room-id
+                                  :mode (:room/prompt-mode result)}))))
+                  room-ids)))
+          (.then (fn [results]
+                   (let [cache (->> (js->clj results :keywordize-keys true)
+                                    (keep (fn [{:keys [room-id mode]}]
+                                            (when (some? mode)
+                                              [room-id {:mode mode
+                                                        :source "broker"}])))
+                                    (into {}))]
+                     (record-diagnostic! diagnostics* :room-prompt-modes-loaded {:rooms (keys cache)})
                      (atom cache))))))))
 
 (defn- reconnecting-stream-marker
@@ -1143,10 +1208,14 @@
                                     (fn [_]
                                       (record-diagnostic! diagnostics* :subscriptions-updated {:client/id client-id
                                                                                                :rooms subscriptions})
-                                      (load-room-delivery-modes! deps client-id subscriptions)))
+                                      (js/Promise.all
+                                       (clj->js [(load-room-delivery-modes! deps client-id subscriptions)
+                                                 (load-room-prompt-modes! deps client-id subscriptions)]))))
                                    (.then
-                                    (fn [room-delivery-modes*]
-                                      (-> (promise (send-message! slot-room-id banner {:client/id client-id}))
+                                    (fn [room-settings]
+                                      (let [room-delivery-modes* (aget room-settings 0)
+                                            room-prompt-modes* (aget room-settings 1)]
+                                        (-> (promise (send-message! slot-room-id banner {:client/id client-id}))
                                           (.then
                                            (fn [_]
                                              (record-diagnostic! diagnostics* :start-banner-sent {:room/id slot-room-id})
@@ -1160,6 +1229,7 @@
                                                                 :room-id slot-room-id
                                                                 :room-name (:room/name slot)
                                                                 :room-delivery-modes* room-delivery-modes*
+                                                                :room-prompt-modes* room-prompt-modes*
                                                                 :pending-auto-replies* (atom [])
                                                                 :last-start-banner banner
                                                                 :heartbeat-id heartbeat-id}
@@ -1170,7 +1240,7 @@
                                                (reset! relay-state* relay-state)
                                                (record-diagnostic! diagnostics* :event-stream-opened {:client/id client-id})
                                                (set-status! ctx (status-text project-config slot))
-                                               relay-state)))))))))))))))))))))
+                                              relay-state))))))))))))))))))))))
 
 (defn- ignore-errors
   [thunk]
@@ -1499,11 +1569,13 @@
        "  connect                           Connect this Pi extension instance to the broker.\n"
        "  disconnect                        Disconnect this Pi extension instance from the broker.\n"
        "  reconnect                         Reconnect this Pi extension instance to the broker.\n"
-       "  room bind <room> [alias]           Bind a Matrix room alias/id to a local target.\n"
+       "  room bind <room> [alias] [mode]    Bind a Matrix room alias/id to a local target.\n"
+       "  room mode <target> <mode>          Set a bound prompt mode: all, mentions, commands-only.\n"
        "  send <alias-or-room-id> <message>  Send a message to a bound room or raw room id.\n\n"
        "Examples:\n"
        "  /mr status\n"
-       "  /mr room bind #ops:example.org ops\n"
+       "  /mr room bind #ops:example.org ops mentions\n"
+       "  /mr room mode ops commands-only\n"
        "  /mr send ops hello from Pi"))
 
 (defn- handle-help!
@@ -1613,15 +1685,76 @@
                                 "Matrix relay control completed."))))))
 
 (defn- handle-room-bind!
-  [{:keys [resolve-room! read-project-config! write-project-config!]} {:keys [room alias]} ctx]
+  [{:keys [resolve-room! read-project-config! write-project-config!]} {:keys [room alias mode]} ctx]
   (let [cwd (ctx-cwd ctx)]
-    (-> (promise (resolve-room! room))
-        (.then (fn [room-result]
-                 (let [old-config (read-project-config! cwd)
-                       new-config (config/bind-room old-config room-result alias cwd)
-                       binding (config/room-binding room-result alias cwd)]
-                   (write-project-config! cwd new-config)
-                   (notify! ctx (str "Bound " (:alias binding) " to " (:room/id binding)))))))))
+    (if (and mode (not (config/valid-room-prompt-mode? mode)))
+      (do
+        (notify-error! ctx (str "Invalid prompt mode: " mode ". Allowed: all, mentions, commands-only."))
+        (promise nil))
+      (-> (promise (resolve-room! room))
+          (.then (fn [room-result]
+                   (let [old-config (read-project-config! cwd)
+                         new-config (config/bind-room old-config room-result alias cwd mode)
+                         binding (config/room-binding room-result alias cwd mode)]
+                     (write-project-config! cwd new-config)
+                     (notify! ctx (str "Bound " (:alias binding) " to " (:room/id binding) " with mode " (:mode binding))))))))))
+
+(defn- update-room-binding-mode
+  [project-config target mode]
+  (update project-config :rooms
+          (fn [rooms]
+            (cond
+              (map? rooms)
+              (into {}
+                    (map (fn [[k binding]]
+                           [k (if (or (= target (str k))
+                                      (= target (:alias binding))
+                                      (= target (:room/id binding)))
+                                (assoc binding :mode mode)
+                                binding)]))
+                    rooms)
+
+              (sequential? rooms)
+              (mapv (fn [binding]
+                      (if (or (= target (:alias binding))
+                              (= target (:room/id binding)))
+                        (assoc binding :mode mode)
+                        binding))
+                    rooms)
+
+              :else rooms))))
+
+(defn- persist-broker-room-prompt-mode!
+  [{:keys [set-room-prompt-mode! relay-state*]} room-id mode]
+  (if-let [relay-state (some-> relay-state* deref)]
+    (-> (promise (when set-room-prompt-mode!
+                   (set-room-prompt-mode! (:client-id relay-state) room-id mode nil)))
+        (.then (fn [result]
+                 (cache-room-prompt-mode! relay-state room-id (or (:room/prompt-mode result) mode))
+                 nil)))
+    (promise nil)))
+
+(defn- handle-room-prompt-mode!
+  [{:keys [read-project-config! write-project-config!] :as deps} {:keys [target mode]} ctx]
+  (let [cwd (ctx-cwd ctx)]
+    (cond
+      (not (config/valid-room-prompt-mode? mode))
+      (do
+        (notify-error! ctx (str "Invalid prompt mode: " mode ". Allowed: all, mentions, commands-only."))
+        (promise nil))
+
+      :else
+      (let [project-config (read-project-config! cwd)]
+        (if-let [binding (config/resolve-target project-config target)]
+          (let [mode (config/normalize-prompt-mode mode)
+                new-config (update-room-binding-mode project-config target mode)]
+            (write-project-config! cwd new-config)
+            (-> (persist-broker-room-prompt-mode! deps (:room/id binding) mode)
+                (.then (fn [_]
+                         (notify! ctx (str "Prompt mode for " target " is now " mode "."))))))
+          (do
+            (notify-error! ctx (str "No Matrix room binding for target " target))
+            (promise nil)))))))
 
 (defn- handle-send!
   [{:keys [read-project-config! send-message!]} {:keys [target message]} ctx]
@@ -1646,6 +1779,7 @@
        :status (handle-status! deps ctx)
        :control (handle-control! deps (:action command) ctx)
        :room-bind (handle-room-bind! deps command ctx)
+       :room-prompt-mode (handle-room-prompt-mode! deps command ctx)
        :send (handle-send! deps command ctx)
        :internal-new-session (handle-internal-new-session-command! deps (:request-id command) ctx)
        :error (do

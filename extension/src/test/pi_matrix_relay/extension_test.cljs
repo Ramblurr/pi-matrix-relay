@@ -86,7 +86,7 @@
                                                    :room/name "Pi Room"
                                                    :mode "mentions"}}}}
                           @written*))
-                   (is (= [["Bound ops to !room:example.org" "info"]]
+                   (is (= [["Bound ops to !room:example.org with mode mentions" "info"]]
                           @notifications*))
                    (done)))
           (.catch (fn [err]
@@ -1471,6 +1471,7 @@
       (is (str/includes? (:message ack) "pi-matrix-relay status"))
       (is (str/includes? (:message ack) "slot: A project-A"))
       (is (str/includes? (:message ack) "default delivery mode: follow-up (system-default)"))
+      (is (str/includes? (:message ack) "prompt mode: all (slot-default)"))
       (is (str/includes? (:message ack) "model: openai-codex/gpt-5.5"))
       (is (str/includes? (:message ack) "context: 123456 tokens (45%/272k)"))
       (is (str/includes? (:message ack) "usage: ↑360.0k ↓14.0k $4.591"))
@@ -1479,6 +1480,7 @@
       (is (str/includes? formatted-body "<th>Project</th><td><code>project</code></td>"))
       (is (str/includes? formatted-body "<th>Slot</th><td><code>A</code> project-A</td>"))
       (is (str/includes? formatted-body "<th>Room</th><td><code>!slot:example.org</code></td>"))
+      (is (str/includes? formatted-body "<th>Prompt mode</th><td><code>all</code> <em>slot-default</em></td>"))
       (is (str/includes? formatted-body "<th>Default delivery mode</th><td><code>follow-up</code> <em>system-default</em></td>"))
       (is (str/includes? formatted-body "<th>Heartbeat</th><td>active</td>"))
       (is (str/includes? formatted-body "<th>Stream</th><td>active</td>"))
@@ -1652,7 +1654,7 @@
     (is (str/includes? (:message (first @acks*)) "context: ?"))
     (is (str/includes? (:message (first @acks*)) "usage: ↑10 ↓5 $0.010"))))
 
-(deftest matrix-status-command-reports-broker-delivery-mode-source
+(deftest matrix-status-command-reports-broker-prompt-and-delivery-mode-sources
   (let [acks* (atom [])
         pi #js {:sendUserMessage (fn [_message _options])}
         ctx #js {:cwd "/work/project"
@@ -1666,7 +1668,9 @@
                      :room-id "!slot:example.org"
                      :room-name "project-A"
                      :room-delivery-modes* (atom {"!slot:example.org" {:delivery-mode "steer"
-                                                                        :source "broker"}})}
+                                                                        :source "broker"}})
+                     :room-prompt-modes* (atom {"!slot:example.org" {:mode "commands-only"
+                                                                      :source "broker"}})}
         deps {:send-message! (fn [room-id message opts]
                               (swap! acks* conj {:room-id room-id
                                                  :message message
@@ -1679,6 +1683,7 @@
                        :event/timestamp "2026-05-16T12:34:56Z"
                        :event/text "/status"}]
     (extension/handle-broker-event! deps pi ctx relay-state event)
+    (is (str/includes? (:message (first @acks*)) "prompt mode: commands-only (broker)"))
     (is (str/includes? (:message (first @acks*)) "default delivery mode: steer (broker)"))))
 
 (deftest matrix-status-command-still-acks-when-branch-usage-is-unavailable
@@ -2410,6 +2415,65 @@
               :event/text "@bot please inspect this"})
     (is (= 1 (count @sent*)))
     (is (str/includes? (first @sent*) "@bot please inspect this"))))
+
+(deftest project-room-commands-only-mode-processes-commands-but-ignores-prompts
+  (let [sent* (atom [])
+        acks* (atom [])
+        pi #js {:sendUserMessage (fn [message]
+                                   (swap! sent* conj message))}
+        ctx #js {:cwd "/work/project"
+                 :isIdle (fn [] true)}
+        relay-state {:client-id "client-1"
+                     :project-config {:rooms {"ops" {:alias "ops"
+                                                      :room/id "!room:example.org"
+                                                      :mode "commands-only"}}}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"
+                     :slot "A"
+                     :room-id "!slot:example.org"
+                     :room-name "project-A"}
+        deps {:send-message! (fn [room-id message opts]
+                              (swap! acks* conj {:room-id room-id
+                                                 :message message
+                                                 :opts opts})
+                              (js/Promise.resolve {:event/id "$ack:example.org"}))}]
+    (extension/handle-broker-event!
+     deps
+     pi
+     ctx
+     relay-state
+     {:type "matrix.message"
+      :room/id "!room:example.org"
+      :event/id "$ignored:example.org"
+      :event/sender "@alice:example.org"
+      :event/timestamp "2026-05-16T12:34:56Z"
+      :event/text "@bot this would normally mention you"})
+    (extension/handle-broker-event!
+     deps
+     pi
+     ctx
+     relay-state
+     {:type "matrix.message"
+      :room/id "!room:example.org"
+      :event/id "$status:example.org"
+      :event/sender "@alice:example.org"
+      :event/timestamp "2026-05-16T12:34:57Z"
+      :event/text "!status"})
+    (extension/handle-broker-event!
+     deps
+     pi
+     ctx
+     relay-state
+     {:type "matrix.reaction"
+      :room/id "!room:example.org"
+      :event/id "$reaction:example.org"
+      :event/sender "@alice:example.org"
+      :event/timestamp "2026-05-16T12:34:58Z"
+      :event/reacts-to-id "$ignored:example.org"
+      :reaction/key "👍"})
+    (is (= [] @sent*))
+    (is (= 1 (count @acks*)))
+    (is (str/includes? (:message (first @acks*)) "pi-matrix-relay status"))))
 
 (deftest authorized-matrix-message-from-bound-room-is-injected-as-user-message
   (let [sent* (atom [])

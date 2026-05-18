@@ -31,9 +31,19 @@
        "/rooms/" (path-encode room-id)
        "/delivery-mode"))
 
+(defn prompt-mode-path
+  [client-id room-id]
+  (str "/v1/clients/" (path-encode client-id)
+       "/rooms/" (path-encode room-id)
+       "/prompt-mode"))
+
 (defn normalize-delivery-response
   [response]
   (update-in response [:data :room/default-delivery-mode-updated-at] boolean))
+
+(defn normalize-prompt-mode-response
+  [response]
+  (update-in response [:data :room/prompt-mode-updated-at] boolean))
 
 (deftest health-and-client-registration-use-edn-envelope
   (testing "health and client registration expose stable v1 envelopes without an API state atom"
@@ -364,6 +374,78 @@
                                  (tu/edn-request app :put slot-path
                                                  {:room/default-delivery-mode "reject"
                                                   :room/default-delivery-mode-updated-by-user "@bob:example.org"}))}))))))))
+
+(deftest room-prompt-mode-endpoints-are-client-scoped-and-persistent
+  (with-env
+    (fn [env _]
+      (let [app (api/app env)]
+        (tu/edn-request app :post "/v1/clients"
+                        {:request/id "register-prompt-mode"
+                         :client/instance-id "client-1"
+                         :protocol/version 1
+                         :project {:project/id "project"}
+                         :subscriptions {:rooms ["!project:example.org"]}})
+        (let [path (prompt-mode-path "client-1" "!project:example.org")]
+          (is (= {:before {:ok true
+                           :data {:room/id "!project:example.org"
+                                  :room/prompt-mode nil
+                                  :room/prompt-mode-updated-at false
+                                  :room/prompt-mode-updated-by-client nil
+                                  :room/prompt-mode-updated-by-user nil}}
+                  :write {:ok true
+                          :data {:room/id "!project:example.org"
+                                 :room/prompt-mode "commands-only"
+                                 :room/prompt-mode-updated-at true
+                                 :room/prompt-mode-updated-by-client "client-1"
+                                 :room/prompt-mode-updated-by-user "@alice:example.org"}}
+                  :after {:ok true
+                          :data {:room/id "!project:example.org"
+                                 :room/prompt-mode "commands-only"
+                                 :room/prompt-mode-updated-at true
+                                 :room/prompt-mode-updated-by-client "client-1"
+                                 :room/prompt-mode-updated-by-user "@alice:example.org"}}}
+                 {:before (normalize-prompt-mode-response (tu/edn-request app :get path nil))
+                  :write (normalize-prompt-mode-response
+                          (tu/edn-request app :put path
+                                          {:room/prompt-mode "commands-only"
+                                           :room/prompt-mode-updated-by-user "@alice:example.org"}))
+                  :after (normalize-prompt-mode-response (tu/edn-request app :get path nil))})))))))
+
+(deftest room-prompt-mode-endpoints-reject-invalid-or-unauthorized-requests
+  (with-env
+    (fn [env _]
+      (let [app (api/app env)
+            project-path (prompt-mode-path "client-1" "!project:example.org")
+            other-path (prompt-mode-path "client-1" "!other:example.org")]
+        (tu/edn-request app :post "/v1/clients"
+                        {:request/id "register-prompt-mode-rejects"
+                         :client/instance-id "client-1"
+                         :protocol/version 1
+                         :project {:project/id "project"}
+                         :subscriptions {:rooms ["!project:example.org"]}})
+        (is (= {:unknown {:ok false
+                          :error {:code "client_not_found"
+                                  :message "Unknown broker client."
+                                  :details {:client-id "missing-client"}}}
+                :unauthorized {:ok false
+                               :error {:code "room_not_allowed"
+                                       :message "Client is not registered for the target Matrix room."
+                                       :details {:client-id "client-1"
+                                                 :room-id "!other:example.org"}}}
+                :invalid {:ok false
+                          :error {:code "invalid_request"
+                                  :message "Invalid prompt mode."
+                                  :details {:room/prompt-mode "interrupt"
+                                            :allowed ["all" "commands-only" "mentions"]}}}}
+               {:unknown (tu/edn-request app :get
+                                         (prompt-mode-path "missing-client" "!project:example.org")
+                                         nil)
+                :unauthorized (tu/edn-request app :put other-path
+                                              {:room/prompt-mode "all"
+                                               :room/prompt-mode-updated-by-user "@alice:example.org"})
+                :invalid (tu/edn-request app :put project-path
+                                         {:room/prompt-mode "interrupt"
+                                          :room/prompt-mode-updated-by-user "@alice:example.org"})}))))))
 
 (deftest room-delivery-mode-endpoints-reject-invalid-or-unauthorized-requests
   (with-env

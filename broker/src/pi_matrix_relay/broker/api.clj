@@ -120,7 +120,7 @@
   [request]
   (get-in request [:path-params :room-id]))
 
-(defn- ensure-room-delivery-mode-authorized!
+(defn- ensure-room-settings-authorized!
   [db client-id room-id]
   (when-not (store/known-room-for-client? db client-id room-id)
     (throw (ex-info "Client is not registered for the target Matrix room."
@@ -133,7 +133,7 @@
   (fn [request]
     (let [client-id (client-id-param request)
           room-id (room-id-param request)]
-      (ensure-room-delivery-mode-authorized! @db-conn client-id room-id)
+      (ensure-room-settings-authorized! @db-conn client-id room-id)
       (response/ok-response (present/room-delivery-mode
                              (store/room-delivery-mode @db-conn room-id))))))
 
@@ -150,6 +150,30 @@
                                :room-id room-id
                                :default-delivery-mode (:room/default-delivery-mode body)
                                :updated-by-user (:room/default-delivery-mode-updated-by-user body)
+                               :now-ms (System/currentTimeMillis)}))))))
+
+(defn get-room-prompt-mode-handler
+  [{:keys [db-conn]}]
+  (fn [request]
+    (let [client-id (client-id-param request)
+          room-id (room-id-param request)]
+      (ensure-room-settings-authorized! @db-conn client-id room-id)
+      (response/ok-response (present/room-prompt-mode
+                             (store/room-prompt-mode @db-conn room-id))))))
+
+(defn set-room-prompt-mode-handler
+  [{:keys [db-conn]}]
+  (fn [request]
+    (let [client-id (client-id-param request)
+          room-id (room-id-param request)
+          body (body-params request)]
+      (response/ok-response (present/room-prompt-mode
+                             (store/set-room-prompt-mode!
+                              db-conn
+                              {:client-id client-id
+                               :room-id room-id
+                               :mode (:room/prompt-mode body)
+                               :updated-by-user (:room/prompt-mode-updated-by-user body)
                                :now-ms (System/currentTimeMillis)}))))))
 
 (defn heartbeat-handler
@@ -419,6 +443,8 @@
     ["/clients/:client-id/acks" {:post (acks-handler env)}]
     ["/clients/:client-id/rooms/:room-id/delivery-mode" {:get (get-room-delivery-mode-handler env)
                                                          :put (set-room-delivery-mode-handler env)}]
+    ["/clients/:client-id/rooms/:room-id/prompt-mode" {:get (get-room-prompt-mode-handler env)
+                                                  :put (set-room-prompt-mode-handler env)}]
     ["/slots" {:get (list-slots-handler env)}]
     ["/slots/acquire" {:post (acquire-slot-handler env)}]
     ["/slots/release" {:post (release-slot-handler env)}]

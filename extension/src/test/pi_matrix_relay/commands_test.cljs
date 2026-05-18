@@ -11,14 +11,25 @@
     (is (= {:op :control :action "connect"} (commands/parse "connect")))
     (is (= {:op :control :action "disconnect"} (commands/parse "disconnect")))
     (is (= {:op :control :action "reconnect"} (commands/parse "reconnect"))))
-  (testing "room bind keeps room and optional alias separate"
+  (testing "room bind keeps room, optional alias, and optional mode separate"
     (is (= {:op :room-bind
             :room "#pi:example.org"
             :alias "project"}
            (commands/parse "room bind #pi:example.org project")))
     (is (= {:op :room-bind
-            :room "!abc:example.org"}
-           (commands/parse "room bind !abc:example.org"))))
+            :room "#pi:example.org"
+            :alias "project"
+            :mode "commands-only"}
+           (commands/parse "room bind #pi:example.org project commands-only")))
+    (is (= {:op :room-bind
+            :room "!abc:example.org"
+            :mode "mentions"}
+           (commands/parse "room bind !abc:example.org mention"))))
+  (testing "room mode parses target and prompt mode"
+    (is (= {:op :room-prompt-mode
+            :target "ops"
+            :mode "all"}
+           (commands/parse "room mode ops all"))))
   (testing "send preserves spaces in the message body"
     (is (= {:op :send
             :target "project"

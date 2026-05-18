@@ -1,10 +1,41 @@
 (ns pi-matrix-relay.commands
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [pi-matrix-relay.config :as config]))
 
 (defn- error
   [message]
   {:op :error
    :message message})
+
+(defn- parse-room-bind
+  [bind-args]
+  (let [[room & rest] (str/split (str/trim bind-args) #"\s+")]
+    (cond
+      (str/blank? room)
+      (error "Usage: room bind <room> [alias] [mode]")
+
+      (empty? rest)
+      {:op :room-bind
+       :room room}
+
+      (and (= 1 (count rest)) (config/valid-room-prompt-mode? (first rest)))
+      {:op :room-bind
+       :room room
+       :mode (config/normalize-prompt-mode (first rest))}
+
+      (= 1 (count rest))
+      {:op :room-bind
+       :room room
+       :alias (first rest)}
+
+      (= 2 (count rest))
+      {:op :room-bind
+       :room room
+       :alias (first rest)
+       :mode (config/normalize-prompt-mode (second rest))}
+
+      :else
+      (error "Usage: room bind <room> [alias] [mode]"))))
 
 (defn parse
   "Parse `/matrix-relay` or `/mr` command arguments into data.
@@ -34,12 +65,14 @@
       (if-let [[_ request-id] (re-matches #"__new-session\s+(\S+)" args)]
         {:op :internal-new-session
          :request-id request-id}
-        (if-let [[_ room alias] (re-matches #"room\s+bind\s+(\S+)(?:\s+(\S+))?" args)]
-          (cond-> {:op :room-bind
-                   :room room}
-            alias (assoc :alias alias))
-          (if-let [[_ target message] (re-matches #"send\s+(\S+)\s+([\s\S]+)" args)]
-            {:op :send
+        (if-let [[_ bind-args] (re-matches #"room\s+bind\s+([\s\S]+)" args)]
+          (parse-room-bind bind-args)
+          (if-let [[_ target mode] (re-matches #"room\s+mode\s+(\S+)\s+(\S+)" args)]
+            {:op :room-prompt-mode
              :target target
-             :message message}
-            (error (str "Unknown matrix-relay command: " args))))))))
+             :mode (config/normalize-prompt-mode mode)}
+            (if-let [[_ target message] (re-matches #"send\s+(\S+)\s+([\s\S]+)" args)]
+              {:op :send
+               :target target
+               :message message}
+              (error (str "Unknown matrix-relay command: " args)))))))))

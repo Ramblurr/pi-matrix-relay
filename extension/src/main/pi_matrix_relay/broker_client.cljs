@@ -46,6 +46,20 @@
                      {:room/default-delivery-mode default-delivery-mode
                       :room/default-delivery-mode-updated-by-user updated-by-user})))
 
+(defn get-room-prompt-mode!
+  ([client-id room-id]
+   (get-room-prompt-mode! {} client-id room-id))
+  ([opts client-id room-id]
+   (http/request-edn! opts "GET" (client-room-path client-id room-id "/prompt-mode") nil)))
+
+(defn set-room-prompt-mode!
+  ([client-id room-id mode updated-by-user]
+   (set-room-prompt-mode! {} client-id room-id mode updated-by-user))
+  ([opts client-id room-id mode updated-by-user]
+   (http/request-edn! opts "PUT" (client-room-path client-id room-id "/prompt-mode")
+                     {:room/prompt-mode mode
+                      :room/prompt-mode-updated-by-user updated-by-user})))
+
 (defn heartbeat!
   ([client-id]
    (heartbeat! {} client-id))

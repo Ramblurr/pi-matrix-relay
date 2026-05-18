@@ -2,7 +2,7 @@
   (:import [java.text SimpleDateFormat]
            [java.util Date TimeZone]))
 
-(defn- delivery-mode-name
+(defn- keyword-name
   [mode]
   (when mode
     (name mode)))
@@ -54,7 +54,15 @@
 (defn room-delivery-mode
   [{:keys [room-id default-delivery-mode updated-at updated-by-client updated-by-user]}]
   {:room/id room-id
-   :room/default-delivery-mode (delivery-mode-name default-delivery-mode)
+   :room/default-delivery-mode (keyword-name default-delivery-mode)
    :room/default-delivery-mode-updated-at (iso-instant updated-at)
    :room/default-delivery-mode-updated-by-client updated-by-client
    :room/default-delivery-mode-updated-by-user updated-by-user})
+
+(defn room-prompt-mode
+  [{:keys [room-id mode updated-at updated-by-client updated-by-user]}]
+  {:room/id room-id
+   :room/prompt-mode (keyword-name mode)
+   :room/prompt-mode-updated-at (iso-instant updated-at)
+   :room/prompt-mode-updated-by-client updated-by-client
+   :room/prompt-mode-updated-by-user updated-by-user})

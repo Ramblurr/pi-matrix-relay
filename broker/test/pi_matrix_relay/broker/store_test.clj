@@ -247,6 +247,58 @@
                                                           :now-ms 5000})))
         (is (= :steer (store/room-default-delivery-mode @conn "!project:example.org")))))))
 
+(deftest room-prompt-mode-is-persisted-and-authorized
+  (with-conn
+    (fn [conn]
+      (store/register-client! conn {:now-ms 1000}
+                              {:client/instance-id "client-1"
+                               :protocol/version 1
+                               :project {:project/id "project"}
+                               :subscriptions {:rooms ["!project:example.org"]}})
+      (testing "subscribed room prompt mode writes persist keyword mode and updater metadata"
+        (is (= {:room-id "!project:example.org"
+                :mode :commands-only
+                :updated-at 2000
+                :updated-by-client "client-1"
+                :updated-by-user "@alice:example.org"}
+               (store/set-room-prompt-mode! conn {:client-id "client-1"
+                                                   :room-id "!project:example.org"
+                                                   :mode "commands-only"
+                                                   :updated-by-user "@alice:example.org"
+                                                   :now-ms 2000})))
+        (is (= {:room-id "!project:example.org"
+                :mode :commands-only
+                :updated-at 2000
+                :updated-by-client "client-1"
+                :updated-by-user "@alice:example.org"}
+               (store/room-prompt-mode @conn "!project:example.org"))))
+      (testing "mention aliases normalize to mentions"
+        (is (= :mentions
+               (:mode (store/set-room-prompt-mode! conn {:client-id "client-1"
+                                                          :room-id "!project:example.org"
+                                                          :mode "mention"
+                                                          :updated-by-user "@alice:example.org"
+                                                          :now-ms 3000})))))
+      (testing "unknown or unauthorized rooms are rejected"
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo
+             #"Client is not registered for the target Matrix room"
+             (store/set-room-prompt-mode! conn {:client-id "client-1"
+                                                 :room-id "!other:example.org"
+                                                 :mode :all
+                                                 :updated-by-user "@alice:example.org"
+                                                 :now-ms 4000}))))
+      (testing "invalid prompt mode values are rejected before persistence"
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo
+             #"Invalid prompt mode"
+             (store/set-room-prompt-mode! conn {:client-id "client-1"
+                                                 :room-id "!project:example.org"
+                                                 :mode "interrupt"
+                                                 :updated-by-user "@alice:example.org"
+                                                 :now-ms 5000})))
+        (is (= :mentions (:mode (store/room-prompt-mode @conn "!project:example.org"))))))))
+
 (deftest idempotency-records-are-transactional-and-inline-capped
   (with-conn
     (fn [conn]

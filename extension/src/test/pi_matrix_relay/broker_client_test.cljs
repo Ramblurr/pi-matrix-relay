@@ -92,7 +92,9 @@
                        (broker-client/unregister-client! opts client-id "shutdown")
                        (broker-client/update-subscriptions! opts client-id [room-id])
                        (broker-client/get-room-delivery-mode! opts client-id room-id)
-                       (broker-client/set-room-delivery-mode! opts client-id room-id "steer" "@alice:example.org")]))
+                       (broker-client/set-room-delivery-mode! opts client-id room-id "steer" "@alice:example.org")
+                       (broker-client/get-room-prompt-mode! opts client-id room-id)
+                       (broker-client/set-room-prompt-mode! opts client-id room-id "commands-only" "@alice:example.org")]))
             (.then (fn [_]
                      (is (= [["POST" (str "/v1/clients/" encoded-client-id "/heartbeat") {}]
                              ["DELETE" (str "/v1/clients/" encoded-client-id) {:reason "shutdown"}]
@@ -101,7 +103,11 @@
                              ["GET" (str "/v1/clients/" encoded-client-id "/rooms/" encoded-room-id "/delivery-mode") nil]
                              ["PUT" (str "/v1/clients/" encoded-client-id "/rooms/" encoded-room-id "/delivery-mode")
                               {:room/default-delivery-mode "steer"
-                               :room/default-delivery-mode-updated-by-user "@alice:example.org"}]]
+                               :room/default-delivery-mode-updated-by-user "@alice:example.org"}]
+                             ["GET" (str "/v1/clients/" encoded-client-id "/rooms/" encoded-room-id "/prompt-mode") nil]
+                             ["PUT" (str "/v1/clients/" encoded-client-id "/rooms/" encoded-room-id "/prompt-mode")
+                              {:room/prompt-mode "commands-only"
+                               :room/prompt-mode-updated-by-user "@alice:example.org"}]]
                             @calls*))
                      (done)))
             (.catch (fn [err]

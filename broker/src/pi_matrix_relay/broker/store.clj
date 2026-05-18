@@ -9,6 +9,7 @@
 (def active-lease-states #{:reserved :leased :suspect})
 (def terminal-lease-states #{:released :failed})
 (def allowed-delivery-modes #{:follow-up :steer :reject})
+(def allowed-prompt-modes #{:all :mentions :commands-only})
 (def idempotency-result-byte-limit 2048)
 
 (defn- now-date
@@ -655,6 +656,68 @@
                        (some? updated-by-user)
                        (conj [:db/add [:room/id room-id] :room/default-delivery-mode-updated-by-user updated-by-user])))
     (room-delivery-mode @conn room-id)))
+
+(defn- normalize-prompt-mode
+  [mode]
+  (let [mode (cond
+               (= "mention" mode) "mentions"
+               :else mode)]
+    (cond
+      (keyword? mode) (if (= :mention mode) :mentions mode)
+      (string? mode) (keyword mode)
+      :else mode)))
+
+(defn- validate-prompt-mode!
+  [mode]
+  (let [mode (normalize-prompt-mode mode)]
+    (when-not (contains? allowed-prompt-modes mode)
+      (throw (ex-info "Invalid prompt mode."
+                      {:code :invalid_request
+                       :room/prompt-mode (if (keyword? mode) (name mode) mode)
+                       :allowed (mapv name (sort allowed-prompt-modes))})))
+    mode))
+
+(defn room-prompt-mode
+  [db room-id]
+  (let [entity-id (first-entity db
+                                '[:find ?room
+                                  :in $ ?room-id
+                                  :where [?room :room/id ?room-id]]
+                                room-id)]
+    (if entity-id
+      (let [room (d/pull db [:room/id
+                             :room/prompt-mode
+                             :room/prompt-mode-updated-at
+                             :room/prompt-mode-updated-by-user
+                             {:room/prompt-mode-updated-by-client [:client/instance-id]}]
+                         entity-id)]
+        {:room-id (:room/id room)
+         :mode (:room/prompt-mode room)
+         :updated-at (instant->ms (:room/prompt-mode-updated-at room))
+         :updated-by-client (get-in room [:room/prompt-mode-updated-by-client :client/instance-id])
+         :updated-by-user (:room/prompt-mode-updated-by-user room)})
+      {:room-id room-id
+       :mode nil
+       :updated-at nil
+       :updated-by-client nil
+       :updated-by-user nil})))
+
+(defn set-room-prompt-mode!
+  [conn {:keys [client-id room-id mode updated-by-user now-ms]}]
+  (let [mode (validate-prompt-mode! mode)
+        now (now-date now-ms)]
+    (when-not (known-room-for-client? @conn client-id room-id)
+      (throw (ex-info "Client is not registered for the target Matrix room."
+                      {:code :room_not_allowed
+                       :client-id client-id
+                       :room-id room-id})))
+    (ensure-room! conn room-id)
+    (d/transact conn (cond-> [[:db/add [:room/id room-id] :room/prompt-mode mode]
+                              [:db/add [:room/id room-id] :room/prompt-mode-updated-at now]
+                              [:db/add [:room/id room-id] :room/prompt-mode-updated-by-client [:client/instance-id client-id]]]
+                       (some? updated-by-user)
+                       (conj [:db/add [:room/id room-id] :room/prompt-mode-updated-by-user updated-by-user])))
+    (room-prompt-mode @conn room-id)))
 
 (defn clients-for-room
   [db room-id]

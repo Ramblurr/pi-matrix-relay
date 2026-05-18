@@ -70,6 +70,19 @@
    {:db/ident :room/default-delivery-mode-updated-by-user
     :db/valueType :db.type/string
     :db/cardinality :db.cardinality/one}
+   {:db/ident :room/prompt-mode
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one
+    :db/index true}
+   {:db/ident :room/prompt-mode-updated-at
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :room/prompt-mode-updated-by-client
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :room/prompt-mode-updated-by-user
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
 
    {:db/ident :slot-room/project
     :db/valueType :db.type/ref
