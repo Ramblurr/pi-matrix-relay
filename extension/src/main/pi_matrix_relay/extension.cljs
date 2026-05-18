@@ -422,13 +422,23 @@
     (str "$" (.toFixed n 3))
     "$0.000"))
 
-(defn- ctx-model-line
+(defn- html-escape
+  [value]
+  (str/escape (str value)
+              {\& "&amp;"
+               \< "&lt;"
+               \> "&gt;"
+               \" "&quot;"
+               \' "&#39;"}))
+
+(defn- ctx-model-value
   [^js ctx]
   (if-let [model (js->clj-safe (.-model ctx))]
-    (str "model: " (:provider model) "/" (:id model))
-    "model: none"))
+    (str (:provider model) "/" (:id model))
+    "none"))
 
-(defn- ctx-context-line
+
+(defn- ctx-context-value
   [^js ctx]
   (let [get-usage (.-getContextUsage ctx)
         usage (js->clj-safe (safe-invoke0 get-usage))
@@ -437,8 +447,9 @@
         context-window (or (:contextWindow usage) (:contextWindow model))
         percent (:percent usage)]
     (if (and tokens context-window (some? percent))
-      (str "context: " tokens " tokens (" (js/Math.round percent) "%/" (.toFixed (/ context-window 1000) 0) "k)")
-      "context: ?")))
+      (str tokens " tokens (" (js/Math.round percent) "%/" (.toFixed (/ context-window 1000) 0) "k)")
+      "?")))
+
 
 (defn- assistant-usage
   [entry]
@@ -460,24 +471,64 @@
               {:input 0 :output 0 :cost 0}
               (keep assistant-usage branch)))))
 
-(defn- ctx-usage-line
+(defn- ctx-usage-value
   [^js ctx]
   (let [{:keys [input output cost]} (or (branch-usage ctx) {:input 0 :output 0 :cost 0})]
-    (str "usage: ↑" (format-count input) " ↓" (format-count output) " " (format-currency cost))))
+    (str "↑" (format-count input) " ↓" (format-count output) " " (format-currency cost))))
+
+
+(defn- remote-status-values
+  [relay-state room-id ctx]
+  (let [{:keys [delivery-mode source]} (effective-room-delivery-mode relay-state room-id)]
+    {:project (or (get-in relay-state [:project :project/id]) "unknown")
+     :slot (or (:slot relay-state) "?")
+     :slot-room (or (:room-name relay-state) "unknown")
+     :room (or room-id "unknown")
+     :delivery-mode delivery-mode
+     :delivery-source source
+     :heartbeat (if (:heartbeat-id relay-state) "active" "inactive")
+     :stream (if (:stream relay-state) "active" "inactive")
+     :model (ctx-model-value ctx)
+     :context (ctx-context-value ctx)
+     :usage (ctx-usage-value ctx)}))
+
+(defn- remote-status-body
+  [{:keys [project slot slot-room room delivery-mode delivery-source heartbeat stream model context usage]}]
+  (str "pi-matrix-relay status\n"
+       "project: " project "\n"
+       "slot: " slot " " slot-room "\n"
+       "room: " room "\n"
+       "default delivery mode: " delivery-mode " (" delivery-source ")\n"
+       "heartbeat: " heartbeat "\n"
+       "stream: " stream "\n"
+       "model: " model "\n"
+       "context: " context "\n"
+       "usage: " usage))
+
+(defn- status-row
+  [label value]
+  (str "<tr><th>" (html-escape label) "</th><td>" value "</td></tr>"))
+
+(defn- remote-status-html
+  [{:keys [project slot slot-room room delivery-mode delivery-source heartbeat stream model context usage]}]
+  (str "<h3>pi-matrix-relay status</h3>"
+       "<table><tbody>"
+       (status-row "Project" (str "<code>" (html-escape project) "</code>"))
+       (status-row "Slot" (str "<code>" (html-escape slot) "</code> " (html-escape slot-room)))
+       (status-row "Room" (str "<code>" (html-escape room) "</code>"))
+       (status-row "Default delivery mode" (str "<code>" (html-escape delivery-mode) "</code> <em>" (html-escape delivery-source) "</em>"))
+       (status-row "Heartbeat" (html-escape heartbeat))
+       (status-row "Stream" (html-escape stream))
+       (status-row "Model" (str "<code>" (html-escape model) "</code>"))
+       (status-row "Context" (html-escape context))
+       (status-row "Usage" (html-escape usage))
+       "</tbody></table>"))
 
 (defn- remote-status-message
   [relay-state _binding room-id ctx]
-  (let [{:keys [delivery-mode source]} (effective-room-delivery-mode relay-state room-id)]
-    (str "pi-matrix-relay status\n"
-         "project: " (or (get-in relay-state [:project :project/id]) "unknown") "\n"
-         "slot: " (or (:slot relay-state) "?") " " (or (:room-name relay-state) "unknown") "\n"
-         "room: " room-id "\n"
-         "default delivery mode: " delivery-mode " (" source ")\n"
-         "heartbeat: " (if (:heartbeat-id relay-state) "active" "inactive") "\n"
-         "stream: " (if (:stream relay-state) "active" "inactive") "\n"
-         (ctx-model-line ctx) "\n"
-         (ctx-context-line ctx) "\n"
-         (ctx-usage-line ctx))))
+  (let [values (remote-status-values relay-state room-id ctx)]
+    {:body (remote-status-body values)
+     :formatted-body (remote-status-html values)}))
 
 (defn- cache-room-delivery-mode!
   [relay-state room-id delivery-mode]
@@ -547,15 +598,6 @@
 (defn- remote-command-usage-line
   [usage]
   (str "/" usage " or !" usage))
-
-(defn- html-escape
-  [value]
-  (str/escape (str value)
-              {\& "&amp;"
-               \< "&lt;"
-               \> "&gt;"
-               \" "&quot;"
-               \' "&#39;"}))
 
 (defn- formatted-message
   [body formatted-body]

@@ -1231,13 +1231,26 @@
     (is (= 1 (count @acks*)))
     (is (= {:client/id "client-1"
             :reply-to/event-id "$status:example.org"}
-           (:opts (first @acks*))))
-    (is (str/includes? (:message (first @acks*)) "pi-matrix-relay status"))
-    (is (str/includes? (:message (first @acks*)) "slot: A project-A"))
-    (is (str/includes? (:message (first @acks*)) "default delivery mode: follow-up (system-default)"))
-    (is (str/includes? (:message (first @acks*)) "model: openai-codex/gpt-5.5"))
-    (is (str/includes? (:message (first @acks*)) "context: 123456 tokens (45%/272k)"))
-    (is (str/includes? (:message (first @acks*)) "usage: ↑360.0k ↓14.0k $4.591"))))
+           (select-keys (:opts (first @acks*)) [:client/id :reply-to/event-id])))
+    (let [ack (first @acks*)
+          formatted-body (str (get-in ack [:opts :formatted-body]))]
+      (is (str/includes? (:message ack) "pi-matrix-relay status"))
+      (is (str/includes? (:message ack) "slot: A project-A"))
+      (is (str/includes? (:message ack) "default delivery mode: follow-up (system-default)"))
+      (is (str/includes? (:message ack) "model: openai-codex/gpt-5.5"))
+      (is (str/includes? (:message ack) "context: 123456 tokens (45%/272k)"))
+      (is (str/includes? (:message ack) "usage: ↑360.0k ↓14.0k $4.591"))
+      (is (str/includes? formatted-body "<h3>pi-matrix-relay status</h3>"))
+      (is (str/includes? formatted-body "<table>"))
+      (is (str/includes? formatted-body "<th>Project</th><td><code>project</code></td>"))
+      (is (str/includes? formatted-body "<th>Slot</th><td><code>A</code> project-A</td>"))
+      (is (str/includes? formatted-body "<th>Room</th><td><code>!slot:example.org</code></td>"))
+      (is (str/includes? formatted-body "<th>Default delivery mode</th><td><code>follow-up</code> <em>system-default</em></td>"))
+      (is (str/includes? formatted-body "<th>Heartbeat</th><td>active</td>"))
+      (is (str/includes? formatted-body "<th>Stream</th><td>active</td>"))
+      (is (str/includes? formatted-body "<th>Model</th><td><code>openai-codex/gpt-5.5</code></td>"))
+      (is (str/includes? formatted-body "<th>Context</th><td>123456 tokens (45%/272k)</td>"))
+      (is (str/includes? formatted-body "<th>Usage</th><td>↑360.0k ↓14.0k $4.591</td>")))))
 
 (deftest matrix-help-command-lists-commands-and-prefixes
   (let [sent* (atom [])
