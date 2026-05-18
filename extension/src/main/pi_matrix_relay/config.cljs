@@ -52,18 +52,18 @@
 (defn derive-local-alias
   [room-result explicit-alias cwd]
   (or (nonblank explicit-alias)
-      (nonblank (:canonicalAlias room-result))
-      (nonblank (:name room-result))
+      (nonblank (:room/canonical-alias room-result))
+      (nonblank (:room/name room-result))
       (project-id cwd)))
 
 (defn room-binding
   [room-result explicit-alias cwd]
   (let [alias (derive-local-alias room-result explicit-alias cwd)]
     (cond-> {:alias alias
-             :roomId (:roomId room-result)
+             :room/id (:room/id room-result)
              :mode default-room-mode}
-      (:canonicalAlias room-result) (assoc :canonicalAlias (:canonicalAlias room-result))
-      (:name room-result) (assoc :name (:name room-result)))))
+      (:room/canonical-alias room-result) (assoc :room/canonical-alias (:room/canonical-alias room-result))
+      (:room/name room-result) (assoc :room/name (:room/name room-result)))))
 
 (defn bind-room
   "Return project config with `room-result` saved under a local alias."
@@ -78,7 +78,7 @@
     (or (get rooms target)
         (get rooms (keyword target))
         (some (fn [[_ binding]]
-                (when (= target (:roomId binding))
+                (when (= target (:room/id binding))
                   binding))
               rooms))))
 

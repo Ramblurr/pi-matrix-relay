@@ -32,15 +32,15 @@
 (deftest clients-subscriptions-and-room-authorization-live-in-datahike
   (with-conn
     (fn [conn]
-      (testing "client registration persists subscriptions and uses instanceId as clientId"
+      (testing "client registration persists subscriptions and uses the instance id as the client id"
         (let [registration (store/register-client!
                             conn
                             {:now-ms 1000
                              :heartbeat-seconds 30
                              :global-operators ["@operator:example.org"]}
-                            {:instanceId "instance-1"
-                             :protocolVersion 1
-                             :project {:id "project" :root "/work/project" :displayName "Project"}
+                            {:client/instance-id "instance-1"
+                             :protocol/version 1
+                             :project {:project/id "project" :project/root "/work/project" :project/display-name "Project"}
                              :metadata {:piSessionName "main"}
                              :subscriptions {:rooms ["!project:example.org"]}})]
           (is (= {:client-id "instance-1"
@@ -70,17 +70,17 @@
   (with-conn
     (fn [conn]
       (store/register-client! conn {:now-ms 1000}
-                              {:instanceId "client-1"
-                               :protocolVersion 1
-                               :project {:id "project"}
+                              {:client/instance-id "client-1"
+                               :protocol/version 1
+                               :project {:project/id "project"}
                                :subscriptions {:rooms ["!room:example.org"]}})
       (store/set-room-default-delivery-mode! conn {:client-id "client-1"
                                                    :room-id "!room:example.org"
                                                    :default-delivery-mode :steer
                                                    :updated-by-user "@alice:example.org"
                                                    :now-ms 2000})
-      (is (= {:roomId "!room:example.org"
-              :defaultDeliveryMode :steer}
+      (is (= {:room/id "!room:example.org"
+              :room/default-delivery-mode :steer}
              (store/ensure-room! conn "!room:example.org")))
       (is (= :steer (store/room-default-delivery-mode @conn "!room:example.org"))))))
 
@@ -89,16 +89,16 @@
     (fn [conn]
       (doseq [client-id ["client-1" "client-2"]]
         (store/register-client! conn {:now-ms 1000}
-                                {:instanceId client-id
-                                 :protocolVersion 1
-                                 :project {:id "project"}}))
+                                {:client/instance-id client-id
+                                 :protocol/version 1
+                                 :project {:project/id "project"}}))
       (testing "two reservations made before Matrix room creation occupy A then B"
         (let [reservation-1 (store/reserve-slot! conn {:now-ms 1100}
                                                  {:client-id "client-1"
-                                                  :project {:id "project"}})
+                                                  :project {:project/id "project"}})
               reservation-2 (store/reserve-slot! conn {:now-ms 1200}
                                                  {:client-id "client-2"
-                                                  :project {:id "project"}})]
+                                                  :project {:project/id "project"}})]
           (is (= ["A" "B"] (mapv :slot [reservation-1 reservation-2])))
           (let [lease-1 (store/complete-slot-reservation!
                          conn
@@ -134,7 +134,7 @@
                (store/release-slot! conn {:now-ms 1500 :client-id "client-1" :slot "A"})))
         (let [reservation-3 (store/reserve-slot! conn {:now-ms 1600}
                                                  {:client-id "client-1"
-                                                  :project {:id "project"}})]
+                                                  :project {:project/id "project"}})]
           (is (= "A" (:slot reservation-3))))))))
 
 (deftest stale-and-suspect-lease-transitions-are-cas-backed
@@ -142,11 +142,11 @@
     (fn [conn]
       (doseq [client-id ["client-1" "client-2"]]
         (store/register-client! conn {:now-ms 1000}
-                                {:instanceId client-id
-                                 :protocolVersion 1
-                                 :project {:id "project"}}))
-      (let [r1 (store/reserve-slot! conn {:now-ms 1000} {:client-id "client-1" :project {:id "project"}})
-            r2 (store/reserve-slot! conn {:now-ms 1000} {:client-id "client-2" :project {:id "project"}})]
+                                {:client/instance-id client-id
+                                 :protocol/version 1
+                                 :project {:project/id "project"}}))
+      (let [r1 (store/reserve-slot! conn {:now-ms 1000} {:client-id "client-1" :project {:project/id "project"}})
+            r2 (store/reserve-slot! conn {:now-ms 1000} {:client-id "client-2" :project {:project/id "project"}})]
         (store/complete-slot-reservation! conn {:now-ms 1000
                                                 :lease-id (:lease-id r1)
                                                 :reservation-id (:reservation-id r1)
@@ -176,17 +176,17 @@
   (with-conn
     (fn [conn]
       (store/register-client! conn {:now-ms 1000}
-                              {:instanceId "client-1"
-                               :protocolVersion 1
-                               :project {:id "project"}
+                              {:client/instance-id "client-1"
+                               :protocol/version 1
+                               :project {:project/id "project"}
                                :subscriptions {:rooms ["!project:example.org"]}})
       (store/register-client! conn {:now-ms 1000}
-                              {:instanceId "client-2"
-                               :protocolVersion 1
-                               :project {:id "project"}})
+                              {:client/instance-id "client-2"
+                               :protocol/version 1
+                               :project {:project/id "project"}})
       (let [reservation (store/reserve-slot! conn {:now-ms 1100}
                                              {:client-id "client-2"
-                                              :project {:id "project"}})]
+                                              :project {:project/id "project"}})]
         (store/complete-slot-reservation! conn {:now-ms 1200
                                                 :lease-id (:lease-id reservation)
                                                 :reservation-id (:reservation-id reservation)
@@ -283,9 +283,9 @@
                :now-ms 1002}))))
       (testing "completed results are stored as small canonical JSON data only"
         (store/complete-request! conn {:request-id "rid-1" :now-ms 1100}
-                                 {:roomId "!room:example.org" :eventId "$event:example.org"})
+                                 {:room/id "!room:example.org" :event/id "$event:example.org"})
         (is (= {:status :completed
-                :result {:roomId "!room:example.org" :eventId "$event:example.org"}}
+                :result {:room/id "!room:example.org" :event/id "$event:example.org"}}
                (select-keys (store/reserve-request!
                              conn
                              {:request-id "rid-1"

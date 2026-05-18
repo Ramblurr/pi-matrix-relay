@@ -1,7 +1,7 @@
 (ns pi-matrix-relay.broker.test-util
-  (:require [clojure.string :as str]
+  (:require [clojure.edn :as edn]
+            [clojure.string :as str]
             [pi-matrix-relay.broker.db :as db]
-            [pi-matrix-relay.broker.json :as json]
             [pi-matrix-relay.broker.matrix :as matrix]
             [pi-matrix-relay.broker.runtime :as runtime])
   (:import [java.nio.file Files]
@@ -21,42 +21,42 @@
   (start! [this] this)
   (stop! [_] (swap! calls* conj [:stop]) nil)
   (health [_]
-    {:status "ok" :matrix {:connected true :userId "@bot:example.org" :encrypted true}})
+    {:status "ok" :matrix/connected? true :user/id "@bot:example.org" :matrix/encrypted? true})
   (list-rooms! [_]
     (swap! calls* conj [:list-rooms])
     (or rooms []))
   (resolve-room! [_ room]
     (swap! calls* conj [:resolve-room room])
-    {:roomId room :canonicalAlias (when (.startsWith (str room) "#") room) :name room :membership "join"})
+    {:room/id room :room/canonical-alias (when (.startsWith (str room) "#") room) :room/name room :room/membership "join"})
   (create-room! [_ request]
     (swap! calls* conj [:create-room request])
     (when on-create-room
       (on-create-room request))
-    {:roomId (str "!" (:name request) ":example.org") :name (:name request) :membership "join"})
+    {:room/id (str "!" (:room/name request) ":example.org") :room/name (:room/name request) :room/membership "join"})
   (ensure-users-power-level! [_ request]
     (swap! calls* conj [:ensure-users-power-level request])
-    {:roomId (:roomId request)
+    {:room/id (:room/id request)
      :users (:users request)
      :level (:level request)})
   (leave-room! [_ request]
     (swap! calls* conj [:leave-room request])
-    {:roomId (:roomId request)
+    {:room/id (:room/id request)
      :left true})
   (send-message! [_ request]
     (swap! calls* conj [:send-message request])
-    {:roomId (get-in request [:target :roomId]) :eventId "$message:example.org"})
+    {:room/id (get-in request [:target :room/id]) :event/id "$message:example.org"})
   (set-typing! [_ request]
     (swap! calls* conj [:typing request])
     {})
   (send-reaction! [_ request]
     (swap! calls* conj [:send-reaction request])
-    {:roomId (:roomId request)
-     :eventId "$reaction:example.org"
-     :reactsToEventId (:eventId request)
+    {:room/id (:room/id request)
+     :event/id "$reaction:example.org"
+     :event/reacts-to-id (:event/id request)
      :key (:key request)})
   (send-file! [_ request]
     (swap! calls* conj [:send-file request])
-    {:roomId (get-in request [:target :roomId]) :eventId "$file:example.org"})
+    {:room/id (get-in request [:target :room/id]) :event/id "$file:example.org"})
   (download-media! [_ request]
     (swap! calls* conj [:download-media request])
     {:path "/tmp/downloaded"})
@@ -65,13 +65,13 @@
     {:transcript "hello"})
   (verification-start! [_ request]
     (swap! calls* conj [:verification-start request])
-    {:verificationId "verification-1"})
+    {:verification/id "verification-1"})
   (verification-confirm! [_ verification-id]
     (swap! calls* conj [:verification-confirm verification-id])
-    {:verificationId verification-id})
+    {:verification/id verification-id})
   (verification-cancel! [_ verification-id]
     (swap! calls* conj [:verification-cancel verification-id])
-    {:verificationId verification-id})
+    {:verification/id verification-id})
   (verification-status [_]
     {:verifications []}))
 
@@ -101,19 +101,24 @@
   ([app method uri body]
    (let [[path query-string] (let [parts (str/split uri #"\?" 2)]
                                [(first parts) (second parts)])
-         body-stream (when body
+         body-stream (when (some? body)
                        (java.io.ByteArrayInputStream.
-                        (.getBytes (json/write-json body) "UTF-8")))]
+                        (.getBytes (pr-str body) "UTF-8")))]
      (app (cond-> {:request-method method
                    :uri path
-                   :headers {}}
+                   :headers (cond-> {"accept" "application/edn"}
+                              body-stream (assoc "content-type" "application/edn"))}
             query-string (assoc :query-string query-string)
             body-stream (assoc :body body-stream))))))
 
-(defn response-json
+(defn response-edn
   [response]
-  (json/read-json (:body response)))
+  (let [body (:body response)]
+    (cond
+      (nil? body) nil
+      (string? body) (edn/read-string body)
+      :else (edn/read-string (slurp body)))))
 
-(defn json-request
+(defn edn-request
   [app method uri body]
-  (response-json (request app method uri body)))
+  (response-edn (request app method uri body)))

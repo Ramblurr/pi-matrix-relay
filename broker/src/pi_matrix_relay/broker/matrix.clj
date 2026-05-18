@@ -35,9 +35,9 @@
   (stop! [_] nil)
   (health [_]
     {:status "degraded"
-     :matrix {:connected false
-              :encrypted true
-              :reason reason}})
+     :matrix/connected? false
+     :matrix/encrypted? true
+     :reason reason})
   (list-rooms! [_]
     (unavailable :matrix_not_configured "Matrix client is not configured." {}))
   (resolve-room! [_ room]

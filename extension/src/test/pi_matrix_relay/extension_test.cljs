@@ -59,9 +59,9 @@
     (let [notifications* (atom [])
           written* (atom nil)
           deps {:resolve-room! (fn [room]
-                                 (js/Promise.resolve {:roomId "!room:example.org"
-                                                      :canonicalAlias room
-                                                      :name "Pi Room"}))
+                                 (js/Promise.resolve {:room/id "!room:example.org"
+                                                      :room/canonical-alias room
+                                                      :room/name "Pi Room"}))
                 :read-project-config! (fn [_cwd] {})
                 :write-project-config! (fn [cwd config]
                                         (reset! written* {:cwd cwd :config config}))}
@@ -72,9 +72,9 @@
           (.then (fn [_]
                    (is (= {:cwd "/work/project"
                            :config {:rooms {"ops" {:alias "ops"
-                                                   :roomId "!room:example.org"
-                                                   :canonicalAlias "#pi:example.org"
-                                                   :name "Pi Room"
+                                                   :room/id "!room:example.org"
+                                                   :room/canonical-alias "#pi:example.org"
+                                                   :room/name "Pi Room"
                                                    :mode "mentions"}}}}
                           @written*))
                    (is (= [["Bound ops to !room:example.org" "info"]]
@@ -89,7 +89,7 @@
     (let [deps-seen* (atom nil)
           deps {:run-setup! (fn [setup-deps]
                               (reset! deps-seen* setup-deps)
-                              (js/Promise.resolve {:matrix {:connected true}}))}
+                              (js/Promise.resolve {:matrix/connected? true}))}
           ctx #js {:ui #js {:input (fn [_ _] (js/Promise.resolve "input"))
                             :editor (fn [_ _] (js/Promise.resolve "editor"))
                             :confirm (fn [_ _] (js/Promise.resolve true))
@@ -111,7 +111,7 @@
   (async done
     (let [deps {:relay-state* (atom {:client-id "client-1"
                                      :project-config {}
-                                     :project {:id "project"}
+                                     :project {:project/id "project"}
                                      :slot "A"
                                      :room-id "!slot:example.org"
                                      :room-name "project-A"
@@ -119,9 +119,9 @@
                 :diagnostics* (atom {})
                 :read-project-config! (fn [_cwd] {})
                 :health! (fn []
-                           (js/Promise.resolve {:matrix {:connected true}}))
+                           (js/Promise.resolve {:matrix/connected? true}))
                 :list-slots! (fn [project-id]
-                               (js/Promise.resolve {:projectId project-id :slots []}))
+                               (js/Promise.resolve {:project/id project-id :slots []}))
                 :list-rooms! (fn []
                                (js/Promise.resolve {:rooms []}))}
           ctx #js {:cwd "/work/project"}]
@@ -131,7 +131,7 @@
           (.then (fn [result]
                    (is (str/includes? (get-in result [:content 0 :text])
                                       "pi-matrix-relay diagnostics"))
-                   (is (= "!slot:example.org" (get-in result [:details :relay :roomId])))
+                   (is (= "!slot:example.org" (get-in result [:details :relay :room/id])))
                    (done)))
           (.catch (fn [err]
                     (is false (.-stack err))
@@ -141,7 +141,7 @@
   (async done
     (let [calls* (atom [])
           relay-state* (atom {:client-id "client-1"
-                              :project {:id "project"}
+                              :project {:project/id "project"}
                               :slot "A"
                               :room-id "!old-slot:example.org"
                               :stream #js {:close (fn []
@@ -150,32 +150,32 @@
                 :diagnostics* (atom {})
                 :read-project-config! (fn [_cwd] {})
                 :health! (fn []
-                           (js/Promise.resolve {:matrix {:connected true}}))
+                           (js/Promise.resolve {:matrix/connected? true}))
                 :register-client! (fn [_request]
-                                    (js/Promise.resolve {:clientId "client-2"
-                                                         :heartbeatSeconds 30
-                                                         :globalOperators []}))
+                                    (js/Promise.resolve {:client/id "client-2"
+                                                         :heartbeat/seconds 30
+                                                         :matrix/global-operators []}))
                 :acquire-slot! (fn [_client-id _project _invite]
                                  (js/Promise.resolve {:slot "B"
-                                                      :roomId "!new-slot:example.org"
-                                                      :roomName "project-B"}))
+                                                      :room/id "!new-slot:example.org"
+                                                      :room/name "project-B"}))
                 :update-subscriptions! (fn [_client-id rooms]
                                          (js/Promise.resolve {:rooms rooms}))
                 :send-message! (fn [room-id _message _opts]
                                 (swap! calls* conj [:send-message room-id])
-                                (js/Promise.resolve {:eventId "$event:example.org"}))
+                                (js/Promise.resolve {:event/id "$event:example.org"}))
                 :release-slot! (fn [client-id room-id slot]
                                  (swap! calls* conj [:release-slot client-id room-id slot])
                                  (js/Promise.resolve {:released true}))
                 :unregister-client! (fn [_client-id _reason]
                                       (js/Promise.resolve {}))
                 :heartbeat! (fn [_client-id]
-                              (js/Promise.resolve {:heartbeatSeconds 30}))
+                              (js/Promise.resolve {:heartbeat/seconds 30}))
                 :set-interval! (fn [_f _ms] :interval-2)
                 :open-event-stream! (fn [_opts _client-id _on-event]
                                       #js {:close (fn [])})
                 :list-slots! (fn [project-id]
-                               (js/Promise.resolve {:projectId project-id :slots []}))
+                               (js/Promise.resolve {:project/id project-id :slots []}))
                 :pi #js {}}
           ctx #js {:cwd "/work/project"
                    :ui #js {:setStatus (fn [_id _status])}}]
@@ -199,27 +199,27 @@
           deps {:relay-state* (atom {:client-id "client-1"})
                 :read-project-config! (fn [_cwd]
                                         {:rooms {"ops" {:alias "ops"
-                                                        :roomId "!room:example.org"}}})
+                                                        :room/id "!room:example.org"}}})
                 :send-message! (fn [room-id message opts]
                                 (reset! sent* {:room-id room-id :message message :opts opts})
-                                (js/Promise.resolve {:eventId "$event:example.org"}))}
+                                (js/Promise.resolve {:event/id "$event:example.org"}))}
           ctx #js {:cwd "/work/project"}]
       (-> (extension/execute-send-matrix-message! deps {:target "ops"
                                                         :message "tool says hello"
-                                                        :replyToEventId "$parent:example.org"}
+                                                        :reply-to/event-id "$parent:example.org"}
                                                 ctx)
           (.then (fn [result]
                    (is (= {:room-id "!room:example.org"
                            :message "tool says hello"
-                           :opts {:clientId "client-1"
-                                  :replyToEventId "$parent:example.org"}}
+                           :opts {:client/id "client-1"
+                                  :reply-to/event-id "$parent:example.org"}}
                           @sent*))
                    (is (= {:content [{:type "text"
                                       :text "Sent Matrix message $event:example.org to !room:example.org"}]
-                           :details {:roomId "!room:example.org"
-                                     :eventId "$event:example.org"
+                           :details {:room/id "!room:example.org"
+                                     :event/id "$event:example.org"
                                      :target "ops"
-                                     :replyToEventId "$parent:example.org"}}
+                                     :reply-to/event-id "$parent:example.org"}}
                           result))
                    (done)))
           (.catch (fn [err]
@@ -233,19 +233,19 @@
                 :read-project-config! (fn [_cwd] {})
                 :send-message! (fn [room-id message opts]
                                 (reset! sent* {:room-id room-id :message message :opts opts})
-                                (js/Promise.resolve {:eventId "$event:example.org"}))}
+                                (js/Promise.resolve {:event/id "$event:example.org"}))}
           ctx #js {:cwd "/work/project"}]
       (-> (extension/execute-send-matrix-message! deps {:target "!slot:example.org"
                                                         :message "raw room hello"
-                                                        :replyToEventId "$parent:example.org"}
+                                                        :reply-to/event-id "$parent:example.org"}
                                                 ctx)
           (.then (fn [result]
                    (is (= {:room-id "!slot:example.org"
                            :message "raw room hello"
-                           :opts {:clientId "client-1"
-                                  :replyToEventId "$parent:example.org"}}
+                           :opts {:client/id "client-1"
+                                  :reply-to/event-id "$parent:example.org"}}
                           @sent*))
-                   (is (= "!slot:example.org" (get-in result [:details :roomId])))
+                   (is (= "!slot:example.org" (get-in result [:details :room/id])))
                    (done)))
           (.catch (fn [err]
                     (is false (.-stack err))
@@ -257,29 +257,29 @@
           deps {:relay-state* (atom {:client-id "client-1"})
                 :read-project-config! (fn [_cwd]
                                         {:rooms {"ops" {:alias "ops"
-                                                        :roomId "!room:example.org"}}})
+                                                        :room/id "!room:example.org"}}})
                 :send-reaction! (fn [room-id event-id key opts]
                                   (reset! sent* {:room-id room-id
                                                  :event-id event-id
                                                  :key key
                                                  :opts opts})
-                                  (js/Promise.resolve {:eventId "$reaction:example.org"}))}
+                                  (js/Promise.resolve {:event/id "$reaction:example.org"}))}
           ctx #js {:cwd "/work/project"}]
       (-> (extension/execute-send-matrix-reaction! deps {:target "ops"
-                                                         :eventId "$event:example.org"
+                                                         :event/id "$event:example.org"
                                                          :key "👍"}
                                                  ctx)
           (.then (fn [result]
                    (is (= {:room-id "!room:example.org"
                            :event-id "$event:example.org"
                            :key "👍"
-                           :opts {:clientId "client-1"}}
+                           :opts {:client/id "client-1"}}
                           @sent*))
                    (is (= {:content [{:type "text"
                                       :text "Sent Matrix reaction 👍 to $event:example.org in !room:example.org"}]
-                           :details {:roomId "!room:example.org"
-                                     :eventId "$reaction:example.org"
-                                     :reactsToEventId "$event:example.org"
+                           :details {:room/id "!room:example.org"
+                                     :event/id "$reaction:example.org"
+                                     :event/reacts-to-id "$event:example.org"
                                      :target "ops"
                                      :key "👍"}}
                           result))
@@ -298,19 +298,19 @@
                                                  :event-id event-id
                                                  :key key
                                                  :opts opts})
-                                  (js/Promise.resolve {:eventId "$reaction:example.org"}))}
+                                  (js/Promise.resolve {:event/id "$reaction:example.org"}))}
           ctx #js {:cwd "/work/project"}]
       (-> (extension/execute-send-matrix-reaction! deps {:target "!slot:example.org"
-                                                         :eventId "$event:example.org"
+                                                         :event/id "$event:example.org"
                                                          :key "👍"}
                                                  ctx)
           (.then (fn [result]
                    (is (= {:room-id "!slot:example.org"
                            :event-id "$event:example.org"
                            :key "👍"
-                           :opts {:clientId "client-1"}}
+                           :opts {:client/id "client-1"}}
                           @sent*))
-                   (is (= "!slot:example.org" (get-in result [:details :roomId])))
+                   (is (= "!slot:example.org" (get-in result [:details :room/id])))
                    (done)))
           (.catch (fn [err]
                     (is false (.-stack err))
@@ -323,10 +323,10 @@
                                         :message "Route not found"}]})
           deps {:relay-state* (atom {:client-id "matrix-relay-/work/project"
                                      :project-config {:rooms {"ops" {:alias "ops"
-                                                                     :roomId "!room:example.org"}}}
-                                     :project {:id "project"
-                                               :root "/work/project"
-                                               :displayName "project"}
+                                                                     :room/id "!room:example.org"}}}
+                                     :project {:project/id "project"
+                                               :project/root "/work/project"
+                                               :project/display-name "project"}
                                      :global-operators #{"@alice:example.org"}
                                      :bot-user-id "@bot:example.org"
                                      :slot "A"
@@ -336,25 +336,25 @@
                                                                     :event-id "$event:example.org"}])
                                      :heartbeat-id :interval-1
                                      :stream #js {:diagnostics (fn []
-                                                                 #js {:connected true
-                                                                      :eventCount 3})}})
+                                                                 #js {"connected" true
+                                                                      "event/count" 3})}})
                 :diagnostics* diagnostics*
                 :read-project-config! (fn [_cwd]
                                         {:rooms {"ops" {:alias "ops"
-                                                        :roomId "!room:example.org"}}})
+                                                        :room/id "!room:example.org"}}})
                 :health! (fn []
-                           (js/Promise.resolve {:matrix {:connected true
-                                                         :userId "@bot:example.org"}}))
+                           (js/Promise.resolve {:matrix/connected? true
+                                                         :user/id "@bot:example.org"}))
                 :list-slots! (fn [project-id]
-                               (js/Promise.resolve {:projectId project-id
+                               (js/Promise.resolve {:project/id project-id
                                                     :slots [{:slot "A"
-                                                             :roomId "!slot:example.org"
-                                                             :roomName "project-A"
-                                                             :clientId "matrix-relay-/work/project"
+                                                             :room/id "!slot:example.org"
+                                                             :room/name "project-A"
+                                                             :client/id "matrix-relay-/work/project"
                                                              :state "leased"}]}))
                 :list-rooms! (fn []
-                               (js/Promise.resolve {:rooms [{:roomId "!slot:example.org"
-                                                             :name "project-A"}]}))}
+                               (js/Promise.resolve {:rooms [{:room/id "!slot:example.org"
+                                                             :room/name "project-A"}]}))}
           ctx #js {:cwd "/work/project"}]
       (-> (extension/execute-matrix-relay-diagnostics! deps {:includeBroker true
                                                              :includeRooms true}
@@ -369,28 +369,28 @@
                    (is (= [{:at "2026-05-17T16:31:27.000Z"
                             :type "start-error"
                             :message "Route not found"}]
-                          (get-in result [:details :diagnostics :recentErrors])))
+                          (get-in result [:details :diagnostics :recent-errors])))
                    (is (= {:running true
-                           :clientId "matrix-relay-/work/project"
+                           :client/id "matrix-relay-/work/project"
                            :slot "A"
-                           :roomId "!slot:example.org"
-                           :roomName "project-A"
-                           :heartbeatActive true
-                           :streamActive true
-                           :pendingAutoReplies 1}
+                           :room/id "!slot:example.org"
+                           :room/name "project-A"
+                           :heartbeat/active? true
+                           :stream/active? true
+                           :pending-auto-replies/count 1}
                           (select-keys (get-in result [:details :relay])
-                                       [:running :clientId :slot :roomId :roomName
-                                        :heartbeatActive :streamActive :pendingAutoReplies])))
+                                       [:running :client/id :slot :room/id :room/name
+                                        :heartbeat/active? :stream/active? :pending-auto-replies/count])))
                    (is (= {:connected true
-                           :eventCount 3}
-                          (get-in result [:details :relay :streamDiagnostics])))
-                   (is (= {:matrix {:connected true
-                                     :userId "@bot:example.org"}}
+                           :event/count 3}
+                          (get-in result [:details :relay :stream/diagnostics])))
+                   (is (= {:matrix/connected? true
+                                     :user/id "@bot:example.org"}
                           (get-in result [:details :broker :health])))
                    (is (= [{:slot "A"
-                            :roomId "!slot:example.org"
-                            :roomName "project-A"
-                            :clientId "matrix-relay-/work/project"
+                            :room/id "!slot:example.org"
+                            :room/name "project-A"
+                            :client/id "matrix-relay-/work/project"
                             :state "leased"}]
                           (get-in result [:details :broker :slots :slots])))
                    (is (= [{:at "2026-05-17T16:31:27.000Z"
@@ -406,7 +406,7 @@
   (async done
     (let [calls* (atom [])
           relay-state* (atom {:client-id "client-1"
-                              :project {:id "project"}
+                              :project {:project/id "project"}
                               :slot "A"
                               :room-id "!old-slot:example.org"
                               :stream #js {:close (fn []
@@ -416,23 +416,23 @@
                 :read-project-config! (fn [_cwd] {})
                 :health! (fn []
                            (swap! calls* conj [:health])
-                           (js/Promise.resolve {:matrix {:connected true}}))
+                           (js/Promise.resolve {:matrix/connected? true}))
                 :register-client! (fn [request]
-                                    (swap! calls* conj [:register (:clientInstanceId request)])
-                                    (js/Promise.resolve {:clientId "client-2"
-                                                         :heartbeatSeconds 30
-                                                         :globalOperators []}))
+                                    (swap! calls* conj [:register (:client/instance-id request)])
+                                    (js/Promise.resolve {:client/id "client-2"
+                                                         :heartbeat/seconds 30
+                                                         :matrix/global-operators []}))
                 :acquire-slot! (fn [client-id project invite]
                                  (swap! calls* conj [:acquire-slot client-id project invite])
                                  (js/Promise.resolve {:slot "B"
-                                                      :roomId "!new-slot:example.org"
-                                                      :roomName "project-B"}))
+                                                      :room/id "!new-slot:example.org"
+                                                      :room/name "project-B"}))
                 :update-subscriptions! (fn [client-id rooms]
                                          (swap! calls* conj [:update-subscriptions client-id rooms])
                                          (js/Promise.resolve {:rooms rooms}))
                 :send-message! (fn [room-id message opts]
                                 (swap! calls* conj [:send-message room-id (boolean (seq message)) opts])
-                                (js/Promise.resolve {:eventId "$event:example.org"}))
+                                (js/Promise.resolve {:event/id "$event:example.org"}))
                 :release-slot! (fn [client-id room-id slot]
                                  (swap! calls* conj [:release-slot client-id room-id slot])
                                  (js/Promise.resolve {:released true}))
@@ -441,13 +441,13 @@
                                       (js/Promise.resolve {}))
                 :heartbeat! (fn [client-id]
                               (swap! calls* conj [:heartbeat client-id])
-                              (js/Promise.resolve {:heartbeatSeconds 30}))
+                              (js/Promise.resolve {:heartbeat/seconds 30}))
                 :set-interval! (fn [_f _ms] :interval-2)
                 :open-event-stream! (fn [_opts client-id _on-event]
                                       (swap! calls* conj [:open-event-stream client-id])
                                       #js {:close (fn [])})
                 :list-slots! (fn [project-id]
-                               (js/Promise.resolve {:projectId project-id :slots []}))}
+                               (js/Promise.resolve {:project/id project-id :slots []}))}
           ctx #js {:cwd "/work/project"
                    :ui #js {:setStatus (fn [_id _status])}}
           pi #js {}]
@@ -470,10 +470,10 @@
           notifications* (atom [])
           deps {:read-project-config! (fn [_cwd]
                                         {:rooms {"ops" {:alias "ops"
-                                                        :roomId "!room:example.org"}}})
+                                                        :room/id "!room:example.org"}}})
                 :send-message! (fn [room-id message]
                                 (reset! sent* {:room-id room-id :message message})
-                                (js/Promise.resolve {:eventId "$event:example.org"}))}
+                                (js/Promise.resolve {:event/id "$event:example.org"}))}
           ctx #js {:cwd "/work/project"
                    :ui #js {:notify (fn [message level]
                                       (swap! notifications* conj [message level]))}}]
@@ -495,32 +495,32 @@
           intervals* (atom [])
           deps {:read-project-config! (fn [_cwd]
                                         {:rooms {"ops" {:alias "ops"
-                                                        :roomId "!room:example.org"
+                                                        :room/id "!room:example.org"
                                                         :mode "all"}}})
                 :health! (fn []
                            (swap! calls* conj [:health])
-                           (js/Promise.resolve {:matrix {:connected true
-                                                         :userId "@bot:example.org"}}))
+                           (js/Promise.resolve {:matrix/connected? true
+                                                         :user/id "@bot:example.org"}))
                 :register-client! (fn [request]
                                     (swap! calls* conj [:register request])
-                                    (js/Promise.resolve {:clientId "client-1"
-                                                         :eventStream "/v1/clients/client-1/events"
-                                                         :heartbeatSeconds 30
-                                                         :globalOperators ["@alice:example.org"]}))
+                                    (js/Promise.resolve {:client/id "client-1"
+                                                         :event-stream/path "/v1/clients/client-1/events"
+                                                         :heartbeat/seconds 30
+                                                         :matrix/global-operators ["@alice:example.org"]}))
                 :acquire-slot! (fn [client-id project invite]
                                  (swap! calls* conj [:acquire-slot client-id project invite])
                                  (js/Promise.resolve {:slot "A"
-                                                      :roomId "!slot:example.org"
-                                                      :roomName "project-A"}))
+                                                      :room/id "!slot:example.org"
+                                                      :room/name "project-A"}))
                 :update-subscriptions! (fn [client-id rooms]
                                          (swap! calls* conj [:update-subscriptions client-id rooms])
                                          (js/Promise.resolve {:rooms rooms}))
                 :send-message! (fn [room-id message opts]
                                 (swap! calls* conj [:send-message room-id message opts])
-                                (js/Promise.resolve {:eventId "$start:example.org"}))
+                                (js/Promise.resolve {:event/id "$start:example.org"}))
                 :heartbeat! (fn [client-id]
                               (swap! calls* conj [:heartbeat client-id])
-                              (js/Promise.resolve {:heartbeatSeconds 30}))
+                              (js/Promise.resolve {:heartbeat/seconds 30}))
                 :set-interval! (fn [f ms]
                                  (swap! intervals* conj {:f f :ms ms})
                                  :interval-1)
@@ -542,14 +542,14 @@
       (-> (extension/start-relay! deps pi ctx)
           (.then (fn [relay-state]
                    (is (= [[:health]
-                           [:register {:clientInstanceId "matrix-relay-/work/project"
-                                       :protocolVersion 1
-                                       :project {:root "/work/project"
-                                                 :id "project"}
+                           [:register {:client/instance-id "matrix-relay-/work/project"
+                                       :protocol/version 1
+                                       :project {:project/root "/work/project"
+                                                 :project/id "project"}
                                        :subscriptions {:rooms ["!room:example.org"]}}]
-                           [:acquire-slot "client-1" {:id "project" :displayName "project"} ["@alice:example.org"]]
+                           [:acquire-slot "client-1" {:project/id "project" :project/display-name "project"} ["@alice:example.org"]]
                            [:update-subscriptions "client-1" ["!room:example.org" "!slot:example.org"]]
-                           [:send-message "!slot:example.org" (:last-start-banner relay-state) {:clientId "client-1"}]
+                           [:send-message "!slot:example.org" (:last-start-banner relay-state) {:client/id "client-1"}]
                            [:open-event-stream "client-1" true]]
                           @calls*))
                    (is (= [{:ms 30000 :has-fn? true}]
@@ -571,36 +571,36 @@
     (let [calls* (atom [])
           deps {:read-project-config! (fn [_cwd]
                                         {:rooms {"ops" {:alias "ops"
-                                                        :roomId "!room:example.org"
+                                                        :room/id "!room:example.org"
                                                         :mode "all"}}})
                 :health! (fn []
                            (swap! calls* conj [:health])
-                           (js/Promise.resolve {:matrix {:connected true
-                                                         :userId "@bot:example.org"}}))
+                           (js/Promise.resolve {:matrix/connected? true
+                                                         :user/id "@bot:example.org"}))
                 :register-client! (fn [_request]
                                     (swap! calls* conj [:register])
-                                    (js/Promise.resolve {:clientId "client-1"
-                                                         :eventStream "/v1/clients/client-1/events"
-                                                         :heartbeatSeconds 30
-                                                         :globalOperators ["@alice:example.org"]}))
+                                    (js/Promise.resolve {:client/id "client-1"
+                                                         :event-stream/path "/v1/clients/client-1/events"
+                                                         :heartbeat/seconds 30
+                                                         :matrix/global-operators ["@alice:example.org"]}))
                 :acquire-slot! (fn [_client-id _project _invite]
                                  (swap! calls* conj [:acquire-slot])
                                  (js/Promise.resolve {:slot "A"
-                                                      :roomId "!slot:example.org"
-                                                      :roomName "project-A"}))
+                                                      :room/id "!slot:example.org"
+                                                      :room/name "project-A"}))
                 :update-subscriptions! (fn [_client-id rooms]
                                          (swap! calls* conj [:update-subscriptions rooms])
                                          (js/Promise.resolve {:rooms rooms}))
                 :get-room-delivery-mode! (fn [client-id room-id]
                                           (swap! calls* conj [:get-room-delivery-mode client-id room-id])
-                                          (js/Promise.resolve {:roomId room-id
-                                                               :defaultDeliveryMode (when (= "!slot:example.org" room-id)
+                                          (js/Promise.resolve {:room/id room-id
+                                                               :room/default-delivery-mode (when (= "!slot:example.org" room-id)
                                                                                       "steer")}))
                 :send-message! (fn [room-id _message _opts]
                                 (swap! calls* conj [:send-message room-id])
-                                (js/Promise.resolve {:eventId "$start:example.org"}))
+                                (js/Promise.resolve {:event/id "$start:example.org"}))
                 :heartbeat! (fn [_client-id]
-                              (js/Promise.resolve {:heartbeatSeconds 30}))
+                              (js/Promise.resolve {:heartbeat/seconds 30}))
                 :set-interval! (fn [_f _ms] :interval-1)
                 :open-event-stream! (fn [_opts client-id _on-event]
                                       (swap! calls* conj [:open-event-stream client-id])
@@ -632,25 +632,25 @@
           stream* (atom nil)
           deps {:read-project-config! (fn [_cwd] {})
                 :health! (fn []
-                           (js/Promise.resolve {:matrix {:connected true
-                                                         :userId "@bot:example.org"}}))
+                           (js/Promise.resolve {:matrix/connected? true
+                                                         :user/id "@bot:example.org"}))
                 :register-client! (fn [_request]
-                                    (js/Promise.resolve {:clientId "client-1"
-                                                         :heartbeatSeconds 30
-                                                         :globalOperators ["@alice:example.org"]}))
+                                    (js/Promise.resolve {:client/id "client-1"
+                                                         :heartbeat/seconds 30
+                                                         :matrix/global-operators ["@alice:example.org"]}))
                 :acquire-slot! (fn [_client-id _project _invite]
                                  (js/Promise.resolve {:slot "A"
-                                                      :roomId "!slot:example.org"
-                                                      :roomName "project-A"}))
+                                                      :room/id "!slot:example.org"
+                                                      :room/name "project-A"}))
                 :update-subscriptions! (fn [_client-id rooms]
                                          (js/Promise.resolve {:rooms rooms}))
                 :send-message! (fn [room-id message opts]
                                 (swap! sent* conj {:room-id room-id
                                                    :message message
                                                    :opts opts})
-                                (js/Promise.resolve {:eventId "$sent:example.org"}))
+                                (js/Promise.resolve {:event/id "$sent:example.org"}))
                 :heartbeat! (fn [_client-id]
-                              (js/Promise.resolve {:heartbeatSeconds 30}))
+                              (js/Promise.resolve {:heartbeat/seconds 30}))
                 :set-interval! (fn [_f _ms] :interval-1)
                 :open-event-stream! (fn [_opts _client-id on-event]
                                       (reset! stream* {:on-event on-event})
@@ -664,12 +664,12 @@
           (.then (fn [_relay-state]
                    ((:on-event @stream*)
                     {:type "matrix.message"
-                     :room {:roomId "!slot:example.org"}
-                     :event {:eventId "$status:example.org"
-                             :sender "@alice:example.org"
-                             :senderIsBot false
-                             :timestamp "2026-05-16T12:34:56Z"
-                             :text "/status"}})
+                     :room/id "!slot:example.org"
+                     :event/id "$status:example.org"
+                             :event/sender "@alice:example.org"
+                             :event/sender-is-bot? false
+                             :event/timestamp "2026-05-16T12:34:56Z"
+                             :event/text "/status"})
                    (is (str/includes? (:message (last @sent*)) "default delivery mode: follow-up (system-default)"))
                    (is (str/includes? (:message (last @sent*)) "stream: active"))
                    (done)))
@@ -685,22 +685,22 @@
           deps {:diagnostics* diagnostics*
                 :read-project-config! (fn [_cwd] {})
                 :health! (fn []
-                           (js/Promise.resolve {:matrix {:connected true
-                                                         :userId "@bot:example.org"}}))
+                           (js/Promise.resolve {:matrix/connected? true
+                                                         :user/id "@bot:example.org"}))
                 :register-client! (fn [_request]
-                                    (js/Promise.resolve {:clientId "client-1"
-                                                         :heartbeatSeconds 30
-                                                         :globalOperators ["@alice:example.org"]}))
+                                    (js/Promise.resolve {:client/id "client-1"
+                                                         :heartbeat/seconds 30
+                                                         :matrix/global-operators ["@alice:example.org"]}))
                 :acquire-slot! (fn [_client-id _project _invite]
                                  (js/Promise.resolve {:slot "A"
-                                                      :roomId "!slot:example.org"
-                                                      :roomName "project-A"}))
+                                                      :room/id "!slot:example.org"
+                                                      :room/name "project-A"}))
                 :update-subscriptions! (fn [_client-id rooms]
                                          (js/Promise.resolve {:rooms rooms}))
                 :send-message! (fn [_room-id _message _opts]
-                                (js/Promise.resolve {:eventId "$sent:example.org"}))
+                                (js/Promise.resolve {:event/id "$sent:example.org"}))
                 :heartbeat! (fn [_client-id]
-                              (js/Promise.resolve {:heartbeatSeconds 30}))
+                              (js/Promise.resolve {:heartbeat/seconds 30}))
                 :set-interval! (fn [_f _ms] :interval-1)
                 :open-event-stream! (fn [_opts _client-id on-event]
                                       (reset! stream* {:on-event on-event})
@@ -716,12 +716,12 @@
           (.then (fn [_relay-state]
                    ((:on-event @stream*)
                     {:type "matrix.message"
-                     :room {:roomId "!slot:example.org"}
-                     :event {:eventId "$event:example.org"
-                             :sender "@alice:example.org"
-                             :senderIsBot false
-                             :timestamp "2026-05-16T12:34:56Z"
-                             :text "ordinary slot prompt"}})
+                     :room/id "!slot:example.org"
+                     :event/id "$event:example.org"
+                             :event/sender "@alice:example.org"
+                             :event/sender-is-bot? false
+                             :event/timestamp "2026-05-16T12:34:56Z"
+                             :event/text "ordinary slot prompt"})
                    (is (= 1 (count @sent*)))
                    (is (str/includes? (:message (first @sent*)) "pi-matrix-relay extension error"))
                    (is (str/includes? (:message (first @sent*)) "source: broker-event"))
@@ -741,27 +741,27 @@
           deps {:read-project-config! (fn [_cwd] {})
                 :health! (fn []
                            (swap! calls* conj [:health])
-                           (js/Promise.resolve {:matrix {:connected true
-                                                         :userId "@bot:example.org"}}))
+                           (js/Promise.resolve {:matrix/connected? true
+                                                         :user/id "@bot:example.org"}))
                 :register-client! (fn [request]
                                     (swap! calls* conj [:register request])
-                                    (js/Promise.resolve {:clientId "client-1"
-                                                         :heartbeatSeconds 30
-                                                         :globalOperators ["@alice:example.org"]}))
+                                    (js/Promise.resolve {:client/id "client-1"
+                                                         :heartbeat/seconds 30
+                                                         :matrix/global-operators ["@alice:example.org"]}))
                 :acquire-slot! (fn [client-id project invite]
                                  (swap! calls* conj [:acquire-slot client-id project invite])
                                  (js/Promise.resolve {:slot "A"
-                                                      :roomId "!slot:example.org"
-                                                      :roomName "project-A"}))
+                                                      :room/id "!slot:example.org"
+                                                      :room/name "project-A"}))
                 :update-subscriptions! (fn [client-id rooms]
                                          (swap! calls* conj [:update-subscriptions client-id rooms])
                                          (js/Promise.resolve {:rooms rooms}))
                 :send-message! (fn [room-id message opts]
                                 (swap! calls* conj [:send-message room-id (boolean (seq message)) opts])
-                                (js/Promise.resolve {:eventId "$start:example.org"}))
+                                (js/Promise.resolve {:event/id "$start:example.org"}))
                 :heartbeat! (fn [client-id]
                               (swap! calls* conj [:heartbeat client-id])
-                              (js/Promise.resolve {:heartbeatSeconds 30}))
+                              (js/Promise.resolve {:heartbeat/seconds 30}))
                 :set-interval! (fn [_f _ms] :interval-1)
                 :open-event-stream! (fn [opts client-id _on-event]
                                       (swap! calls* conj [:open-event-stream client-id (fn? (:on-error opts))])
@@ -774,14 +774,14 @@
       (-> (extension/start-relay! deps pi ctx)
           (.then (fn [_relay-state]
                    (is (= [[:health]
-                           [:register {:clientInstanceId "matrix-relay-/work/project"
-                                       :protocolVersion 1
-                                       :project {:root "/work/project"
-                                                 :id "project"}
+                           [:register {:client/instance-id "matrix-relay-/work/project"
+                                       :protocol/version 1
+                                       :project {:project/root "/work/project"
+                                                 :project/id "project"}
                                        :subscriptions {:rooms []}}]
-                           [:acquire-slot "client-1" {:id "project" :displayName "project"} ["@alice:example.org"]]
+                           [:acquire-slot "client-1" {:project/id "project" :project/display-name "project"} ["@alice:example.org"]]
                            [:update-subscriptions "client-1" ["!slot:example.org"]]
-                           [:send-message "!slot:example.org" true {:clientId "client-1"}]
+                           [:send-message "!slot:example.org" true {:client/id "client-1"}]
                            [:open-event-stream "client-1" true]]
                           @calls*))
                    (is (= [["pi-matrix-relay" "matrix: slot A project-A"]]
@@ -799,7 +799,7 @@
                                    (swap! calls* conj [:clear-interval heartbeat-id]))
                 :send-message! (fn [room-id message opts]
                                 (swap! calls* conj [:send-message room-id (boolean (seq message)) opts])
-                                (js/Promise.resolve {:eventId "$end:example.org"}))
+                                (js/Promise.resolve {:event/id "$end:example.org"}))
                 :release-slot! (fn [client-id room-id slot]
                                  (swap! calls* conj [:release-slot client-id room-id slot])
                                  (js/Promise.resolve {:released true}))
@@ -807,7 +807,7 @@
                                       (swap! calls* conj [:unregister-client client-id reason])
                                       (js/Promise.resolve {}))}
           relay-state {:client-id "client-1"
-                       :project {:id "project"}
+                       :project {:project/id "project"}
                        :slot "A"
                        :room-id "!slot:example.org"
                        :room-name "project-A"
@@ -820,7 +820,7 @@
           (.then (fn [_]
                    (is (= [[:close-stream]
                            [:clear-interval :interval-1]
-                           [:send-message "!slot:example.org" true {:clientId "client-1"}]
+                           [:send-message "!slot:example.org" true {:client/id "client-1"}]
                            [:release-slot "client-1" "!slot:example.org" "A"]
                            [:unregister-client "client-1" "shutdown"]]
                           @calls*))
@@ -845,7 +845,7 @@
                                       (swap! calls* conj [:unregister-client client-id reason])
                                       (js/Promise.resolve {}))}
           relay-state {:client-id "client-1"
-                       :project {:id "project"}
+                       :project {:project/id "project"}
                        :slot "A"
                        :room-id "!slot:example.org"
                        :heartbeat-id :interval-1
@@ -879,11 +879,11 @@
                      :room-id "!slot:example.org"
                      :room-name "project-A"}
         event {:type "matrix.message"
-               :room {:roomId "!slot:example.org"}
-               :event {:eventId "$slot-event:example.org"
-                       :sender "@alice:example.org"
-                       :timestamp "2026-05-16T12:34:56Z"
-                       :text "no bot mention needed in slot rooms"}}]
+               :room/id "!slot:example.org"
+               :event/id "$slot-event:example.org"
+                       :event/sender "@alice:example.org"
+                       :event/timestamp "2026-05-16T12:34:56Z"
+                       :event/text "no bot mention needed in slot rooms"}]
     (extension/handle-broker-event! {} pi ctx relay-state event)
     (is (= 1 (count @sent*)))
     (is (str/includes? (:message (first @sent*)) "Matrix project-A from @alice:example.org at 12:34:56Z"))
@@ -904,11 +904,11 @@
                      :room-name "project-A"
                      :pending-auto-replies* pending*}
         event {:type "matrix.message"
-               :room {:roomId "!slot:example.org"}
-               :event {:eventId "$slot-event:example.org"
-                       :sender "@alice:example.org"
-                       :timestamp "2026-05-16T12:34:56Z"
-                       :text "please respond"}}]
+               :room/id "!slot:example.org"
+               :event/id "$slot-event:example.org"
+                       :event/sender "@alice:example.org"
+                       :event/timestamp "2026-05-16T12:34:56Z"
+                       :event/text "please respond"}]
     (extension/handle-broker-event! {} pi ctx relay-state event)
     (is (= 1 (count @sent*)))
     (is (= [{:room-id "!slot:example.org"
@@ -923,17 +923,17 @@
         ctx #js {:cwd "/work/project"
                  :isIdle (fn [] true)}
         relay-state {:project-config {:rooms {"ops" {:alias "ops"
-                                                      :roomId "!room:example.org"
+                                                      :room/id "!room:example.org"
                                                       :mode "all"}}}
                      :global-operators #{"@alice:example.org"}
                      :bot-user-id "@bot:example.org"
                      :pending-auto-replies* pending*}
         event {:type "matrix.message"
-               :room {:roomId "!room:example.org"}
-               :event {:eventId "$project-event:example.org"
-                       :sender "@alice:example.org"
-                       :timestamp "2026-05-16T12:34:56Z"
-                       :text "project prompt"}}]
+               :room/id "!room:example.org"
+               :event/id "$project-event:example.org"
+                       :event/sender "@alice:example.org"
+                       :event/timestamp "2026-05-16T12:34:56Z"
+                       :event/text "project prompt"}]
     (extension/handle-broker-event! {} pi ctx relay-state event)
     (is (= 1 (count @sent*)))
     (is (= [] @pending*))))
@@ -956,11 +956,11 @@
                      :room-name "project-A"
                      :pending-auto-replies* pending*}
         event {:type "matrix.message"
-               :room {:roomId "!slot:example.org"}
-               :event {:eventId "$slot-event:example.org"
-                       :sender "@alice:example.org"
-                       :timestamp "2026-05-16T12:34:56Z"
-                       :text "please respond"}}]
+               :room/id "!slot:example.org"
+               :event/id "$slot-event:example.org"
+                       :event/sender "@alice:example.org"
+                       :event/timestamp "2026-05-16T12:34:56Z"
+                       :event/text "please respond"}]
     (with-redefs [config/default-delivery-mode "reject"]
       (extension/handle-broker-event! {} pi ctx relay-state event))
     (is (= [] @sent*))
@@ -995,7 +995,7 @@
                  :isIdle (fn [] true)}
         relay-state {:client-id "client-1"
                      :project-config {}
-                     :project {:id "project"}
+                     :project {:project/id "project"}
                      :global-operators #{"@alice:example.org"}
                      :bot-user-id "@bot:example.org"
                      :slot "A"
@@ -1007,18 +1007,18 @@
                               (swap! acks* conj {:room-id room-id
                                                  :message message
                                                  :opts opts})
-                              (js/Promise.resolve {:eventId "$ack:example.org"}))}
+                              (js/Promise.resolve {:event/id "$ack:example.org"}))}
         event {:type "matrix.message"
-               :room {:roomId "!slot:example.org"}
-               :event {:eventId "$status:example.org"
-                       :sender "@alice:example.org"
-                       :timestamp "2026-05-16T12:34:56Z"
-                       :text "//status"}}]
+               :room/id "!slot:example.org"
+               :event/id "$status:example.org"
+                       :event/sender "@alice:example.org"
+                       :event/timestamp "2026-05-16T12:34:56Z"
+                       :event/text "//status"}]
     (extension/handle-broker-event! deps pi ctx relay-state event)
     (is (= [] @sent*))
     (is (= 1 (count @acks*)))
-    (is (= {:clientId "client-1"
-            :replyToEventId "$status:example.org"}
+    (is (= {:client/id "client-1"
+            :reply-to/event-id "$status:example.org"}
            (:opts (first @acks*))))
     (is (str/includes? (:message (first @acks*)) "pi-matrix-relay status"))
     (is (str/includes? (:message (first @acks*)) "slot: A project-A"))
@@ -1055,7 +1055,7 @@
                  :isIdle (fn [] true)}
         relay-state {:client-id "client-1"
                      :project-config {}
-                     :project {:id "project"}
+                     :project {:project/id "project"}
                      :global-operators #{"@alice:example.org"}
                      :bot-user-id "@bot:example.org"
                      :slot "A"
@@ -1067,13 +1067,13 @@
                               (swap! acks* conj {:room-id room-id
                                                  :message message
                                                  :opts opts})
-                              (js/Promise.resolve {:eventId "$ack:example.org"}))}
+                              (js/Promise.resolve {:event/id "$ack:example.org"}))}
         event {:type "matrix.message"
-               :room {:roomId "!slot:example.org"}
-               :event {:eventId "$status:example.org"
-                       :sender "@alice:example.org"
-                       :timestamp "2026-05-16T12:34:56Z"
-                       :text "/status"}}]
+               :room/id "!slot:example.org"
+               :event/id "$status:example.org"
+                       :event/sender "@alice:example.org"
+                       :event/timestamp "2026-05-16T12:34:56Z"
+                       :event/text "/status"}]
     (try
       (extension/handle-broker-event! deps pi ctx relay-state event)
       (catch js/Error err
@@ -1093,7 +1093,7 @@
                  :isIdle (fn [] true)}
         relay-state {:client-id "client-1"
                      :project-config {}
-                     :project {:id "project"}
+                     :project {:project/id "project"}
                      :global-operators #{"@alice:example.org"}
                      :bot-user-id "@bot:example.org"
                      :slot "A"
@@ -1105,13 +1105,13 @@
                               (swap! acks* conj {:room-id room-id
                                                  :message message
                                                  :opts opts})
-                              (js/Promise.resolve {:eventId "$ack:example.org"}))}
+                              (js/Promise.resolve {:event/id "$ack:example.org"}))}
         event {:type "matrix.message"
-               :room {:roomId "!slot:example.org"}
-               :event {:eventId "$status:example.org"
-                       :sender "@alice:example.org"
-                       :timestamp "2026-05-16T12:34:56Z"
-                       :text "/status"}}]
+               :room/id "!slot:example.org"
+               :event/id "$status:example.org"
+                       :event/sender "@alice:example.org"
+                       :event/timestamp "2026-05-16T12:34:56Z"
+                       :event/text "/status"}]
     (extension/handle-broker-event! deps pi ctx relay-state event)
     (is (str/includes? (:message (first @acks*)) "default delivery mode: steer (broker)"))))
 
@@ -1135,7 +1135,7 @@
                  :isIdle (fn [] true)}
         relay-state {:client-id "client-1"
                      :project-config {}
-                     :project {:id "project"}
+                     :project {:project/id "project"}
                      :global-operators #{"@alice:example.org"}
                      :bot-user-id "@bot:example.org"
                      :slot "A"
@@ -1147,13 +1147,13 @@
                               (swap! acks* conj {:room-id room-id
                                                  :message message
                                                  :opts opts})
-                              (js/Promise.resolve {:eventId "$ack:example.org"}))}
+                              (js/Promise.resolve {:event/id "$ack:example.org"}))}
         event {:type "matrix.message"
-               :room {:roomId "!slot:example.org"}
-               :event {:eventId "$status:example.org"
-                       :sender "@alice:example.org"
-                       :timestamp "2026-05-16T12:34:56Z"
-                       :text "/status"}}]
+               :room/id "!slot:example.org"
+               :event/id "$status:example.org"
+                       :event/sender "@alice:example.org"
+                       :event/timestamp "2026-05-16T12:34:56Z"
+                       :event/text "/status"}]
     (try
       (extension/handle-broker-event! deps pi ctx relay-state event)
       (catch js/Error err
@@ -1186,13 +1186,13 @@
                               (swap! acks* conj {:room-id room-id
                                                  :message message
                                                  :opts opts})
-                              (js/Promise.resolve {:eventId "$ack:example.org"}))}
+                              (js/Promise.resolve {:event/id "$ack:example.org"}))}
         event {:type "matrix.message"
-               :room {:roomId "!slot:example.org"}
-               :event {:eventId "$abort:example.org"
-                       :sender "@alice:example.org"
-                       :timestamp "2026-05-16T12:34:56Z"
-                       :text "/abort"}}]
+               :room/id "!slot:example.org"
+               :event/id "$abort:example.org"
+                       :event/sender "@alice:example.org"
+                       :event/timestamp "2026-05-16T12:34:56Z"
+                       :event/text "/abort"}]
     (try
       (extension/handle-broker-event! deps pi ctx relay-state event)
       (catch js/Error err
@@ -1200,8 +1200,8 @@
     (is (nil? @thrown*) (some-> @thrown* .-message))
     (is (= 1 (count @acks*)))
     (is (str/includes? (:message (first @acks*)) "Remote command /abort failed: abort failed"))
-    (is (= {:clientId "client-1"
-            :replyToEventId "$abort:example.org"}
+    (is (= {:client/id "client-1"
+            :reply-to/event-id "$abort:example.org"}
            (:opts (first @acks*))))
     (is (= 1 (count @sent*)))
     (is (str/includes? (:message (first @sent*)) "pi-matrix-relay extension error"))
@@ -1234,13 +1234,13 @@
                               (swap! acks* conj {:room-id room-id
                                                  :message message
                                                  :opts opts})
-                              (js/Promise.resolve {:eventId "$ack:example.org"}))}
+                              (js/Promise.resolve {:event/id "$ack:example.org"}))}
         event {:type "matrix.message"
-               :room {:roomId "!slot:example.org"}
-               :event {:eventId "$abort:example.org"
-                       :sender "@alice:example.org"
-                       :timestamp "2026-05-16T12:34:56Z"
-                       :text "/abort"}}]
+               :room/id "!slot:example.org"
+               :event/id "$abort:example.org"
+                       :event/sender "@alice:example.org"
+                       :event/timestamp "2026-05-16T12:34:56Z"
+                       :event/text "/abort"}]
     (extension/handle-broker-event! deps pi ctx relay-state event)
     (is (= 1 (count @acks*)))
     (is (str/includes? (:message (first @acks*)) "Remote command /abort failed: abort failed"))
@@ -1267,13 +1267,13 @@
                               (swap! acks* conj {:room-id room-id
                                                  :message message
                                                  :opts opts})
-                              (js/Promise.resolve {:eventId "$ack:example.org"}))}
+                              (js/Promise.resolve {:event/id "$ack:example.org"}))}
         event {:type "matrix.message"
-               :room {:roomId "!slot:example.org"}
-               :event {:eventId "$steer:example.org"
-                       :sender "@alice:example.org"
-                       :timestamp "2026-05-16T12:34:56Z"
-                       :text "/steer focus on the failing test"}}]
+               :room/id "!slot:example.org"
+               :event/id "$steer:example.org"
+                       :event/sender "@alice:example.org"
+                       :event/timestamp "2026-05-16T12:34:56Z"
+                       :event/text "/steer focus on the failing test"}]
     (extension/handle-broker-event! deps pi ctx relay-state event)
     (is (= 1 (count @sent*)))
     (is (str/includes? (:message (first @sent*)) "focus on the failing test"))
@@ -1304,13 +1304,13 @@
                               (swap! acks* conj {:room-id room-id
                                                  :message message
                                                  :opts opts})
-                              (js/Promise.resolve {:eventId "$ack:example.org"}))}
+                              (js/Promise.resolve {:event/id "$ack:example.org"}))}
         event {:type "matrix.message"
-               :room {:roomId "!slot:example.org"}
-               :event {:eventId "$follow-up:example.org"
-                       :sender "@alice:example.org"
-                       :timestamp "2026-05-16T12:34:56Z"
-                       :text "/follow-up run the next check"}}]
+               :room/id "!slot:example.org"
+               :event/id "$follow-up:example.org"
+                       :event/sender "@alice:example.org"
+                       :event/timestamp "2026-05-16T12:34:56Z"
+                       :event/text "/follow-up run the next check"}]
     (extension/handle-broker-event! deps pi ctx relay-state event)
     (is (= 1 (count @sent*)))
     (is (str/includes? (:message (first @sent*)) "run the next check"))
@@ -1343,25 +1343,25 @@
                                                            :room-id room-id
                                                            :mode mode
                                                            :updated-by-user updated-by-user})
-                                          (js/Promise.resolve {:roomId room-id
-                                                               :defaultDeliveryMode mode}))
+                                          (js/Promise.resolve {:room/id room-id
+                                                               :room/default-delivery-mode mode}))
                 :send-message! (fn [room-id message opts]
                                 (swap! acks* conj {:room-id room-id
                                                    :message message
                                                    :opts opts})
-                                (js/Promise.resolve {:eventId "$ack:example.org"}))}
+                                (js/Promise.resolve {:event/id "$ack:example.org"}))}
           steer-event {:type "matrix.message"
-                       :room {:roomId "!slot:example.org"}
-                       :event {:eventId "$set-steer:example.org"
-                               :sender "@alice:example.org"
-                               :timestamp "2026-05-16T12:34:56Z"
-                               :text "/steer"}}
+                       :room/id "!slot:example.org"
+                       :event/id "$set-steer:example.org"
+                               :event/sender "@alice:example.org"
+                               :event/timestamp "2026-05-16T12:34:56Z"
+                               :event/text "/steer"}
           prompt-event {:type "matrix.message"
-                        :room {:roomId "!slot:example.org"}
-                        :event {:eventId "$next:example.org"
-                                :sender "@alice:example.org"
-                                :timestamp "2026-05-16T12:34:57Z"
-                                :text "ordinary slot prompt"}}]
+                        :room/id "!slot:example.org"
+                        :event/id "$next:example.org"
+                                :event/sender "@alice:example.org"
+                                :event/timestamp "2026-05-16T12:34:57Z"
+                                :event/text "ordinary slot prompt"}]
       (-> (js/Promise.resolve (extension/handle-broker-event! deps pi ctx relay-state steer-event))
           (.then (fn [_]
                    (is (= {:client-id "client-1"
@@ -1401,20 +1401,20 @@
                        :pending-auto-replies* (atom [])}
           deps {:set-room-delivery-mode! (fn [_client-id room-id mode _updated-by-user]
                                           (swap! persisted* conj mode)
-                                          (js/Promise.resolve {:roomId room-id
-                                                               :defaultDeliveryMode mode}))
+                                          (js/Promise.resolve {:room/id room-id
+                                                               :room/default-delivery-mode mode}))
                 :send-message! (fn [room-id message opts]
                                 (swap! acks* conj {:room-id room-id
                                                    :message message
                                                    :opts opts})
-                                (js/Promise.resolve {:eventId "$ack:example.org"}))}
+                                (js/Promise.resolve {:event/id "$ack:example.org"}))}
           event-for (fn [event-id text]
                       {:type "matrix.message"
-                       :room {:roomId "!slot:example.org"}
-                       :event {:eventId event-id
-                               :sender "@alice:example.org"
-                               :timestamp "2026-05-16T12:34:56Z"
-                               :text text}})]
+                       :room/id "!slot:example.org"
+                       :event/id event-id
+                               :event/sender "@alice:example.org"
+                               :event/timestamp "2026-05-16T12:34:56Z"
+                               :event/text text})]
       (-> (js/Promise.resolve (extension/handle-broker-event! deps pi ctx relay-state (event-for "$follow" "/follow-up")))
           (.then (fn [_]
                    (extension/handle-broker-event! deps pi ctx relay-state (event-for "$reject" "/reject"))))
@@ -1450,13 +1450,13 @@
                                 (swap! acks* conj {:room-id room-id
                                                    :message message
                                                    :opts opts})
-                                (js/Promise.resolve {:eventId "$ack:example.org"}))}
+                                (js/Promise.resolve {:event/id "$ack:example.org"}))}
           event {:type "matrix.message"
-                 :room {:roomId "!slot:example.org"}
-                 :event {:eventId "$set-steer:example.org"
-                         :sender "@alice:example.org"
-                         :timestamp "2026-05-16T12:34:56Z"
-                         :text "/follow-up"}}]
+                 :room/id "!slot:example.org"
+                 :event/id "$set-steer:example.org"
+                         :event/sender "@alice:example.org"
+                         :event/timestamp "2026-05-16T12:34:56Z"
+                         :event/text "/follow-up"}]
       (-> (js/Promise.resolve (extension/handle-broker-event! deps pi ctx relay-state event))
           (.then (fn [_]
                    (is (= {"!slot:example.org" {:delivery-mode "steer" :source "broker"}}
@@ -1486,18 +1486,18 @@
                               (swap! acks* conj {:room-id room-id
                                                  :message message
                                                  :opts opts})
-                              (js/Promise.resolve {:eventId "$ack:example.org"}))}
+                              (js/Promise.resolve {:event/id "$ack:example.org"}))}
         event {:type "matrix.message"
-               :room {:roomId "!slot:example.org"}
-               :event {:eventId "$abort:example.org"
-                       :sender "@alice:example.org"
-                       :timestamp "2026-05-16T12:34:56Z"
-                       :text "/abort"}}]
+               :room/id "!slot:example.org"
+               :event/id "$abort:example.org"
+                       :event/sender "@alice:example.org"
+                       :event/timestamp "2026-05-16T12:34:56Z"
+                       :event/text "/abort"}]
     (extension/handle-broker-event! deps pi ctx relay-state event)
     (is (true? @aborted?))
     (is (str/includes? (:message (first @acks*)) "Abort requested"))
-    (is (= {:clientId "client-1"
-            :replyToEventId "$abort:example.org"}
+    (is (= {:client/id "client-1"
+            :reply-to/event-id "$abort:example.org"}
            (:opts (first @acks*))))))
 
 (deftest matrix-compact-command-starts-compaction-and-reports-completion
@@ -1527,13 +1527,13 @@
                               (swap! acks* conj {:room-id room-id
                                                  :message message
                                                  :opts opts})
-                              (js/Promise.resolve {:eventId "$ack:example.org"}))}
+                              (js/Promise.resolve {:event/id "$ack:example.org"}))}
         event {:type "matrix.message"
-               :room {:roomId "!slot:example.org"}
-               :event {:eventId "$compact:example.org"
-                       :sender "@alice:example.org"
-                       :timestamp "2026-05-16T12:34:56Z"
-                       :text "/compact focus on matrix relay changes"}}]
+               :room/id "!slot:example.org"
+               :event/id "$compact:example.org"
+                       :event/sender "@alice:example.org"
+                       :event/timestamp "2026-05-16T12:34:56Z"
+                       :event/text "/compact focus on matrix relay changes"}]
     (extension/handle-broker-event! deps pi ctx relay-state event)
     (is (some? @compact-options*))
     (is (= "focus on matrix relay changes" (.-customInstructions ^js @compact-options*)))
@@ -1568,13 +1568,13 @@
                               (swap! acks* conj {:room-id room-id
                                                  :message message
                                                  :opts opts})
-                              (js/Promise.resolve {:eventId "$ack:example.org"}))}
+                              (js/Promise.resolve {:event/id "$ack:example.org"}))}
         event {:type "matrix.message"
-               :room {:roomId "!slot:example.org"}
-               :event {:eventId "$compact:example.org"
-                       :sender "@alice:example.org"
-                       :timestamp "2026-05-16T12:34:56Z"
-                       :text "/compact"}}]
+               :room/id "!slot:example.org"
+               :event/id "$compact:example.org"
+                       :event/sender "@alice:example.org"
+                       :event/timestamp "2026-05-16T12:34:56Z"
+                       :event/text "/compact"}]
     (extension/handle-broker-event! deps pi ctx relay-state event)
     (is (false? @compact-called?))
     (is (str/includes? (:message (first @acks*)) "Nothing to compact"))))
@@ -1599,13 +1599,13 @@
                               (swap! acks* conj {:room-id room-id
                                                  :message message
                                                  :opts opts})
-                              (js/Promise.resolve {:eventId "$ack:example.org"}))}
+                              (js/Promise.resolve {:event/id "$ack:example.org"}))}
         event {:type "matrix.message"
-               :room {:roomId "!slot:example.org"}
-               :event {:eventId "$new:example.org"
-                       :sender "@alice:example.org"
-                       :timestamp "2026-05-16T12:34:56Z"
-                       :text "/new"}}]
+               :room/id "!slot:example.org"
+               :event/id "$new:example.org"
+                       :event/sender "@alice:example.org"
+                       :event/timestamp "2026-05-16T12:34:56Z"
+                       :event/text "/new"}]
     (extension/handle-broker-event! deps pi ctx relay-state event)
     (is (= 1 (count @sent*)))
     (is (str/starts-with? (:message (first @sent*)) "/matrix-relay __new-session "))
@@ -1616,8 +1616,8 @@
              (select-keys (get @pending* request-id) [:room-id :event-id]))))
     (is (= 1 (count @acks*)))
     (is (str/includes? (:message (first @acks*)) "New session requested"))
-    (is (= {:clientId "client-1"
-            :replyToEventId "$new:example.org"}
+    (is (= {:client/id "client-1"
+            :reply-to/event-id "$new:example.org"}
            (:opts (first @acks*))))))
 
 (deftest matrix-new-command-reports-when-command-bridge-is-unavailable
@@ -1636,13 +1636,13 @@
                               (swap! acks* conj {:room-id room-id
                                                  :message message
                                                  :opts opts})
-                              (js/Promise.resolve {:eventId "$ack:example.org"}))}
+                              (js/Promise.resolve {:event/id "$ack:example.org"}))}
         event {:type "matrix.message"
-               :room {:roomId "!slot:example.org"}
-               :event {:eventId "$new:example.org"
-                       :sender "@alice:example.org"
-                       :timestamp "2026-05-16T12:34:56Z"
-                       :text "/new"}}]
+               :room/id "!slot:example.org"
+               :event/id "$new:example.org"
+                       :event/sender "@alice:example.org"
+                       :event/timestamp "2026-05-16T12:34:56Z"
+                       :event/text "/new"}]
     (extension/handle-broker-event! deps pi ctx relay-state event)
     (is (str/includes? (:message (first @acks*)) "New session cannot be queued"))))
 
@@ -1658,7 +1658,7 @@
                                 (swap! acks* conj {:room-id room-id
                                                    :message message
                                                    :opts opts})
-                                (js/Promise.resolve {:eventId "$ack:example.org"}))}
+                                (js/Promise.resolve {:event/id "$ack:example.org"}))}
           ctx #js {:cwd "/work/project"
                    :waitForIdle (fn []
                                   (reset! wait-called? true)
@@ -1675,7 +1675,7 @@
                    (is (= {} @pending*))
                    (is (= [{:room-id "!slot:example.org"
                             :message "New session started."
-                            :opts {:replyToEventId "$new:example.org"}}]
+                            :opts {:reply-to/event-id "$new:example.org"}}]
                           @acks*))
                    (done)))
           (.catch (fn [err]
@@ -1692,7 +1692,7 @@
                                 (swap! acks* conj {:room-id room-id
                                                    :message message
                                                    :opts opts})
-                                (js/Promise.resolve {:eventId "$ack:example.org"}))}
+                                (js/Promise.resolve {:event/id "$ack:example.org"}))}
           ctx #js {:cwd "/work/project"
                    :waitForIdle (fn []
                                   (js/Promise.resolve nil))
@@ -1702,7 +1702,7 @@
           (.then (fn [_]
                    (is (= [{:room-id "!slot:example.org"
                             :message "New session cancelled."
-                            :opts {:replyToEventId "$new:example.org"}}]
+                            :opts {:reply-to/event-id "$new:example.org"}}]
                           @acks*))
                    (done)))
           (.catch (fn [err]
@@ -1718,7 +1718,7 @@
                                 (swap! sent* conj {:room-id room-id
                                                    :message message
                                                    :opts opts})
-                                (js/Promise.resolve {:eventId "$reply:example.org"}))}
+                                (js/Promise.resolve {:event/id "$reply:example.org"}))}
           relay-state {:client-id "client-1"
                        :pending-auto-replies* pending*}
           event {:messages [{:role "user" :content "prompt"}
@@ -1729,8 +1729,8 @@
           (.then (fn [_]
                    (is (= [{:room-id "!slot:example.org"
                             :message "Final answer"
-                            :opts {:clientId "client-1"
-                                   :replyToEventId "$slot-event:example.org"}}]
+                            :opts {:client/id "client-1"
+                                   :reply-to/event-id "$slot-event:example.org"}}]
                           @sent*))
                    (is (= [] @pending*))
                    (done)))
@@ -1794,18 +1794,18 @@
                      :room-id "!slot:example.org"
                      :room-name "project-A"}]
     (doseq [event [{:type "matrix.message"
-                    :room {:roomId "!slot:example.org"}
-                    :event {:eventId "$bot:example.org"
-                            :sender "@bot:example.org"
-                            :senderIsBot true
-                            :timestamp "2026-05-16T12:34:56Z"
-                            :text "bot echo"}}
+                    :room/id "!slot:example.org"
+                    :event/id "$bot:example.org"
+                            :event/sender "@bot:example.org"
+                            :event/sender-is-bot? true
+                            :event/timestamp "2026-05-16T12:34:56Z"
+                            :event/text "bot echo"}
                    {:type "matrix.message"
-                    :room {:roomId "!slot:example.org"}
-                    :event {:eventId "$mallory:example.org"
-                            :sender "@mallory:example.org"
-                            :timestamp "2026-05-16T12:34:56Z"
-                            :text "unauthorized"}}]]
+                    :room/id "!slot:example.org"
+                    :event/id "$mallory:example.org"
+                            :event/sender "@mallory:example.org"
+                            :event/timestamp "2026-05-16T12:34:56Z"
+                            :event/text "unauthorized"}]]
       (extension/handle-broker-event! {} pi ctx relay-state event))
     (is (= [] @sent*))))
 
@@ -1816,7 +1816,7 @@
         ctx #js {:cwd "/work/project"
                  :isIdle (fn [] true)}
         relay-state {:project-config {:rooms {"ops" {:alias "ops"
-                                                      :roomId "!room:example.org"
+                                                      :room/id "!room:example.org"
                                                       :mode "mentions"}}}
                      :global-operators #{"@alice:example.org"}
                      :bot-user-id "@bot:example.org"}]
@@ -1826,22 +1826,22 @@
      ctx
      relay-state
      {:type "matrix.message"
-      :room {:roomId "!room:example.org"}
-      :event {:eventId "$ignored:example.org"
-              :sender "@alice:example.org"
-              :timestamp "2026-05-16T12:34:56Z"
-              :text "ordinary project chatter"}})
+      :room/id "!room:example.org"
+      :event/id "$ignored:example.org"
+              :event/sender "@alice:example.org"
+              :event/timestamp "2026-05-16T12:34:56Z"
+              :event/text "ordinary project chatter"})
     (extension/handle-broker-event!
      {}
      pi
      ctx
      relay-state
      {:type "matrix.message"
-      :room {:roomId "!room:example.org"}
-      :event {:eventId "$mentioned:example.org"
-              :sender "@alice:example.org"
-              :timestamp "2026-05-16T12:34:57Z"
-              :text "@bot please inspect this"}})
+      :room/id "!room:example.org"
+      :event/id "$mentioned:example.org"
+              :event/sender "@alice:example.org"
+              :event/timestamp "2026-05-16T12:34:57Z"
+              :event/text "@bot please inspect this"})
     (is (= 1 (count @sent*)))
     (is (str/includes? (first @sent*) "@bot please inspect this"))))
 
@@ -1856,16 +1856,16 @@
                  :ui #js {:notify (fn [message level]
                                     (swap! notifications* conj [message level]))}}
         relay-state {:project-config {:rooms {"ops" {:alias "ops"
-                                                      :roomId "!room:example.org"
+                                                      :room/id "!room:example.org"
                                                       :mode "all"}}}
                      :global-operators #{"@alice:example.org"}
                      :bot-user-id "@bot:example.org"}
         event {:type "matrix.message"
-               :room {:roomId "!room:example.org"}
-               :event {:eventId "$event:example.org"
-                       :sender "@alice:example.org"
-                       :timestamp "2026-05-16T12:34:56Z"
-                       :text "please check status"}}]
+               :room/id "!room:example.org"
+               :event/id "$event:example.org"
+                       :event/sender "@alice:example.org"
+                       :event/timestamp "2026-05-16T12:34:56Z"
+                       :event/text "please check status"}]
     (extension/handle-broker-event! {} pi ctx relay-state event)
     (is (= 1 (count @sent*)))
     (is (str/includes? (:message (first @sent*)) "Matrix ops from @alice:example.org at 12:34:56Z"))
@@ -1883,17 +1883,17 @@
         ctx #js {:cwd "/work/project"
                  :isIdle (fn [] true)}
         relay-state {:project-config {:rooms {"ops" {:alias "ops"
-                                                      :roomId "!room:example.org"
+                                                      :room/id "!room:example.org"
                                                       :mode "all"}}}
                      :global-operators #{"@alice:example.org"}
                      :bot-user-id "@bot:example.org"}
         event {:type "matrix.reaction"
-               :room {:roomId "!room:example.org"}
-               :event {:eventId "$reaction:example.org"
-                       :sender "@alice:example.org"
-                       :timestamp "2026-05-16T12:34:56Z"
-                       :reactsToEventId "$event:example.org"
-                       :key "👍"}}]
+               :room/id "!room:example.org"
+               :event/id "$reaction:example.org"
+                       :event/sender "@alice:example.org"
+                       :event/timestamp "2026-05-16T12:34:56Z"
+                       :event/reacts-to-id "$event:example.org"
+                       :reaction/key "👍"}]
     (extension/handle-broker-event! {} pi ctx relay-state event)
     (is (= 1 (count @sent*)))
     (is (str/includes? (:message (first @sent*)) "Matrix reaction in ops from @alice:example.org at 12:34:56Z"))
@@ -1906,20 +1906,20 @@
                                    (swap! sent* conj message))}
         ctx #js {:cwd "/work/project"
                  :isIdle (fn [] true)}
-        relay-state {:project-config {:rooms [{:name "Shared"
-                                               :roomId "!first:example.org"
+        relay-state {:project-config {:rooms [{:room/name "Shared"
+                                               :room/id "!first:example.org"
                                                :mode "all"}
-                                              {:name "Shared"
-                                               :roomId "!second:example.org"
+                                              {:room/name "Shared"
+                                               :room/id "!second:example.org"
                                                :mode "all"}]}
                      :global-operators #{"@alice:example.org"}
                      :bot-user-id "@bot:example.org"}
         event {:type "matrix.message"
-               :room {:roomId "!first:example.org"}
-               :event {:eventId "$event:example.org"
-                       :sender "@alice:example.org"
-                       :timestamp "2026-05-16T12:34:56+02:00"
-                       :text "hello from ambiguous room"}}]
+               :room/id "!first:example.org"
+               :event/id "$event:example.org"
+                       :event/sender "@alice:example.org"
+                       :event/timestamp "2026-05-16T12:34:56+02:00"
+                       :event/text "hello from ambiguous room"}]
     (extension/handle-broker-event! {} pi ctx relay-state event)
     (is (= 1 (count @sent*)))
     (is (str/includes? (first @sent*) "Matrix Shared from @alice:example.org at 12:34:56+02:00"))
@@ -1932,14 +1932,14 @@
         ctx #js {:cwd "/work/project"
                  :isIdle (fn [] true)}
         relay-state {:project-config {:rooms {"ops" {:alias "ops"
-                                                      :roomId "!room:example.org"
+                                                      :room/id "!room:example.org"
                                                       :mode "all"}}}
                      :global-operators #{"@alice:example.org"}}
         event {:type "matrix.message"
-               :room {:roomId "!room:example.org"}
-               :event {:eventId "$event:example.org"
-                       :sender "@mallory:example.org"
-                       :timestamp "2026-05-16T12:34:56Z"
-                       :text "please check status"}}]
+               :room/id "!room:example.org"
+               :event/id "$event:example.org"
+                       :event/sender "@mallory:example.org"
+                       :event/timestamp "2026-05-16T12:34:56Z"
+                       :event/text "please check status"}]
     (extension/handle-broker-event! {} pi ctx relay-state event)
     (is (= [] @sent*))))

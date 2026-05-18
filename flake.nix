@@ -49,8 +49,8 @@
             };
           in
           pkgs.stdenv.mkDerivation {
-            pname = "TODO";
-            version = "0.0.TODO";
+            pname = "pi-matrix-relay";
+            version = "0.0.1";
             src = ./.;
             nativeBuildInputs = [
               clojure

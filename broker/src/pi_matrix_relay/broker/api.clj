@@ -1,22 +1,24 @@
 (ns pi-matrix-relay.broker.api
-  (:require [clojure.string :as str]
-            [org.httpkit.server :as hk]
+  (:require [org.httpkit.server :as hk]
+            [muuntaja.core :as m]
+            [muuntaja.middleware :as muuntaja-middleware]
             [reitit.ring :as ring]
             [ring.middleware.params :refer [wrap-params]]
             [pi-matrix-relay.broker.api.presenters :as present]
             [pi-matrix-relay.broker.db :as broker-db]
             [pi-matrix-relay.broker.events :as events]
-            [pi-matrix-relay.broker.json :as json]
+            [pi-matrix-relay.broker.response :as response]
             [pi-matrix-relay.broker.matrix :as matrix]
             [pi-matrix-relay.broker.runtime :as runtime]
             [pi-matrix-relay.broker.store :as store]))
 
+(def http-format
+  (m/create
+   (m/select-formats m/default-options ["application/edn"])))
+
 (defn- body-params
   [request]
-  (or (:json-params request)
-      (when (:body request)
-        (json/read-json (:body request)))
-      {}))
+  (or (:body-params request) {}))
 
 (defn- ex-response
   [throwable]
@@ -37,15 +39,7 @@
                  :request_in_progress 409
                  :matrix_http_failed 502
                  500)]
-    (json/error-response status code (ex-message throwable) (dissoc data :code))))
-
-(defn wrap-json-body
-  [handler]
-  (fn [request]
-    (handler
-     (if (and (:body request) (not (:json-params request)))
-       (assoc request :json-params (body-params request))
-       request))))
+    (response/error-response status code (ex-message throwable) (dissoc data :code))))
 
 (defn wrap-errors
   [handler]
@@ -55,15 +49,15 @@
       (catch clojure.lang.ExceptionInfo ex
         (ex-response ex))
       (catch Throwable ex
-        (json/error-response 500 :internal_error (or (ex-message ex) "Internal broker error") {})))))
+        (response/error-response 500 :internal_error (or (ex-message ex) "Internal broker error") {})))))
 
 (defn- client-id-param
   [request]
-  (get-in request [:path-params :clientId]))
+  (get-in request [:path-params :client-id]))
 
 (defn- request-id
   [request]
-  (:requestId (body-params request)))
+  (:request/id (body-params request)))
 
 (def retry-after-ms
   {:default 1000
@@ -72,7 +66,7 @@
 (defn- idempotent!
   [{:keys [db-conn]} operation request thunk]
   (if-let [rid (request-id request)]
-    (let [payload (dissoc (body-params request) :requestId)
+    (let [payload (dissoc (body-params request) :request/id)
           owner-id (random-uuid)
           reservation (store/reserve-request!
                        db-conn
@@ -92,19 +86,19 @@
         :pending (throw (ex-info "Request is still in progress. Retry later."
                                  {:code :request_in_progress
                                   :request-id rid
-                                  :retryAfterMs (:retry-after-ms reservation)}))
+                                  :retry-after-ms (:retry-after-ms reservation)}))
         reservation))
     (thunk)))
 
 (defn health-handler
   [{:keys [matrix-gateway]}]
   (fn [_]
-    (json/ok-response (matrix/health matrix-gateway))))
+    (response/ok-response (matrix/health matrix-gateway))))
 
 (defn register-client-handler
   [{:keys [db-conn config] :as env}]
   (fn [request]
-    (json/ok-response
+    (response/ok-response
      (idempotent!
       env :client/register request
       #(present/client-registration
@@ -119,12 +113,12 @@
   (fn [request]
     (let [client-id (client-id-param request)
           body (body-params request)]
-      (json/ok-response (present/subscriptions
-                         (store/update-subscriptions! db-conn client-id (:rooms body)))))))
+      (response/ok-response (present/subscriptions
+                             (store/update-subscriptions! db-conn client-id (:rooms body)))))))
 
 (defn- room-id-param
   [request]
-  (get-in request [:path-params :roomId]))
+  (get-in request [:path-params :room-id]))
 
 (defn- ensure-room-delivery-mode-authorized!
   [db client-id room-id]
@@ -140,8 +134,8 @@
     (let [client-id (client-id-param request)
           room-id (room-id-param request)]
       (ensure-room-delivery-mode-authorized! @db-conn client-id room-id)
-      (json/ok-response (present/room-delivery-mode
-                         (store/room-delivery-mode @db-conn room-id))))))
+      (response/ok-response (present/room-delivery-mode
+                             (store/room-delivery-mode @db-conn room-id))))))
 
 (defn set-room-delivery-mode-handler
   [{:keys [db-conn]}]
@@ -149,14 +143,14 @@
     (let [client-id (client-id-param request)
           room-id (room-id-param request)
           body (body-params request)]
-      (json/ok-response (present/room-delivery-mode
-                         (store/set-room-default-delivery-mode!
-                          db-conn
-                          {:client-id client-id
-                           :room-id room-id
-                           :default-delivery-mode (:defaultDeliveryMode body)
-                           :updated-by-user (:updatedByUser body)
-                           :now-ms (System/currentTimeMillis)}))))))
+      (response/ok-response (present/room-delivery-mode
+                             (store/set-room-default-delivery-mode!
+                              db-conn
+                              {:client-id client-id
+                               :room-id room-id
+                               :default-delivery-mode (:room/default-delivery-mode body)
+                               :updated-by-user (:room/default-delivery-mode-updated-by-user body)
+                               :now-ms (System/currentTimeMillis)}))))))
 
 (defn heartbeat-handler
   [{:keys [db-conn config]}]
@@ -164,21 +158,21 @@
     (let [client-id (client-id-param request)
           now (System/currentTimeMillis)]
       (store/heartbeat! db-conn client-id now)
-      (json/ok-response (present/heartbeat (get-in config [:leases :heartbeat-seconds] 30))))))
+      (response/ok-response (present/heartbeat (get-in config [:leases :heartbeat-seconds] 30))))))
 
 (defn unregister-client-handler
   [{:keys [db-conn]}]
   (fn [request]
-    (json/ok-response (store/unregister-client! db-conn (client-id-param request) (System/currentTimeMillis)))))
+    (response/ok-response (store/unregister-client! db-conn (client-id-param request) (System/currentTimeMillis)))))
 
 (defn acks-handler
   [_]
   (fn [request]
-    (json/ok-response {:accepted (count (:acks (body-params request)))})))
+    (response/ok-response {:accepted (count (:acks (body-params request)))})))
 
 (defn- replay-allowed?
   [db client-id event]
-  (if-let [room-id (get-in event [:data :room :roomId])]
+  (if-let [room-id (get-in event [:data :room/id])]
     (store/known-room-for-client? db client-id room-id)
     true))
 
@@ -209,30 +203,30 @@
   [{:keys [matrix-gateway] :as env}]
   (fn [request]
     (let [body (body-params request)]
-      (json/ok-response
+      (response/ok-response
        (idempotent! env :matrix/resolve-room request #(matrix/resolve-room! matrix-gateway (:room body)))))))
 
 (defn create-room-handler
   [{:keys [matrix-gateway] :as env}]
   (fn [request]
     (let [body (body-params request)]
-      (json/ok-response
+      (response/ok-response
        (idempotent! env :matrix/create-room request #(matrix/create-room! matrix-gateway body))))))
 
 (defn- joined-room?
   [room]
-  (= "join" (:membership room)))
+  (= "join" (:room/membership room)))
 
 (defn list-rooms-handler
   [{:keys [matrix-gateway]}]
   (fn [_]
-    (json/ok-response {:rooms (->> (matrix/list-rooms! matrix-gateway)
-                                   (filter joined-room?)
-                                   vec)})))
+    (response/ok-response {:rooms (->> (matrix/list-rooms! matrix-gateway)
+                                       (filter joined-room?)
+                                       vec)})))
 
 (defn- joined-room-id?
   [matrix-gateway room-id]
-  (boolean (some #(and (= room-id (:roomId %))
+  (boolean (some #(and (= room-id (:room/id %))
                        (joined-room? %))
                  (matrix/list-rooms! matrix-gateway))))
 
@@ -252,62 +246,62 @@
   [{:keys [db-conn matrix-gateway] :as env}]
   (fn [request]
     (let [body (body-params request)
-          client-id (:clientId body)
-          room-id (get-in body [:target :roomId])]
+          client-id (:client/id body)
+          room-id (get-in body [:target :room/id])]
       (ensure-send-authorized! @db-conn matrix-gateway client-id room-id)
-      (json/ok-response
+      (response/ok-response
        (idempotent! env :matrix/send-message request #(matrix/send-message! matrix-gateway body))))))
 
 (defn typing-handler
   [{:keys [db-conn matrix-gateway] :as env}]
   (fn [request]
     (let [body (body-params request)
-          client-id (:clientId body)
-          room-id (:roomId body)]
+          client-id (:client/id body)
+          room-id (:room/id body)]
       (ensure-send-authorized! @db-conn matrix-gateway client-id room-id)
-      (json/ok-response
+      (response/ok-response
        (idempotent! env :matrix/typing request #(matrix/set-typing! matrix-gateway body))))))
 
 (defn send-reaction-handler
   [{:keys [db-conn matrix-gateway] :as env}]
   (fn [request]
     (let [body (body-params request)
-          client-id (:clientId body)
-          room-id (:roomId body)]
+          client-id (:client/id body)
+          room-id (:room/id body)]
       (ensure-send-authorized! @db-conn matrix-gateway client-id room-id)
-      (json/ok-response
+      (response/ok-response
        (idempotent! env :matrix/send-reaction request #(matrix/send-reaction! matrix-gateway body))))))
 
 (defn send-file-handler
   [{:keys [db-conn matrix-gateway] :as env}]
   (fn [request]
     (let [body (body-params request)
-          client-id (:clientId body)
-          room-id (get-in body [:target :roomId])]
+          client-id (:client/id body)
+          room-id (get-in body [:target :room/id])]
       (ensure-send-authorized! @db-conn matrix-gateway client-id room-id)
-      (json/ok-response
+      (response/ok-response
        (idempotent! env :matrix/send-file request #(matrix/send-file! matrix-gateway body))))))
 
 (defn download-media-handler
   [{:keys [matrix-gateway]}]
   (fn [request]
-    (json/ok-response (matrix/download-media! matrix-gateway (body-params request)))))
+    (response/ok-response (matrix/download-media! matrix-gateway (body-params request)))))
 
 (defn transcribe-media-handler
   [{:keys [matrix-gateway]}]
   (fn [request]
-    (json/ok-response (matrix/transcribe-media! matrix-gateway (body-params request)))))
+    (response/ok-response (matrix/transcribe-media! matrix-gateway (body-params request)))))
 
 (defn- room-display-name
   [room]
-  (or (:name room) (:roomName room)))
+  (:room/name room))
 
 (defn- matching-joined-slot-rooms
   [matrix-gateway room-name]
   (->> (matrix/list-rooms! matrix-gateway)
        (filter joined-room?)
        (filter #(= room-name (room-display-name %)))
-       (sort-by :roomId)
+       (sort-by :room/id)
        vec))
 
 (defn- remember-slot-room-from-matrix-room!
@@ -316,18 +310,18 @@
    db-conn
    {:project project
     :slot slot
-    :room-id (:roomId room)
+    :room-id (:room/id room)
     :room-name (or (room-display-name room) room-name)}))
 
 (defn- ensure-slot-room!
   [{:keys [db-conn matrix-gateway]} project slot room-name invite]
-  (let [project-id (:id project)
+  (let [project-id (:project/id project)
         slot-room (or (store/slot-room @db-conn project-id slot)
                       (let [matches (matching-joined-slot-rooms matrix-gateway room-name)]
                         (case (count matches)
-                          0 (let [create-result (matrix/create-room! matrix-gateway {:name room-name
+                          0 (let [create-result (matrix/create-room! matrix-gateway {:room/name room-name
                                                                                      :invite invite
-                                                                                     :encrypted true})]
+                                                                                     :matrix/encrypted? true})]
                               (remember-slot-room-from-matrix-room!
                                db-conn project slot room-name create-result))
                           1 (remember-slot-room-from-matrix-room!
@@ -337,9 +331,9 @@
                                            :project-id project-id
                                            :slot slot
                                            :room-name room-name
-                                           :room-ids (mapv :roomId matches)})))))]
+                                           :room-ids (mapv :room/id matches)})))))]
     (when (seq invite)
-      (matrix/ensure-users-power-level! matrix-gateway {:roomId (:room-id slot-room)
+      (matrix/ensure-users-power-level! matrix-gateway {:room/id (:room-id slot-room)
                                                         :users (vec invite)
                                                         :level 100}))
     slot-room))
@@ -348,14 +342,14 @@
   [{:keys [db-conn] :as env}]
   (fn [request]
     (let [body (body-params request)]
-      (json/ok-response
+      (response/ok-response
        (idempotent!
         env :slot/acquire request
         #(let [project (:project body)
-               project-id (:id project)
+               project-id (:project/id project)
                invite (:invite body)
                reservation (store/reserve-slot! db-conn {:now-ms (System/currentTimeMillis)}
-                                                {:client-id (:clientId body)
+                                                {:client-id (:client/id body)
                                                  :project project})]
            (try
              (let [slot (:slot reservation)
@@ -366,7 +360,7 @@
                           {:now-ms (System/currentTimeMillis)
                            :lease-id (:lease-id reservation)
                            :reservation-id (:reservation-id reservation)
-                           :client-id (:clientId body)
+                           :client-id (:client/id body)
                            :room-id (:room-id slot-room)
                            :room-name (:room-name slot-room)})]
                (present/slot-acquire lease))
@@ -378,119 +372,53 @@
 (defn list-slots-handler
   [{:keys [db-conn]}]
   (fn [request]
-    (json/ok-response (present/slots-list
-                       (store/list-slots @db-conn (get-in request [:query-params "projectId"]))))))
+    (response/ok-response (present/slots-list
+                           (store/list-slots @db-conn (get-in request [:query-params "project-id"]))))))
 
 (defn release-slot-handler
   [{:keys [db-conn]}]
   (fn [request]
     (let [body (body-params request)]
-      (json/ok-response
+      (response/ok-response
        (store/release-slot!
         db-conn
         {:now-ms (System/currentTimeMillis)
-         :client-id (or (:client-id body) (:clientId body))
-         :room-id (or (:room-id body) (:roomId body))
+         :client-id (:client/id body)
+         :room-id (:room/id body)
          :slot (:slot body)})))))
 
 (defn verification-start-handler
   [{:keys [matrix-gateway] :as env}]
   (fn [request]
-    (json/ok-response (idempotent! env :verification/start request #(matrix/verification-start! matrix-gateway (body-params request))))))
+    (response/ok-response (idempotent! env :verification/start request #(matrix/verification-start! matrix-gateway (body-params request))))))
 
 (defn verification-confirm-handler
   [{:keys [matrix-gateway]}]
   (fn [request]
-    (json/ok-response (matrix/verification-confirm! matrix-gateway (get-in request [:path-params :verificationId])))))
+    (response/ok-response (matrix/verification-confirm! matrix-gateway (get-in request [:path-params :verification-id])))))
 
 (defn verification-cancel-handler
   [{:keys [matrix-gateway]}]
   (fn [request]
-    (json/ok-response (matrix/verification-cancel! matrix-gateway (get-in request [:path-params :verificationId])))))
+    (response/ok-response (matrix/verification-cancel! matrix-gateway (get-in request [:path-params :verification-id])))))
 
 (defn verification-status-handler
   [{:keys [matrix-gateway]}]
   (fn [_]
-    (json/ok-response (matrix/verification-status matrix-gateway))))
-
-(defn- strip-suffix
-  [s suffix]
-  (when (and s (str/ends-with? s suffix))
-    (subs s 0 (- (count s) (count suffix)))))
-
-(defn- with-client-id
-  [request client-id]
-  (assoc-in request [:path-params :clientId] client-id))
-
-(defn legacy-client-path-handler
-  "Route client endpoints for legacy extensions that embedded slash-containing
-  client IDs directly into the URL path instead of percent-encoding them."
-  [env]
-  (fn [request]
-    (let [client-path (get-in request [:path-params :clientPath])
-          method (:request-method request)]
-      (cond
-        (and (= :get method) (strip-suffix client-path "/events"))
-        ((event-stream-handler env)
-         (with-client-id request (strip-suffix client-path "/events")))
-
-        (and (= :post method) (strip-suffix client-path "/heartbeat"))
-        ((heartbeat-handler env)
-         (with-client-id request (strip-suffix client-path "/heartbeat")))
-
-        (and (= :patch method) (strip-suffix client-path "/subscriptions"))
-        ((update-subscriptions-handler env)
-         (with-client-id request (strip-suffix client-path "/subscriptions")))
-
-        (and (= :post method) (strip-suffix client-path "/acks"))
-        ((acks-handler env)
-         (with-client-id request (strip-suffix client-path "/acks")))
-
-        (= :delete method)
-        ((unregister-client-handler env)
-         (with-client-id request client-path))
-
-        :else
-        (json/error-response 404 :not_found "Route not found" {})))))
-
-(defn- slashful-client-id?
-  [client-id]
-  (boolean (and client-id (str/includes? client-id "/"))))
-
-(defn- legacy-client-path?
-  [method client-path]
-  (case method
-    :get (slashful-client-id? (strip-suffix client-path "/events"))
-    :post (or (slashful-client-id? (strip-suffix client-path "/heartbeat"))
-              (slashful-client-id? (strip-suffix client-path "/acks")))
-    :patch (slashful-client-id? (strip-suffix client-path "/subscriptions"))
-    :delete (slashful-client-id? client-path)
-    false))
-
-(defn wrap-legacy-client-paths
-  [handler env]
-  (let [legacy-handler (legacy-client-path-handler env)
-        prefix "/v1/clients/"]
-    (fn [request]
-      (let [uri (:uri request)
-            client-path (when (and uri (str/starts-with? uri prefix))
-                          (subs uri (count prefix)))]
-        (if (legacy-client-path? (:request-method request) client-path)
-          (legacy-handler (assoc-in request [:path-params :clientPath] client-path))
-          (handler request))))))
+    (response/ok-response (matrix/verification-status matrix-gateway))))
 
 (defn routes
   [env]
   [["/v1"
     ["/health" {:get (health-handler env)}]
     ["/clients" {:post (register-client-handler env)}]
-    ["/clients/:clientId/subscriptions" {:patch (update-subscriptions-handler env)}]
-    ["/clients/:clientId/heartbeat" {:post (heartbeat-handler env)}]
-    ["/clients/:clientId" {:delete (unregister-client-handler env)}]
-    ["/clients/:clientId/events" {:get (event-stream-handler env)}]
-    ["/clients/:clientId/acks" {:post (acks-handler env)}]
-    ["/clients/:clientId/rooms/:roomId/delivery-mode" {:get (get-room-delivery-mode-handler env)
-                                                       :put (set-room-delivery-mode-handler env)}]
+    ["/clients/:client-id/subscriptions" {:patch (update-subscriptions-handler env)}]
+    ["/clients/:client-id/heartbeat" {:post (heartbeat-handler env)}]
+    ["/clients/:client-id" {:delete (unregister-client-handler env)}]
+    ["/clients/:client-id/events" {:get (event-stream-handler env)}]
+    ["/clients/:client-id/acks" {:post (acks-handler env)}]
+    ["/clients/:client-id/rooms/:room-id/delivery-mode" {:get (get-room-delivery-mode-handler env)
+                                                         :put (set-room-delivery-mode-handler env)}]
     ["/slots" {:get (list-slots-handler env)}]
     ["/slots/acquire" {:post (acquire-slot-handler env)}]
     ["/slots/release" {:post (release-slot-handler env)}]
@@ -504,8 +432,8 @@
     ["/matrix/rooms" {:get (list-rooms-handler env)
                       :post (create-room-handler env)}]
     ["/verification/start" {:post (verification-start-handler env)}]
-    ["/verification/:verificationId/confirm" {:post (verification-confirm-handler env)}]
-    ["/verification/:verificationId/cancel" {:post (verification-cancel-handler env)}]
+    ["/verification/:verification-id/confirm" {:post (verification-confirm-handler env)}]
+    ["/verification/:verification-id/cancel" {:post (verification-cancel-handler env)}]
     ["/verification/status" {:get (verification-status-handler env)}]]])
 
 (defn app
@@ -513,12 +441,14 @@
   (let [handler (ring/ring-handler
                  (ring/router (routes env))
                  (ring/create-default-handler
-                  {:not-found (constantly (json/error-response 404 :not_found "Route not found" {}))
-                   :method-not-allowed (constantly (json/error-response 405 :method_not_allowed "Method not allowed" {}))
-                   :not-acceptable (constantly (json/error-response 406 :not_acceptable "Not acceptable" {}))}))]
-    (wrap-errors
-     (wrap-json-body
-      (wrap-params
-       (broker-db/wrap-db
-        (wrap-legacy-client-paths handler env)
-        (:db-conn env)))))))
+                  {:not-found (constantly (response/error-response 404 :not_found "Route not found" {}))
+                   :method-not-allowed (constantly (response/error-response 405 :method_not_allowed "Method not allowed" {}))
+                   :not-acceptable (constantly (response/error-response 406 :not_acceptable "Not acceptable" {}))}))]
+    (-> (broker-db/wrap-db
+         handler
+         (:db-conn env))
+        wrap-params
+        (muuntaja-middleware/wrap-format-request http-format)
+        wrap-errors
+        (muuntaja-middleware/wrap-format-response http-format)
+        (muuntaja-middleware/wrap-format-negotiate http-format))))

@@ -11,14 +11,14 @@
         (let [env (tu/test-env (tu/fake-gateway) conn)
               app (api/app env)]
           (is (= {:ok true
-                  :data {:clientId "state-free-client"
-                         :eventStream "/v1/clients/state-free-client/events"
-                         :heartbeatSeconds 30
-                         :globalOperators ["@operator:example.org"]}}
-                 (tu/json-request app :post "/v1/clients"
-                                  {:requestId "register-state-free"
-                                   :instanceId "state-free-client"
-                                   :protocolVersion 1
-                                   :project {:id "project"}}))))
+                  :data {:client/id "state-free-client"
+                         :event-stream/path "/v1/clients/state-free-client/events"
+                         :heartbeat/seconds 30
+                         :matrix/global-operators ["@operator:example.org"]}}
+                 (tu/edn-request app :post "/v1/clients"
+                                 {:request/id "register-state-free"
+                                  :client/instance-id "state-free-client"
+                                  :protocol/version 1
+                                  :project {:project/id "project"}}))))
         (finally
           (db/release-conn! conn))))))

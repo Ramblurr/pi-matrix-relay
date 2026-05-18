@@ -27,20 +27,23 @@
   (Duration/ofMillis (long ms)))
 
 (defn- room-name-from-request
-  [{:keys [name roomName]}]
-  (or name roomName))
+  [request]
+  (:room/name request))
 
 (defn- reply-target-event
-  [{:keys [roomId eventId]}]
-  {::mx/room-id roomId
-   ::mx/event-id eventId})
+  [target]
+  {::mx/room-id (:room/id target)
+   ::mx/event-id (:event/id target)})
 
 (defn- text-message
-  [{:keys [body formattedBody replyTo]}]
-  (cond-> (msg/text body (cond-> {}
-                           formattedBody (assoc ::mx/format "org.matrix.custom.html"
-                                                ::mx/formatted-body formattedBody)))
-    replyTo (msg/reply-to (reply-target-event replyTo))))
+  [request]
+  (let [body (:body request)
+        formatted-body (:formatted-body request)
+        reply-to (:reply-to request)]
+    (cond-> (msg/text body (cond-> {}
+                             formatted-body (assoc ::mx/format "org.matrix.custom.html"
+                                                   ::mx/formatted-body formatted-body)))
+      reply-to (msg/reply-to (reply-target-event reply-to)))))
 
 (defn- now-iso []
   (str (Instant/now)))
@@ -53,10 +56,10 @@
 
 (defn- normalized-room
   [room]
-  {:roomId (::mx/room-id room)
-   :name (::mx/room-name room)
-   :membership (::mx/membership room)
-   :isDirect (::mx/is-direct room)})
+  {:room/id (::mx/room-id room)
+   :room/name (::mx/room-name room)
+   :room/membership (::mx/membership room)
+   :room/direct? (::mx/is-direct room)})
 
 (defn- read-matrix-json
   [body]
@@ -143,17 +146,17 @@
 (defn- attachment
   [ev]
   (when (or (event/url ev) (event/encrypted-file ev))
-    {:attachmentId (event/event-id ev)
-     :kind (case (event/msgtype ev)
-             "m.image" "image"
-             "m.audio" "audio"
-             "m.video" "video"
-             "m.file" "file"
-             "other")
-     :fileName (event/file-name ev)
-     :mimeType (event/mime-type ev)
-     :byteSize (event/size-bytes ev)
-     :matrixContentUri (event/url ev)}))
+    {:attachment/id (event/event-id ev)
+     :attachment/kind (case (event/msgtype ev)
+                        "m.image" "image"
+                        "m.audio" "audio"
+                        "m.video" "video"
+                        "m.file" "file"
+                        "other")
+     :file/name (event/file-name ev)
+     :file/mime-type (event/mime-type ev)
+     :file/byte-size (event/size-bytes ev)
+     :matrix/content-uri (event/url ev)}))
 
 (defn- normalized-event
   ([ev]
@@ -165,28 +168,28 @@
        (event/text? ev)
        {:event "matrix.message"
         :data {:type "matrix.message"
-               :room {:roomId (event/room-id ev)}
-               :event {:eventId (event/event-id ev)
-                       :sender sender
-                       :senderDisplayName (event/sender-display-name ev)
-                       :senderIsBot sender-is-bot?
-                       :timestamp (now-iso)
-                       :msgtype (event/msgtype ev)
-                       :text (event/body ev)
-                       :replyToEventId (event/relation-event-id ev)}
+               :room/id (event/room-id ev)
+               :event/id (event/event-id ev)
+               :event/sender sender
+               :event/sender-display-name (event/sender-display-name ev)
+               :event/sender-is-bot? sender-is-bot?
+               :event/timestamp (now-iso)
+               :message/type (event/msgtype ev)
+               :event/text (event/body ev)
+               :event/reply-to-id (event/relation-event-id ev)
                :attachments (cond-> []
                               (attachment ev) (conj (attachment ev)))}}
 
        (event/reaction? ev)
        {:event "matrix.reaction"
         :data {:type "matrix.reaction"
-               :room {:roomId (event/room-id ev)}
-               :event {:eventId (event/event-id ev)
-                       :sender sender
-                       :senderIsBot sender-is-bot?
-                       :timestamp (now-iso)
-                       :reactsToEventId (event/relation-event-id ev)
-                       :key (event/key ev)}}}))))
+               :room/id (event/room-id ev)
+               :event/id (event/event-id ev)
+               :event/sender sender
+               :event/sender-is-bot? sender-is-bot?
+               :event/timestamp (now-iso)
+               :event/reacts-to-id (event/relation-event-id ev)
+               :reaction/key (event/key ev)}}))))
 
 (defn- start-virtual-thread!
   [f]
@@ -246,13 +249,13 @@
   (health [_]
     (if-let [c (:client @runtime*)]
       {:status "ok"
-       :matrix {:connected true
-                :userId (str (client/current-user-id c))
-                :syncState (some-> (client/current-sync-state c) name)
-                :encrypted (get-in config [:matrix :encrypted?] true)}}
+       :matrix/connected? true
+       :user/id (str (client/current-user-id c))
+       :matrix/sync-state (some-> (client/current-sync-state c) name)
+       :matrix/encrypted? (get-in config [:matrix :encrypted?] true)}
       {:status "degraded"
-       :matrix {:connected false
-                :encrypted (get-in config [:matrix :encrypted?] true)}}))
+       :matrix/connected? false
+       :matrix/encrypted? (get-in config [:matrix :encrypted?] true)}))
   (list-rooms! [_]
     (let [c (:client @runtime*)]
       (->> (or (flow-value (room/get-all-flat c)) [])
@@ -260,9 +263,9 @@
   (resolve-room! [_ room-id-or-alias]
     (let [c (:client @runtime*)
           room-id (m/? (room/join-room c room-id-or-alias {::mx/timeout (Duration/ofSeconds 15)}))]
-      {:roomId (str room-id)
-       :canonicalAlias (when (str/starts-with? room-id-or-alias "#") room-id-or-alias)
-       :name room-id-or-alias}))
+      {:room/id (str room-id)
+       :room/canonical-alias (when (str/starts-with? room-id-or-alias "#") room-id-or-alias)
+       :room/name room-id-or-alias}))
   (create-room! [_ request]
     (let [c (:client @runtime*)
           invite (vec (:invite request))
@@ -270,69 +273,76 @@
                                                     ::mx/visibility :private
                                                     ::mx/preset :private-chat}
                                              (seq invite) (assoc ::mx/invite invite))))]
-      {:roomId (str room-id)
-       :name (room-name-from-request request)}))
-  (ensure-users-power-level! [_ {:keys [roomId users level]}]
-    (let [level (long (or level 100))
-          users (vec users)
-          content (power-level-content! config runtime* roomId)
+      {:room/id (str room-id)
+       :room/name (room-name-from-request request)}))
+  (ensure-users-power-level! [_ request]
+    (let [room-id (:room/id request)
+          level (long (or (:level request) 100))
+          users (vec (:users request))
+          content (power-level-content! config runtime* room-id)
           current-users (or (get content "users") {})
           updated-content (assoc content "users" (reduce #(assoc %1 %2 level) current-users users))]
       (when (not= content updated-content)
-        (put-power-level-content! config runtime* roomId updated-content))
-      {:roomId roomId
+        (put-power-level-content! config runtime* room-id updated-content))
+      {:room/id room-id
        :users users
        :level level}))
-  (leave-room! [_ {:keys [roomId reason]}]
-    (let [c (:client @runtime*)]
-      (m/? (room/leave-room c roomId (cond-> {}
-                                       reason (assoc ::mx/reason reason))))
-      {:roomId roomId
-       :left true}))
-  (send-message! [_ {:keys [target replyTo] :as request}]
+  (leave-room! [_ request]
     (let [c (:client @runtime*)
-          room-id (:roomId target)
+          room-id (:room/id request)]
+      (m/? (room/leave-room c room-id (cond-> {}
+                                        (:reason request) (assoc ::mx/reason (:reason request)))))
+      {:room/id room-id
+       :left true}))
+  (send-message! [_ {:keys [target] :as request}]
+    (let [c (:client @runtime*)
+          room-id (:room/id target)
           message (text-message request)
           handle (m/? (room/send-message c room-id message {::mx/timeout (Duration/ofSeconds 10)}))
           tx (str (::mx/transaction-id handle))]
-      {:roomId room-id
-       :eventId tx
-       :transactionId tx
-       :replyTo replyTo}))
-  (set-typing! [_ {:keys [roomId typing timeoutMs]}]
-    (let [c (:client @runtime*)]
-      (m/? (room/set-typing c roomId (boolean typing) {::mx/timeout (duration-ms (or timeoutMs 30000))}))
-      {}))
-  (send-reaction! [_ {:keys [roomId eventId key]}]
+      {:room/id room-id
+       :event/id tx
+       :transaction/id tx
+       :reply-to (:reply-to request)}))
+  (set-typing! [_ request]
     (let [c (:client @runtime*)
+          room-id (:room/id request)]
+      (m/? (room/set-typing c room-id (boolean (:typing request)) {::mx/timeout (duration-ms (or (:timeout/ms request) 30000))}))
+      {}))
+  (send-reaction! [_ request]
+    (let [c (:client @runtime*)
+          room-id (:room/id request)
+          event-id (:event/id request)
+          key (:key request)
           tx (m/? (room/send-reaction c
-                                      roomId
-                                      (reply-target-event {:roomId roomId :eventId eventId})
+                                      room-id
+                                      (reply-target-event {:room/id room-id :event/id event-id})
                                       key
                                       {::mx/timeout (Duration/ofSeconds 10)}))]
-      {:roomId roomId
-       :eventId (str tx)
-       :transactionId (str tx)
-       :reactsToEventId eventId
+      {:room/id room-id
+       :event/id (str tx)
+       :transaction/id (str tx)
+       :event/reacts-to-id event-id
        :key key}))
-  (send-file! [_ {:keys [target path name mimeType caption replyTo]}]
+  (send-file! [_ {:keys [target path name caption] :as request}]
     (let [c (:client @runtime*)
-          room-id (:roomId target)
-          message (if (and mimeType (str/starts-with? mimeType "image/"))
+          room-id (:room/id target)
+          mime-type (:file/mime-type request)
+          message (if (and mime-type (str/starts-with? mime-type "image/"))
                     (msg/image path (cond-> {}
                                       name (assoc ::mx/file-name name)
-                                      mimeType (assoc ::mx/mime-type mimeType)
+                                      mime-type (assoc ::mx/mime-type mime-type)
                                       caption (assoc ::mx/body caption)))
                     (msg/file path (cond-> {}
                                      name (assoc ::mx/file-name name)
-                                     mimeType (assoc ::mx/mime-type mimeType)
+                                     mime-type (assoc ::mx/mime-type mime-type)
                                      caption (assoc ::mx/body caption))))
           handle (m/? (room/send-message c room-id message {::mx/timeout (Duration/ofSeconds 30)}))
           tx (str (::mx/transaction-id handle))]
-      {:roomId room-id
-       :eventId tx
-       :transactionId tx
-       :replyTo replyTo}))
+      {:room/id room-id
+       :event/id tx
+       :transaction/id tx
+       :reply-to (:reply-to request)}))
   (download-media! [_ request]
     (matrix/unavailable :media_download_unavailable "Matrix media download needs event attachment lookup before implementation." {:request request}))
   (transcribe-media! [_ request]

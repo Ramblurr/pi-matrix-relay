@@ -16,10 +16,10 @@
 
 (defn client-registration
   [{:keys [client-id heartbeat-seconds global-operators]}]
-  {:clientId client-id
-   :eventStream (str "/v1/clients/" client-id "/events")
-   :heartbeatSeconds heartbeat-seconds
-   :globalOperators (vec global-operators)})
+  {:client/id client-id
+   :event-stream/path (str "/v1/clients/" client-id "/events")
+   :heartbeat/seconds heartbeat-seconds
+   :matrix/global-operators (vec global-operators)})
 
 (defn subscriptions
   [{:keys [rooms]}]
@@ -27,34 +27,34 @@
 
 (defn heartbeat
   [heartbeat-seconds]
-  {:heartbeatSeconds heartbeat-seconds})
+  {:heartbeat/seconds heartbeat-seconds})
 
 (defn slot-acquire
   [{:keys [slot room-id room-name]}]
   {:slot slot
-   :roomId room-id
-   :roomName room-name})
+   :room/id room-id
+   :room/name room-name})
 
 (defn slot
   [{:keys [slot room-id room-name client-id client-metadata state acquired-at last-heartbeat-at]}]
   {:slot slot
-   :roomId room-id
-   :roomName room-name
-   :clientId client-id
-   :clientMetadata client-metadata
+   :room/id room-id
+   :room/name room-name
+   :client/id client-id
+   :client/metadata client-metadata
    :state (name state)
-   :acquiredAt acquired-at
-   :lastHeartbeatAt last-heartbeat-at})
+   :lease/acquired-at acquired-at
+   :lease/last-heartbeat-at last-heartbeat-at})
 
 (defn slots-list
   [{:keys [project-key slots]}]
-  {:projectId project-key
+  {:project/id project-key
    :slots (mapv slot slots)})
 
 (defn room-delivery-mode
   [{:keys [room-id default-delivery-mode updated-at updated-by-client updated-by-user]}]
-  {:roomId room-id
-   :defaultDeliveryMode (delivery-mode-name default-delivery-mode)
-   :updatedAt (iso-instant updated-at)
-   :updatedByClient updated-by-client
-   :updatedByUser updated-by-user})
+  {:room/id room-id
+   :room/default-delivery-mode (delivery-mode-name default-delivery-mode)
+   :room/default-delivery-mode-updated-at (iso-instant updated-at)
+   :room/default-delivery-mode-updated-by-client updated-by-client
+   :room/default-delivery-mode-updated-by-user updated-by-user})

@@ -66,21 +66,21 @@
 (defn- project-room-ids
   [project-config]
   (->> (room-bindings project-config)
-       (keep :roomId)
+       (keep :room/id)
        distinct
        vec))
 
 (defn- effective-project-id
   [cwd project-config]
-  (or (get-in project-config [:project :id])
+  (or (get-in project-config [:project :project/id])
       (config/project-id cwd)))
 
 (defn- project-summary
   [cwd project-config]
   (let [project-id (effective-project-id cwd project-config)]
-    {:root cwd
-     :id project-id
-     :displayName (or (get-in project-config [:project :displayName]) project-id)}))
+    {:project/root cwd
+     :project/id project-id
+     :project/display-name (or (get-in project-config [:project :project/display-name]) project-id)}))
 
 (defn- now-iso []
   (.toISOString (js/Date.)))
@@ -109,16 +109,16 @@
 (defn- start-banner
   [cwd project slot]
   (str "pi-matrix-relay session started\n"
-       "project: " (:id project) "\n"
+       "project: " (:project/id project) "\n"
        "slot: " (:slot slot) "\n"
-       "room: " (:roomName slot) "\n"
+       "room: " (:room/name slot) "\n"
        "path: " cwd "\n"
        "time: " (now-iso)))
 
 (defn- end-banner
   [relay-state]
   (str "pi-matrix-relay session ended\n"
-       "project: " (get-in relay-state [:project :id]) "\n"
+       "project: " (get-in relay-state [:project :project/id]) "\n"
        "slot: " (:slot relay-state) "\n"
        "time: " (now-iso)))
 
@@ -129,7 +129,7 @@
                           (remove str/blank?)
                           distinct
                           vec)
-        base (str "matrix: slot " (:slot slot) " " (:roomName slot))]
+        base (str "matrix: slot " (:slot slot) " " (:room/name slot))]
     (if (seq room-aliases)
       (str base "; rooms: " (str/join ", " room-aliases))
       base)))
@@ -137,7 +137,7 @@
 (defn- binding-for-room-id
   [project-config room-id]
   (some (fn [binding]
-          (when (= room-id (:roomId binding))
+          (when (= room-id (:room/id binding))
             binding))
         (room-bindings project-config)))
 
@@ -146,11 +146,11 @@
   (when (and (:room-id relay-state)
              (= room-id (:room-id relay-state)))
     {:alias (:room-name relay-state)
-     :name (:room-name relay-state)
-     :roomId (:room-id relay-state)
-     :roomClass "slot"
+     :room/name (:room-name relay-state)
+     :room/id (:room-id relay-state)
+     :room/class "slot"
      :mode "all"
-     :autoReply true
+     :auto-reply? true
      :slot (:slot relay-state)}))
 
 (defn- cached-room-delivery-mode
@@ -172,7 +172,7 @@
 (defn- authorized-sender?
   [{:keys [project-config global-operators]} sender]
   (let [global-operators (set global-operators)
-        project-users (set (:allowedUsers project-config))]
+        project-users (set (:allowed-users project-config))]
     (boolean (or (contains? global-operators sender)
                  (contains? project-users sender)))))
 
@@ -223,12 +223,12 @@
    (room-label binding nil))
   ([binding room]
    (or (:alias binding)
-       (:name binding)
-       (:canonicalAlias binding)
-       (:name room)
-       (:canonicalAlias room)
-       (:roomId binding)
-       (:roomId room))))
+       (:room/name binding)
+       (:room/canonical-alias binding)
+       (:room/name room)
+       (:room/canonical-alias room)
+       (:room/id binding)
+       (:room/id room))))
 
 (defn- ambiguous-room-label?
   [project-config binding room]
@@ -242,34 +242,34 @@
     include-room-id? (conj (str "roomId: " room-id))))
 
 (defn- matrix-message-prompt
-  [project-config binding {:keys [room event]}]
-  (let [label (room-label binding room)
-        sender (or (:sender event) "unknown sender")
-        timestamp (short-time (:timestamp event))
-        text (or (:text event) "")
-        include-room-id? (ambiguous-room-label? project-config binding room)
-        metadata (metadata-lines [(str "eventId: " (:eventId event))]
+  [project-config binding event]
+  (let [label (room-label binding event)
+        sender (or (:event/sender event) "unknown sender")
+        timestamp (short-time (:event/timestamp event))
+        text (or (:event/text event) "")
+        include-room-id? (ambiguous-room-label? project-config binding event)
+        metadata (metadata-lines [(str "eventId: " (:event/id event))]
                                  include-room-id?
-                                 (get room :roomId))]
+                                 (:room/id event))]
     (str "Matrix " label " from " sender " at " timestamp "\n"
          text "\n\n"
          "Matrix metadata:\n"
          (str/join "\n" (cond-> metadata
-                           (:replyToEventId event)
-                           (conj (str "replyToEventId: " (:replyToEventId event))))))))
+                           (:event/reply-to-id event)
+                           (conj (str "replyToEventId: " (:event/reply-to-id event))))))))
 
 (defn- matrix-reaction-prompt
-  [project-config binding {:keys [room event]}]
-  (let [label (room-label binding room)
-        sender (or (:sender event) "unknown sender")
-        timestamp (short-time (:timestamp event))
-        include-room-id? (ambiguous-room-label? project-config binding room)
-        metadata (metadata-lines [(str "eventId: " (:eventId event))
-                                  (str "reactsToEventId: " (:reactsToEventId event))]
+  [project-config binding event]
+  (let [label (room-label binding event)
+        sender (or (:event/sender event) "unknown sender")
+        timestamp (short-time (:event/timestamp event))
+        include-room-id? (ambiguous-room-label? project-config binding event)
+        metadata (metadata-lines [(str "eventId: " (:event/id event))
+                                  (str "reactsToEventId: " (:event/reacts-to-id event))]
                                  include-room-id?
-                                 (get room :roomId))]
+                                 (:room/id event))]
     (str "Matrix reaction in " label " from " sender " at " timestamp "\n"
-         "reacted " (:key event) " to event " (:reactsToEventId event) "\n\n"
+         "reacted " (:reaction/key event) " to event " (:event/reacts-to-id event) "\n\n"
          "Matrix metadata:\n"
          (str/join "\n" metadata))))
 
@@ -305,7 +305,7 @@
 
 (defn- record-pending-auto-reply!
   [relay-state binding room-id event-id]
-  (when (and (:autoReply binding) (:pending-auto-replies* relay-state))
+  (when (and (:auto-reply? binding) (:pending-auto-replies* relay-state))
     (swap! (:pending-auto-replies* relay-state) conj {:room-id room-id
                                                       :event-id event-id})))
 
@@ -316,10 +316,10 @@
                                 message
                                 (cond-> {}
                                   (:client-id relay-state)
-                                  (assoc :clientId (:client-id relay-state))
+                                  (assoc :client/id (:client-id relay-state))
 
                                   event-id
-                                  (assoc :replyToEventId event-id))))
+                                  (assoc :reply-to/event-id event-id))))
         (.catch (fn [err]
                   (record-diagnostic! diagnostics* :remote-command-ack-error (error-summary err))
                   nil)))))
@@ -443,7 +443,7 @@
   [relay-state _binding room-id ctx]
   (let [{:keys [delivery-mode source]} (effective-room-delivery-mode relay-state room-id)]
     (str "pi-matrix-relay status\n"
-         "project: " (or (get-in relay-state [:project :id]) "unknown") "\n"
+         "project: " (or (get-in relay-state [:project :project/id]) "unknown") "\n"
          "slot: " (or (:slot relay-state) "?") " " (or (:room-name relay-state) "unknown") "\n"
          "room: " room-id "\n"
          "default delivery mode: " delivery-mode " (" source ")\n"
@@ -476,7 +476,7 @@
 
 (defn- command-prompt-event
   [event text]
-  (assoc-in event [:event :text] text))
+  (assoc event :event/text text))
 
 (defn- message-entry-count
   [^js ctx]
@@ -623,7 +623,7 @@
       (promise true))
     (-> (promise (set-room-delivery-mode! (:client-id relay-state) room-id delivery-mode sender))
         (.then (fn [result]
-                 (let [persisted-mode (or (:defaultDeliveryMode result) delivery-mode)]
+                 (let [persisted-mode (or (:room/default-delivery-mode result) delivery-mode)]
                    (cache-room-delivery-mode! relay-state room-id persisted-mode)
                    (send-room-ack! deps relay-state room-id event-id
                                    (str "Default delivery mode for this room is now " persisted-mode "."))
@@ -634,10 +634,10 @@
                   true)))))
 
 (defn- handle-remote-command!
-  [deps pi ctx relay-state binding {:keys [room event] :as matrix-event}]
-  (let [room-id (:roomId room)
-        event-id (:eventId event)
-        {:keys [name args]} (parse-remote-command (:text event))
+  [deps pi ctx relay-state binding matrix-event]
+  (let [room-id (:room/id matrix-event)
+        event-id (:event/id matrix-event)
+        {:keys [name args]} (parse-remote-command (:event/text matrix-event))
         command (remote-command-name name)]
     (if command
       (try
@@ -658,7 +658,7 @@
 
           :steer
           (if (str/blank? args)
-            (persist-room-delivery-mode-command! deps relay-state room-id event-id (:sender event) "steer")
+            (persist-room-delivery-mode-command! deps relay-state room-id event-id (:event/sender matrix-event) "steer")
             (let [prompt-event (command-prompt-event matrix-event args)
                   prompt (matrix-message-prompt (:project-config relay-state) binding prompt-event)]
               (deliver-command-message! pi prompt "steer")
@@ -668,7 +668,7 @@
 
           :follow-up
           (if (str/blank? args)
-            (persist-room-delivery-mode-command! deps relay-state room-id event-id (:sender event) "follow-up")
+            (persist-room-delivery-mode-command! deps relay-state room-id event-id (:event/sender matrix-event) "follow-up")
             (let [prompt-event (command-prompt-event matrix-event args)
                   prompt (matrix-message-prompt (:project-config relay-state) binding prompt-event)]
               (deliver-command-message! pi prompt "follow-up")
@@ -678,7 +678,7 @@
 
           :reject
           (if (str/blank? args)
-            (persist-room-delivery-mode-command! deps relay-state room-id event-id (:sender event) "reject")
+            (persist-room-delivery-mode-command! deps relay-state room-id event-id (:event/sender matrix-event) "reject")
             (do
               (send-room-ack! deps relay-state room-id event-id
                               "Reject only changes the default delivery mode; omit message text.")
@@ -687,14 +687,14 @@
           (record-diagnostic! (:diagnostics* deps)
                               :remote-command-error
                               (merge {:command name
-                                      :roomId room-id
-                                      :eventId event-id}
+                                      :room/id room-id
+                                      :event/id event-id}
                                      (error-summary err)))
           (inject-extension-error-notice! deps pi relay-state {:source "remote-command"
                                                               :command name
                                                               :room-id room-id
                                                               :event-id event-id
-                                                              :sender (:sender event)}
+                                                              :sender (:event/sender matrix-event)}
                                           err)
           (send-room-ack! deps relay-state room-id event-id
                           (str "Remote command /" name " failed: " (or (.-message err) (str err))))
@@ -705,27 +705,27 @@
   [deps pi ctx relay-state event]
   (case (:type event)
     "matrix.message"
-    (let [room-id (get-in event [:room :roomId])
-          message (:event event)
+    (let [room-id (:room/id event)
+          message event
           binding (binding-for-relay-room relay-state room-id)]
       (when (and binding
-                 (not (:senderIsBot message))
-                 (authorized-sender? relay-state (:sender message)))
+                 (not (:event/sender-is-bot? message))
+                 (authorized-sender? relay-state (:event/sender message)))
         (let [command-result (handle-remote-command! deps pi ctx relay-state binding event)]
           (if command-result
             command-result
-            (when (message-allowed-by-mode? binding (:text message) (:bot-user-id relay-state))
+            (when (message-allowed-by-mode? binding (:event/text message) (:bot-user-id relay-state))
               (let [delivered? (deliver-user-message! pi ctx relay-state room-id (matrix-message-prompt (:project-config relay-state) binding event))]
                 (when delivered?
-                  (record-pending-auto-reply! relay-state binding room-id (:eventId message)))))))))
+                  (record-pending-auto-reply! relay-state binding room-id (:event/id message)))))))))
 
     "matrix.reaction"
-    (let [room-id (get-in event [:room :roomId])
-          reaction (:event event)
+    (let [room-id (:room/id event)
+          reaction event
           binding (binding-for-relay-room relay-state room-id)]
       (when (and binding
-                 (not (:senderIsBot reaction))
-                 (authorized-sender? relay-state (:sender reaction)))
+                 (not (:event/sender-is-bot? reaction))
+                 (authorized-sender? relay-state (:event/sender reaction)))
         (deliver-user-message! pi ctx relay-state room-id (matrix-reaction-prompt (:project-config relay-state) binding event))))
 
     "broker.notice"
@@ -738,18 +738,18 @@
   (try
     (handle-broker-event-unsafe! deps pi ctx relay-state event)
     (catch js/Error err
-      (let [matrix-event (:event event)
-            room-id (get-in event [:room :roomId])]
+      (let [matrix-event event
+            room-id (:room/id event)]
         (record-diagnostic! (:diagnostics* deps)
                             :broker-event-error
-                            (merge {:eventType (:type event)
-                                    :roomId room-id
-                                    :eventId (:eventId matrix-event)}
+                            (merge {:event/type (:type event)
+                                    :room/id room-id
+                                    :event/id (:event/id matrix-event)}
                                    (error-summary err)))
         (inject-extension-error-notice! deps pi relay-state {:source "broker-event"
                                                             :room-id room-id
-                                                            :event-id (:eventId matrix-event)
-                                                            :sender (:sender matrix-event)}
+                                                            :event-id (:event/id matrix-event)
+                                                            :sender (:event/sender matrix-event)}
                                         err)
         nil))))
 
@@ -775,7 +775,7 @@
                     (-> (promise (get-room-delivery-mode! client-id room-id))
                         (.then (fn [result]
                                  {:room-id room-id
-                                  :delivery-mode (:defaultDeliveryMode result)}))))
+                                  :delivery-mode (:room/default-delivery-mode result)}))))
                   room-ids)))
           (.then (fn [results]
                    (let [cache (->> (js->clj results :keywordize-keys true)
@@ -796,53 +796,53 @@
         room-ids (project-room-ids project-config)
         project (project-summary cwd project-config)]
     (record-diagnostic! diagnostics* :start {:cwd cwd
-                                             :projectId (:id project)})
+                                             :project/id (:project/id project)})
     (-> (promise (health!))
         (.then
          (fn [health]
-           (record-diagnostic! diagnostics* :health-ok {:matrix (select-keys (:matrix health) [:connected :userId])})
-           (let [request {:clientInstanceId (str "matrix-relay-" cwd)
-                          :protocolVersion 1
-                          :project (select-keys project [:root :id])
+           (record-diagnostic! diagnostics* :health-ok {:matrix (select-keys health [:matrix/connected? :user/id])})
+           (let [request {:client/instance-id (str "matrix-relay-" cwd)
+                          :protocol/version 1
+                          :project (select-keys project [:project/root :project/id])
                           :subscriptions {:rooms room-ids}}]
              (-> (promise (register-client! request))
                  (.then
                   (fn [registration]
-                    (let [client-id (:clientId registration)
-                          global-operators (vec (:globalOperators registration))]
-                      (record-diagnostic! diagnostics* :client-registered {:clientId client-id})
+                    (let [client-id (:client/id registration)
+                          global-operators (vec (:matrix/global-operators registration))]
+                      (record-diagnostic! diagnostics* :client-registered {:client/id client-id})
                       (-> (promise (acquire-slot! client-id
-                                                   (select-keys project [:id :displayName])
+                                                   (select-keys project [:project/id :project/display-name])
                                                    global-operators))
                           (.then
                            (fn [slot]
                              (record-diagnostic! diagnostics* :slot-acquired {:slot (:slot slot)
-                                                                              :roomId (:roomId slot)
-                                                                              :roomName (:roomName slot)})
-                             (let [slot-room-id (:roomId slot)
+                                                                              :room/id (:room/id slot)
+                                                                              :room/name (:room/name slot)})
+                             (let [slot-room-id (:room/id slot)
                                    subscriptions (vec (distinct (conj room-ids slot-room-id)))
                                    banner (start-banner cwd project slot)]
                                (-> (promise (update-subscriptions! client-id subscriptions))
                                    (.then
                                     (fn [_]
-                                      (record-diagnostic! diagnostics* :subscriptions-updated {:clientId client-id
+                                      (record-diagnostic! diagnostics* :subscriptions-updated {:client/id client-id
                                                                                                :rooms subscriptions})
                                       (load-room-delivery-modes! deps client-id subscriptions)))
                                    (.then
                                     (fn [room-delivery-modes*]
-                                      (-> (promise (send-message! slot-room-id banner {:clientId client-id}))
+                                      (-> (promise (send-message! slot-room-id banner {:client/id client-id}))
                                           (.then
                                            (fn [_]
-                                             (record-diagnostic! diagnostics* :start-banner-sent {:roomId slot-room-id})
-                                             (let [heartbeat-id (start-heartbeat! deps ctx client-id (:heartbeatSeconds registration))
+                                             (record-diagnostic! diagnostics* :start-banner-sent {:room/id slot-room-id})
+                                             (let [heartbeat-id (start-heartbeat! deps ctx client-id (:heartbeat/seconds registration))
                                                    relay-state {:client-id client-id
                                                                 :project-config project-config
                                                                 :project project
                                                                 :global-operators (set global-operators)
-                                                                :bot-user-id (get-in health [:matrix :userId])
+                                                                :bot-user-id (:user/id health)
                                                                 :slot (:slot slot)
                                                                 :room-id slot-room-id
-                                                                :room-name (:roomName slot)
+                                                                :room-name (:room/name slot)
                                                                 :room-delivery-modes* room-delivery-modes*
                                                                 :pending-auto-replies* (atom [])
                                                                 :last-start-banner banner
@@ -857,7 +857,7 @@
                                                            #(handle-broker-event! deps pi ctx @relay-state* %))
                                                    relay-state (assoc relay-state :stream stream)]
                                                (reset! relay-state* relay-state)
-                                               (record-diagnostic! diagnostics* :event-stream-opened {:clientId client-id})
+                                               (record-diagnostic! diagnostics* :event-stream-opened {:client/id client-id})
                                                (set-status! ctx (status-text project-config slot))
                                                relay-state)))))))))))))))))))))
 
@@ -883,7 +883,7 @@
         #(when (and send-message! (:room-id relay-state) (:client-id relay-state))
            (send-message! (:room-id relay-state)
                           (end-banner relay-state)
-                          {:clientId (:client-id relay-state)})))
+                          {:client/id (:client-id relay-state)})))
        (.then (fn [_]
                 (ignore-errors
                  #(when (and release-slot! (:client-id relay-state) (:room-id relay-state) (:slot relay-state))
@@ -939,8 +939,8 @@
     (if (and send-message! target text)
       (-> (promise (send-message! (:room-id target)
                                   text
-                                  {:clientId (:client-id relay-state)
-                                   :replyToEventId (:event-id target)}))
+                                  {:client/id (:client-id relay-state)
+                                   :reply-to/event-id (:event-id target)}))
           (.then (fn [_]
                    (swap! pending* #(vec (rest %)))
                    nil))
@@ -970,23 +970,23 @@
     (let [project-config (:project-config relay-state)
           pending* (:pending-auto-replies* relay-state)]
       (cond-> {:running true
-               :clientId (:client-id relay-state)
+               :client/id (:client-id relay-state)
                :project (:project relay-state)
-               :projectRooms (project-room-ids project-config)
-               :globalOperators (vec (sort (:global-operators relay-state)))
-               :botUserId (:bot-user-id relay-state)
+               :project/rooms (project-room-ids project-config)
+               :matrix/global-operators (vec (sort (:global-operators relay-state)))
+               :user/id (:bot-user-id relay-state)
                :slot (:slot relay-state)
-               :roomId (:room-id relay-state)
-               :roomName (:room-name relay-state)
-               :statusText (status-text project-config {:slot (:slot relay-state)
-                                                         :roomName (:room-name relay-state)})
-               :heartbeatActive (boolean (:heartbeat-id relay-state))
-               :streamActive (boolean (:stream relay-state))
-               :pendingAutoReplies (if pending* (count @pending*) 0)}
+               :room/id (:room-id relay-state)
+               :room/name (:room-name relay-state)
+               :status/text (status-text project-config {:slot (:slot relay-state)
+                                                          :room/name (:room-name relay-state)})
+               :heartbeat/active? (boolean (:heartbeat-id relay-state))
+               :stream/active? (boolean (:stream relay-state))
+               :pending-auto-replies/count (if pending* (count @pending*) 0)}
         (:last-start-banner relay-state)
-        (assoc :lastStartBanner (:last-start-banner relay-state))
+        (assoc :last-start-banner (:last-start-banner relay-state))
         (stream-diagnostics relay-state)
-        (assoc :streamDiagnostics (stream-diagnostics relay-state))))
+        (assoc :stream/diagnostics (stream-diagnostics relay-state))))
     {:running false}))
 
 (defn- settled
@@ -1008,18 +1008,18 @@
 
 (defn- broker-summary-line
   [broker]
-  (let [matrix (get-in broker [:health :matrix])]
+  (let [health (:health broker)]
     (cond
-      (:error (:health broker)) (str "broker: error " (get-in broker [:health :error :message]))
-      (:connected matrix) (str "broker: Matrix connected as " (:userId matrix))
-      matrix "broker: Matrix not connected"
+      (:error health) (str "broker: error " (get-in health [:error :message]))
+      (:matrix/connected? health) (str "broker: Matrix connected as " (:user/id health))
+      (contains? health :matrix/connected?) "broker: Matrix not connected"
       :else "broker: not queried")))
 
 (defn- slots-summary-line
   [broker]
   (if-let [slots (seq (get-in broker [:slots :slots]))]
     (str "slots: " (str/join ", " (map (fn [slot]
-                                           (str (:slot slot) " " (:state slot) " " (:roomName slot)))
+                                           (str (:slot slot) " " (:state slot) " " (:room/name slot)))
                                          slots)))
     "slots: none visible"))
 
@@ -1040,20 +1040,20 @@
     (str "- " (:type event) ": " label
          (when-let [command (:command event)]
            (str " command=/" command))
-         (when-let [event-id (:eventId event)]
+         (when-let [event-id (:event/id event)]
            (str " eventId=" event-id)))))
 
 (defn- diagnostics-summary
   [{:keys [relay broker diagnostics]}]
   (str "pi-matrix-relay diagnostics\n"
        (if (:running relay)
-         (str "extension: running slot " (:slot relay) " " (:roomName relay) "\n"
-              "client: " (:clientId relay) "\n"
-              "room: " (:roomId relay) "\n"
-              "heartbeat: " (if (:heartbeatActive relay) "active" "inactive") ", stream: "
-              (if (:streamActive relay) "active" "inactive") "\n")
+         (str "extension: running slot " (:slot relay) " " (:room/name relay) "\n"
+              "client: " (:client/id relay) "\n"
+              "room: " (:room/id relay) "\n"
+              "heartbeat: " (if (:heartbeat/active? relay) "active" "inactive") ", stream: "
+              (if (:stream/active? relay) "active" "inactive") "\n")
          "extension: not running\n")
-       (when-let [errors (seq (:recentErrors diagnostics))]
+       (when-let [errors (seq (:recent-errors diagnostics))]
          (str "recent extension errors:\n"
               (str/join "\n" (map diagnostic-error-line errors))
               "\n"))
@@ -1073,8 +1073,8 @@
                    (settled #(health!))
                    (promise {:ok false :error {:message "broker health not queried"}}))
         slots-p (if (and include-broker? list-slots!)
-                  (settled #(list-slots! (:id project)))
-                  (promise {:ok true :value {:projectId (:id project) :slots []}}))
+                  (settled #(list-slots! (:project/id project)))
+                  (promise {:ok true :value {:project/id (:project/id project) :slots []}}))
         rooms-p (if (and include-broker? include-rooms? list-rooms!)
                   (settled #(list-rooms!))
                   (promise {:ok true :value nil}))]
@@ -1090,11 +1090,11 @@
                        diagnostic-events (vec (:events (if diagnostics* @diagnostics* {})))
                        details {:cwd cwd
                                 :project project
-                                :projectConfig {:rooms (vec (room-bindings project-config))
-                                                :allowedUsers (vec (:allowedUsers project-config))}
+                                :project/config {:rooms (vec (room-bindings project-config))
+                                                :allowed-users (vec (:allowed-users project-config))}
                                 :relay relay
                                 :diagnostics {:events diagnostic-events
-                                              :recentErrors (recent-error-events diagnostic-events)}
+                                              :recent-errors (recent-error-events diagnostic-events)}
                                 :broker broker}]
                    {:content [{:type "text"
                                :text (diagnostics-summary details)}]
@@ -1119,7 +1119,7 @@
             (.then (fn [relay-state]
                      (when relay-state*
                        (reset! relay-state* relay-state))
-                     (record-diagnostic! diagnostics* :control-started {:clientId (:client-id relay-state)})
+                     (record-diagnostic! diagnostics* :control-started {:client/id (:client-id relay-state)})
                      relay-state))
             (.then (fn [_]
                      (control-diagnostics deps ctx)))
@@ -1154,7 +1154,7 @@
             (.then (fn [relay-state]
                      (when relay-state*
                        (reset! relay-state* relay-state))
-                     (record-diagnostic! diagnostics* :control-started {:clientId (:client-id relay-state)})
+                     (record-diagnostic! diagnostics* :control-started {:client/id (:client-id relay-state)})
                      relay-state))
             (.then (fn [_]
                      (control-diagnostics deps ctx)))
@@ -1190,12 +1190,11 @@
   [{:keys [health!]} ctx]
   (-> (promise (health!))
       (.then (fn [health]
-               (let [matrix (:matrix health)]
-                 (notify! ctx
-                          (if (:connected matrix)
-                            (str "Matrix connected as " (:userId matrix))
-                            "Matrix broker is not connected")
-                          (if (:connected matrix) "info" "warning")))))))
+               (notify! ctx
+                        (if (:matrix/connected? health)
+                          (str "Matrix connected as " (:user/id health))
+                          "Matrix broker is not connected")
+                        (if (:matrix/connected? health) "info" "warning"))))))
 
 (defn- handle-room-bind!
   [{:keys [resolve-room! read-project-config! write-project-config!]} {:keys [room alias]} ctx]
@@ -1206,16 +1205,16 @@
                        new-config (config/bind-room old-config room-result alias cwd)
                        binding (config/room-binding room-result alias cwd)]
                    (write-project-config! cwd new-config)
-                   (notify! ctx (str "Bound " (:alias binding) " to " (:roomId binding)))))))))
+                   (notify! ctx (str "Bound " (:alias binding) " to " (:room/id binding)))))))))
 
 (defn- handle-send!
   [{:keys [read-project-config! send-message!]} {:keys [target message]} ctx]
   (let [cwd (ctx-cwd ctx)
         project-config (read-project-config! cwd)]
     (if-let [binding (config/resolve-target project-config target)]
-      (-> (promise (send-message! (:roomId binding) message))
+      (-> (promise (send-message! (:room/id binding) message))
           (.then (fn [result]
-                   (notify! ctx (str "Sent Matrix message " (:eventId result))))))
+                   (notify! ctx (str "Sent Matrix message " (:event/id result))))))
       (do
         (notify-error! ctx (str "No Matrix room binding for target " target))
         (promise nil)))))
@@ -1261,7 +1260,7 @@
   (or (config/resolve-target project-config target)
       (when (matrix-room-id? target)
         {:alias target
-         :roomId target})))
+         :room/id target})))
 
 (defn execute-send-matrix-message!
   [deps params ^js ctx]
@@ -1269,7 +1268,8 @@
         cwd (ctx-cwd ctx)
         target (:target params)
         message (:message params)
-        reply-to-event-id (:replyToEventId params)
+        reply-to-event-id (or (:replyToEventId params)
+                              (:reply-to/event-id params))
         client-id (relay-client-id deps)]
     (cond
       (contains? diagnostic-targets target)
@@ -1283,19 +1283,19 @@
       :else
       (let [project-config (read-project-config! cwd)]
         (if-let [binding (resolve-send-target project-config target)]
-          (-> (promise (send-message! (:roomId binding)
+          (-> (promise (send-message! (:room/id binding)
                                       message
                                       (cond-> {}
-                                        client-id (assoc :clientId client-id)
-                                        reply-to-event-id (assoc :replyToEventId reply-to-event-id))))
+                                        client-id (assoc :client/id client-id)
+                                        reply-to-event-id (assoc :reply-to/event-id reply-to-event-id))))
               (.then (fn [result]
                        {:content [{:type "text"
-                                   :text (str "Sent Matrix message " (:eventId result)
-                                              " to " (:roomId binding))}]
-                        :details (cond-> {:roomId (:roomId binding)
-                                          :eventId (:eventId result)
+                                   :text (str "Sent Matrix message " (:event/id result)
+                                              " to " (:room/id binding))}]
+                        :details (cond-> {:room/id (:room/id binding)
+                                          :event/id (:event/id result)
                                           :target target}
-                                   reply-to-event-id (assoc :replyToEventId reply-to-event-id))})))
+                                   reply-to-event-id (assoc :reply-to/event-id reply-to-event-id))})))
           (js/Promise.reject (js/Error. (str "No Matrix room binding for target " target))))))))
 
 (defn execute-send-matrix-reaction!
@@ -1303,23 +1303,24 @@
   (let [{:keys [read-project-config! send-reaction!]} deps
         cwd (ctx-cwd ctx)
         target (:target params)
-        event-id (:eventId params)
+        event-id (or (:eventId params)
+                     (:event/id params))
         key (:key params)
         client-id (relay-client-id deps)
         project-config (read-project-config! cwd)]
     (if-let [binding (resolve-send-target project-config target)]
-      (-> (promise (send-reaction! (:roomId binding)
+      (-> (promise (send-reaction! (:room/id binding)
                                     event-id
                                     key
                                     (cond-> {}
-                                      client-id (assoc :clientId client-id))))
+                                      client-id (assoc :client/id client-id))))
           (.then (fn [result]
                    {:content [{:type "text"
                                :text (str "Sent Matrix reaction " key " to " event-id
-                                          " in " (:roomId binding))}]
-                    :details {:roomId (:roomId binding)
-                              :eventId (:eventId result)
-                              :reactsToEventId event-id
+                                          " in " (:room/id binding))}]
+                    :details {:room/id (:room/id binding)
+                              :event/id (:event/id result)
+                              :event/reacts-to-id event-id
                               :target target
                               :key key}})))
       (js/Promise.reject (js/Error. (str "No Matrix room binding for target " target))))))

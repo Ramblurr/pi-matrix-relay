@@ -147,13 +147,13 @@
 
 (defn- status-text
   [health]
-  (if-let [user-id (get-in health [:matrix :userId])]
+  (if-let [user-id (:user/id health)]
     (str "matrix: " user-id)
     "matrix: disconnected"))
 
 (defn- connected?
   [health]
-  (true? (get-in health [:matrix :connected])))
+  (true? (:matrix/connected? health)))
 
 (defn poll-health!
   [{:keys [health! sleep! health-attempts health-delay-ms]}]

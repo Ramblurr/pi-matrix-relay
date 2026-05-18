@@ -18,7 +18,7 @@
                   event/encrypted-file (constantly nil)]
       (is (= true
              (get-in (#'sut/normalized-event ::event "@bot:example.org")
-                     [:data :event :senderIsBot])))
+                     [:data :event/sender-is-bot?])))
       (is (= false
              (get-in (#'sut/normalized-event ::event "@other:example.org")
-                     [:data :event :senderIsBot]))))))
+                     [:data :event/sender-is-bot?]))))))

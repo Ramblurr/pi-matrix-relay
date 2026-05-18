@@ -77,8 +77,8 @@
                                         (swap! calls* conj [:write-global-config config]))
                 :health! (fn []
                            (swap! calls* conj [:health])
-                           (js/Promise.resolve {:matrix {:connected true
-                                                         :userId "@bot:example.org"}}))
+                           (js/Promise.resolve {:matrix/connected? true
+                                                         :user/id "@bot:example.org"}))
                 :notify! (fn [message level]
                            (swap! calls* conj [:notify message level]))
                 :set-status! (fn [status]
@@ -124,8 +124,8 @@
                                         (swap! calls* conj [:write-global-config config]))
                 :health! (fn []
                            (swap! calls* conj [:health])
-                           (js/Promise.resolve {:matrix {:connected true
-                                                         :userId "@bot:example.org"}}))
+                           (js/Promise.resolve {:matrix/connected? true
+                                                         :user/id "@bot:example.org"}))
                 :notify! (fn [message level]
                            (swap! calls* conj [:notify message level]))
                 :set-status! (fn [status]
@@ -180,8 +180,8 @@
                                         (swap! calls* conj [:write-global-config config]))
                 :health! (fn []
                            (swap! calls* conj [:health])
-                           (js/Promise.resolve {:matrix {:connected true
-                                                         :userId "@bot:example.org"}}))
+                           (js/Promise.resolve {:matrix/connected? true
+                                                         :user/id "@bot:example.org"}))
                 :notify! (fn [message level]
                            (swap! calls* conj [:notify message level]))
                 :set-status! (fn [status]
@@ -228,8 +228,8 @@
                                         (swap! calls* conj [:write-global-config config]))
                 :health! (fn []
                            (swap! calls* conj [:health])
-                           (js/Promise.resolve {:matrix {:connected true
-                                                         :userId "@bot:example.org"}}))
+                           (js/Promise.resolve {:matrix/connected? true
+                                                         :user/id "@bot:example.org"}))
                 :notify! (fn [message level]
                            (swap! calls* conj [:notify message level]))
                 :set-status! (fn [status]
@@ -250,8 +250,8 @@
 (deftest run-setup-retries-health-until-matrix-connects
   (async done
     (let [calls* (atom [])
-          health-values (atom [{:matrix {:connected false}}
-                               {:matrix {:connected true :userId "@bot:example.org"}}])
+          health-values (atom [{:matrix/connected? false}
+                               {:matrix/connected? true :user/id "@bot:example.org"}])
           deps {:input! (fn [_ _] (js/Promise.resolve ""))
                 :editor! (fn [_ initial] (js/Promise.resolve initial))
                 :confirm! (fn [_ _] (js/Promise.resolve false))
@@ -275,7 +275,7 @@
                 :set-status! (fn [_])}]
       (-> (setup/run-setup! deps)
           (.then (fn [result]
-                   (is (= {:matrix {:connected true :userId "@bot:example.org"}}
+                   (is (= {:matrix/connected? true :user/id "@bot:example.org"}
                           result))
                    (is (= [[:health] [:sleep 5] [:health]]
                           (filter #(#{:health :sleep} (first %)) @calls*)))
@@ -311,15 +311,15 @@
                                     (js/Promise.resolve nil))
                 :health! (fn []
                            (swap! calls* conj [:health])
-                           (js/Promise.resolve {:matrix {:connected true
-                                                         :userId "@bot:example.org"}}))
+                           (js/Promise.resolve {:matrix/connected? true
+                                                         :user/id "@bot:example.org"}))
                 :notify! (fn [message level]
                            (swap! calls* conj [:notify message level]))
                 :set-status! (fn [status]
                                (swap! calls* conj [:status status]))}]
       (-> (setup/run-setup! deps)
           (.then (fn [result]
-                   (is (= {:matrix {:connected true :userId "@bot:example.org"}}
+                   (is (= {:matrix/connected? true :user/id "@bot:example.org"}
                           result))
                    (is (some #(= [:install-service] %) @calls*))
                    (is (some #(= [:health] %) @calls*))

@@ -14,34 +14,34 @@
            (config/project-config-path "/work/project")))))
 
 (deftest room-binding-defaults-and-target-resolution
-  (let [room-result {:roomId "!room:example.org"
-                     :canonicalAlias "#pi:example.org"
-                     :name "Pi Room"}
+  (let [room-result {:room/id "!room:example.org"
+                     :room/canonical-alias "#pi:example.org"
+                     :room/name "Pi Room"}
         by-default (config/bind-room {} room-result nil "/work/project")
         by-alias (config/bind-room {} room-result "ops" "/work/project")]
     (testing "binding defaults to Matrix alias/name and safe room defaults"
       (is (= {:rooms {"#pi:example.org" {:alias "#pi:example.org"
-                                          :roomId "!room:example.org"
-                                          :canonicalAlias "#pi:example.org"
-                                          :name "Pi Room"
+                                          :room/id "!room:example.org"
+                                          :room/canonical-alias "#pi:example.org"
+                                          :room/name "Pi Room"
                                           :mode "mentions"}}}
              by-default)))
     (testing "explicit local aliases are honored"
       (is (= "ops" (get-in by-alias [:rooms "ops" :alias]))))
     (testing "targets resolve by local alias or bound raw room id only"
-      (is (= {:roomId "!room:example.org"
+      (is (= {:room/id "!room:example.org"
               :alias "ops"}
-             (select-keys (config/resolve-target by-alias "ops") [:roomId :alias])))
-      (is (= {:roomId "!room:example.org"
+             (select-keys (config/resolve-target by-alias "ops") [:room/id :alias])))
+      (is (= {:room/id "!room:example.org"
               :alias "ops"}
-             (select-keys (config/resolve-target by-alias "!room:example.org") [:roomId :alias])))
+             (select-keys (config/resolve-target by-alias "!room:example.org") [:room/id :alias])))
       (is (nil? (config/resolve-target by-alias "!other:example.org"))))))
 
 (deftest target-resolution-tolerates-json-read-keywordized-room-aliases
   (testing "project configs read from JSON can keywordize room-map keys"
-    (is (= {:roomId "!room:example.org"
+    (is (= {:room/id "!room:example.org"
             :alias "ops"}
            (select-keys (config/resolve-target {:rooms {:ops {:alias "ops"
-                                                              :roomId "!room:example.org"}}}
+                                                              :room/id "!room:example.org"}}}
                                                "ops")
-                        [:roomId :alias])))))
+                        [:room/id :alias])))))

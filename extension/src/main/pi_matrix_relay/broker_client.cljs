@@ -1,5 +1,6 @@
 (ns pi-matrix-relay.broker-client
-  (:require [clojure.string :as str]
+  (:require [cljs.reader :as reader]
+            [clojure.string :as str]
             [ol.dirs :as dirs]
             [pi-matrix-relay.config :as config]))
 
@@ -19,8 +20,8 @@
 
 (defn request-options
   [env method uri body]
-  (let [headers (cond-> {"Accept" "application/json"}
-                  body (assoc "Content-Type" "application/json"
+  (let [headers (cond-> {"Accept" "application/edn"}
+                  body (assoc "Content-Type" "application/edn"
                               "Content-Length" (.-length (js/Buffer.from body "utf8"))))]
     (clj->js {:socketPath (socket-path env)
               :path uri
@@ -57,10 +58,10 @@
     (:data envelope)
     (throw (broker-error (:error envelope)))))
 
-(defn- parse-json
+(defn- parse-edn
   [text]
   (when-not (str/blank? text)
-    (js->clj (js/JSON.parse text) :keywordize-keys true)))
+    (reader/read-string text)))
 
 (defn- parse-sse-frame
   [frame]
@@ -86,7 +87,7 @@
     (when (seq (:data-lines parsed))
       {:id (:id parsed)
        :event (:event parsed)
-       :data (parse-json (str/join "\n" (:data-lines parsed)))})))
+       :data (parse-edn (str/join "\n" (:data-lines parsed)))})))
 
 (defn parse-sse-chunk
   [buffer chunk]
@@ -98,12 +99,12 @@
                   vec)
      :buffer (last parts)}))
 
-(defn request-json!
+(defn request-edn!
   ([method uri body]
-   (request-json! {:env (.-env js/process)} method uri body))
+   (request-edn! {:env (.-env js/process)} method uri body))
   ([{:keys [env]} method uri body]
    (let [env (or env (.-env js/process))
-         payload (when body (js/JSON.stringify (clj->js body)))]
+         payload (when (some? body) (pr-str body))]
      (js/Promise.
       (fn [resolve reject]
         (let [req (.request http
@@ -115,7 +116,7 @@
                                 (.on res "end"
                                      (fn []
                                        (try
-                                         (resolve (unwrap-envelope (parse-json (apply str @chunks))))
+                                         (resolve (unwrap-envelope (parse-edn (apply str @chunks))))
                                          (catch js/Error err
                                            (reject err))))))))]
           (.on req "error" reject)
@@ -127,19 +128,19 @@
   ([]
    (health! {}))
   ([opts]
-   (request-json! opts "GET" "/v1/health" nil)))
+   (request-edn! opts "GET" "/v1/health" nil)))
 
 (defn register-client!
   ([request]
    (register-client! {} request))
   ([opts request]
-   (request-json! opts "POST" "/v1/clients" request)))
+   (request-edn! opts "POST" "/v1/clients" request)))
 
 (defn update-subscriptions!
   ([client-id rooms]
    (update-subscriptions! {} client-id rooms))
   ([opts client-id rooms]
-   (request-json! opts "PATCH" (client-path client-id "/subscriptions")
+   (request-edn! opts "PATCH" (client-path client-id "/subscriptions")
                   {:rooms rooms})))
 
 (defn- client-room-path
@@ -152,34 +153,34 @@
   ([client-id room-id]
    (get-room-delivery-mode! {} client-id room-id))
   ([opts client-id room-id]
-   (request-json! opts "GET" (client-room-path client-id room-id "/delivery-mode") nil)))
+   (request-edn! opts "GET" (client-room-path client-id room-id "/delivery-mode") nil)))
 
 (defn set-room-delivery-mode!
   ([client-id room-id default-delivery-mode updated-by-user]
    (set-room-delivery-mode! {} client-id room-id default-delivery-mode updated-by-user))
   ([opts client-id room-id default-delivery-mode updated-by-user]
-   (request-json! opts "PUT" (client-room-path client-id room-id "/delivery-mode")
-                  {:defaultDeliveryMode default-delivery-mode
-                   :updatedByUser updated-by-user})))
+   (request-edn! opts "PUT" (client-room-path client-id room-id "/delivery-mode")
+                  {:room/default-delivery-mode default-delivery-mode
+                   :room/default-delivery-mode-updated-by-user updated-by-user})))
 
 (defn heartbeat!
   ([client-id]
    (heartbeat! {} client-id))
   ([opts client-id]
-   (request-json! opts "POST" (client-path client-id "/heartbeat") {})))
+   (request-edn! opts "POST" (client-path client-id "/heartbeat") {})))
 
 (defn unregister-client!
   ([client-id reason]
    (unregister-client! {} client-id reason))
   ([opts client-id reason]
-   (request-json! opts "DELETE" (client-path client-id) {:reason reason})))
+   (request-edn! opts "DELETE" (client-path client-id) {:reason reason})))
 
 (defn acquire-slot!
   ([client-id project invite]
    (acquire-slot! {} client-id project invite))
   ([opts client-id project invite]
-   (request-json! opts "POST" "/v1/slots/acquire"
-                  (cond-> {:clientId client-id
+   (request-edn! opts "POST" "/v1/slots/acquire"
+                  (cond-> {:client/id client-id
                            :project project}
                     (seq invite) (assoc :invite invite)))))
 
@@ -187,22 +188,22 @@
   ([client-id room-id slot]
    (release-slot! {} client-id room-id slot))
   ([opts client-id room-id slot]
-   (request-json! opts "POST" "/v1/slots/release"
-                  {:clientId client-id
-                   :roomId room-id
+   (request-edn! opts "POST" "/v1/slots/release"
+                  {:client/id client-id
+                   :room/id room-id
                    :slot slot})))
 
 (defn list-slots!
   ([project-id]
    (list-slots! {} project-id))
   ([opts project-id]
-   (request-json! opts "GET" (str "/v1/slots?projectId=" (encode-path-segment project-id)) nil)))
+   (request-edn! opts "GET" (str "/v1/slots?project-id=" (encode-path-segment project-id)) nil)))
 
 (defn list-rooms!
   ([]
    (list-rooms! {}))
   ([opts]
-   (request-json! opts "GET" "/v1/matrix/rooms" nil)))
+   (request-edn! opts "GET" "/v1/matrix/rooms" nil)))
 
 (defn- now-ms []
   (.getTime (js/Date.)))
@@ -218,16 +219,16 @@
   ([{:keys [env on-error]} client-id on-event]
    (let [env (or env (.-env js/process))
          buffer* (atom "")
-         state* (atom {:clientId client-id
-                       :startedAt (now-ms)
-                       :connected false
-                       :closed false
-                       :chunkCount 0
-                       :eventCount 0})
+         state* (atom {:client/id client-id
+                       :stream/started-at (now-ms)
+                       :stream/connected? false
+                       :stream/closed? false
+                       :chunk/count 0
+                       :event/count 0})
          record-error! (fn [err]
                          (swap! state* assoc
-                                :lastError (error-data err)
-                                :lastErrorAt (now-ms))
+                                :error/last (error-data err)
+                                :error/last-at (now-ms))
                          (when on-error
                            (on-error err)))
          req (.request http
@@ -235,49 +236,49 @@
                        (fn [^js res]
                          (let [status-code (.-statusCode res)]
                            (swap! state* assoc
-                                  :statusCode status-code
-                                  :responseAt (now-ms)
-                                  :connected (= 200 status-code))
+                                  :http/status-code status-code
+                                  :response/at (now-ms)
+                                  :stream/connected? (= 200 status-code))
                            (when (not= 200 status-code)
                              (record-error! (js/Error. (str "Event stream HTTP " status-code))))
                            (.setEncoding res "utf8")
                            (.on res "data"
                                 (fn [chunk]
                                   (swap! state* #(-> %
-                                                     (update :chunkCount (fnil inc 0))
-                                                     (assoc :lastChunkAt (now-ms))))
+                                                     (update :chunk/count (fnil inc 0))
+                                                     (assoc :chunk/last-at (now-ms))))
                                   (try
                                     (let [{:keys [events buffer]} (parse-sse-chunk @buffer* chunk)]
                                       (reset! buffer* buffer)
                                       (doseq [event events]
                                         (swap! state* #(-> %
-                                                           (update :eventCount (fnil inc 0))
-                                                           (assoc :lastEventAt (now-ms)
-                                                                  :lastEventId (:id event)
-                                                                  :lastEventType (:event event))))
+                                                           (update :event/count (fnil inc 0))
+                                                           (assoc :event/last-at (now-ms)
+                                                                  :event/last-id (:id event)
+                                                                  :event/last-type (:event event))))
                                         (on-event (:data event))))
                                     (catch js/Error err
                                       (record-error! err)))))
                            (.on res "end"
                                 (fn []
                                   (swap! state* assoc
-                                         :closed true
-                                         :closedAt (now-ms)
-                                         :closeReason "response-end")))
+                                         :stream/closed? true
+                                         :stream/closed-at (now-ms)
+                                         :stream/close-reason "response-end")))
                            (.on res "close"
                                 (fn []
                                   (swap! state* assoc
-                                         :closed true
-                                         :closedAt (now-ms)
-                                         :closeReason "response-close"))))))]
+                                         :stream/closed? true
+                                         :stream/closed-at (now-ms)
+                                         :stream/close-reason "response-close"))))))]
      (.on req "error" record-error!)
      (.on req "close" (fn []
-                         (swap! state* assoc :requestClosedAt (now-ms))))
+                         (swap! state* assoc :request/closed-at (now-ms))))
      (.end req)
      #js {:close (fn []
                    (swap! state* assoc
-                          :closeRequested true
-                          :closeRequestedAt (now-ms))
+                          :close/requested? true
+                          :close/requested-at (now-ms))
                    (.destroy req))
           :diagnostics (fn []
                          (clj->js @state*))})))
@@ -286,7 +287,7 @@
   ([room]
    (resolve-room! {} room))
   ([opts room]
-   (request-json! opts "POST" "/v1/matrix/rooms/resolve" {:room room})))
+   (request-edn! opts "POST" "/v1/matrix/rooms/resolve" {:room room})))
 
 (defn send-message!
   ([room-id message]
@@ -296,15 +297,15 @@
      (send-message! opts-or-room-id room-id-or-message message-or-opts nil)
      (send-message! {} opts-or-room-id room-id-or-message message-or-opts)))
   ([opts room-id message send-opts]
-   (request-json! opts "POST" "/v1/matrix/messages"
-                  (cond-> {:target {:roomId room-id}
+   (request-edn! opts "POST" "/v1/matrix/messages"
+                  (cond-> {:target {:room/id room-id}
                            :body message}
-                    (:clientId send-opts)
-                    (assoc :clientId (:clientId send-opts))
+                    (:client/id send-opts)
+                    (assoc :client/id (:client/id send-opts))
 
-                    (:replyToEventId send-opts)
-                    (assoc :replyTo {:roomId room-id
-                                     :eventId (:replyToEventId send-opts)})))))
+                    (:reply-to/event-id send-opts)
+                    (assoc :reply-to {:room/id room-id
+                                      :event/id (:reply-to/event-id send-opts)})))))
 
 (defn send-reaction!
   ([room-id event-id key]
@@ -314,9 +315,9 @@
      (send-reaction! opts-or-room-id room-id-or-event-id event-id-or-key key-or-opts nil)
      (send-reaction! {} opts-or-room-id room-id-or-event-id event-id-or-key key-or-opts)))
   ([opts room-id event-id key send-opts]
-   (request-json! opts "POST" "/v1/matrix/reactions"
-                  (cond-> {:roomId room-id
-                           :eventId event-id
+   (request-edn! opts "POST" "/v1/matrix/reactions"
+                  (cond-> {:room/id room-id
+                           :event/id event-id
                            :key key}
-                    (:clientId send-opts)
-                    (assoc :clientId (:clientId send-opts))))))
+                    (:client/id send-opts)
+                    (assoc :client/id (:client/id send-opts))))))

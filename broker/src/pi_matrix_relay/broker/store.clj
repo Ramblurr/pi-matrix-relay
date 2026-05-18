@@ -32,15 +32,15 @@
 
 (defn- project-key
   [project]
-  (or (:id project) (:key project) (:project/key project)))
+  (or (:project/id project) (:project/key project)))
 
 (defn- project-root
   [project]
-  (or (:root project) (:project/root project)))
+  (:project/root project))
 
 (defn- project-display-name
   [project]
-  (or (:displayName project) (:display-name project) (:project/display-name project)))
+  (or (:project/display-name project) (:display-name project)))
 
 (defn- first-entity
   [db query & inputs]
@@ -73,8 +73,8 @@
   [db entity-id]
   (when entity-id
     (let [room (d/pull db [:room/id :room/default-delivery-mode] entity-id)]
-      {:roomId (:room/id room)
-       :defaultDeliveryMode (:room/default-delivery-mode room)})))
+      {:room/id (:room/id room)
+       :room/default-delivery-mode (:room/default-delivery-mode room)})))
 
 (defn room-by-id
   [db room-id]
@@ -186,7 +186,7 @@
 
 (defn register-client!
   [conn {:keys [now-ms heartbeat-seconds global-operators]} request]
-  (let [client-id (or (:instanceId request) (:clientInstanceId request))
+  (let [client-id (:client/instance-id request)
         project (:project request)
         project (ensure-project! conn project)
         now (now-date now-ms)]
@@ -195,7 +195,7 @@
     (d/transact
      conn
      [(cond-> {:client/instance-id client-id
-               :client/protocol-version (:protocolVersion request)
+               :client/protocol-version (:protocol/version request)
                :client/project [:project/id (:project-id project)]
                :client/registered-at now
                :client/last-heartbeat-at now
@@ -375,7 +375,7 @@
 (defn remember-slot-room!
   [conn {:keys [project slot room-id room-name now-ms] :as command}]
   (let [project-key (or (:project-key command) (project-key project))
-        project (ensure-project! conn (or project {:id project-key}))
+        project (ensure-project! conn (or project {:project/id project-key}))
         now (now-date now-ms)
         _ (when-not (seq slot)
             (throw (ex-info "Slot is required." {:code :invalid_request})))
@@ -612,7 +612,7 @@
 
 (defn room-default-delivery-mode
   [db room-id]
-  (:defaultDeliveryMode (room-by-id db room-id)))
+  (:room/default-delivery-mode (room-by-id db room-id)))
 
 (defn room-delivery-mode
   [db room-id]

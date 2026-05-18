@@ -87,7 +87,7 @@
     (doseq [lease stale]
       (try
         (matrix/send-message! matrix-gateway
-                              {:target {:roomId (:room-id lease)}
+                              {:target {:room/id (:room-id lease)}
                                :body (stale-client-notice lease)})
         (catch Throwable _
           nil)))

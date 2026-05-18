@@ -1,9 +1,9 @@
 (ns pi-matrix-relay.broker.system-test
-  (:require [clojure.java.io :as io]
+  (:require [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [clojure.test :refer [deftest is testing]]
             [donut.system :as ds]
             [pi-matrix-relay.broker.db :as db]
-            [pi-matrix-relay.broker.json :as json]
             [pi-matrix-relay.broker.runtime :as runtime]
             [pi-matrix-relay.broker.store :as store]
             [pi-matrix-relay.broker.system :as system]
@@ -37,13 +37,13 @@
                            :port-positive? true}
                   :health {:ok true
                            :data {:status "ok"
-                                  :matrix {:connected true
-                                           :userId "@bot:example.org"
-                                           :encrypted true}}}}
+                                  :matrix/connected? true
+                                  :user/id "@bot:example.org"
+                                  :matrix/encrypted? true}}}
                  {:server {:transport (:transport http-server)
                            :socket-path (:socket-path http-server)
                            :port-positive? (pos? (:port http-server))}
-                  :health (json/read-json (.body response))})))
+                  :health (edn/read-string (.body response))})))
         (finally
           (system/stop! running))))))
 
@@ -99,12 +99,12 @@
           gateway (tu/fake-gateway)]
       (try
         (store/register-client! conn {:now-ms 1000}
-                                {:instanceId "instance-stale"
-                                 :protocolVersion 1
-                                 :project {:id "project"}})
+                                {:client/instance-id "instance-stale"
+                                 :protocol/version 1
+                                 :project {:project/id "project"}})
         (let [reservation (store/reserve-slot! conn {:now-ms 1000}
                                                {:client-id "instance-stale"
-                                                :project {:id "project"}})]
+                                                :project {:project/id "project"}})]
           (store/complete-slot-reservation!
            conn
            {:now-ms 1000
@@ -122,7 +122,7 @@
                                                   (tu/calls gateway))))]
           (is (= {:stale-slots ["A"]
                   :slot-state :released
-                  :send-target {:roomId "!slot-stale:example.org"}
+                  :send-target {:room/id "!slot-stale:example.org"}
                   :send-count 1}
                  {:stale-slots (mapv :slot stale)
                   :slot-state (get-in (store/list-slots @conn "project") [:slots 0 :state])
@@ -142,12 +142,12 @@
           runtime (runtime/create-runtime)]
       (try
         (store/register-client! conn {:now-ms 1000}
-                                {:instanceId "instance-streaming"
-                                 :protocolVersion 1
-                                 :project {:id "project"}})
+                                {:client/instance-id "instance-streaming"
+                                 :protocol/version 1
+                                 :project {:project/id "project"}})
         (let [reservation (store/reserve-slot! conn {:now-ms 1000}
                                                {:client-id "instance-streaming"
-                                                :project {:id "project"}})]
+                                                :project {:project/id "project"}})]
           (store/complete-slot-reservation!
            conn
            {:now-ms 1000
