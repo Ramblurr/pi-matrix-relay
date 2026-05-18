@@ -942,6 +942,76 @@
                     (is false (.-stack err))
                     (done)))))))
 
+(deftest event-stream-stale-reconnect-does-not-open-when-stream-already-active
+  (async done
+    (let [calls* (atom [])
+          close-handler* (atom nil)
+          reconnect!* (atom nil)
+          relay-state* (atom nil)
+          stream-id* (atom 0)
+          deps {:relay-state* relay-state*
+                :event-stream-reconnect-ms 0
+                :read-project-config! (fn [_cwd] {})
+                :health! (fn []
+                           (swap! calls* conj [:health])
+                           (js/Promise.resolve {:matrix/connected? true
+                                                :user/id "@bot:example.org"}))
+                :register-client! (fn [_request]
+                                    (swap! calls* conj [:register])
+                                    (js/Promise.resolve {:client/id "client-1"
+                                                         :heartbeat/seconds 30
+                                                         :matrix/global-operators []}))
+                :acquire-slot! (fn [_client-id _project _invite]
+                                 (swap! calls* conj [:acquire-slot])
+                                 (js/Promise.resolve {:slot "A"
+                                                      :room/id "!slot:example.org"
+                                                      :room/name "project-A"}))
+                :update-subscriptions! (fn [_client-id _rooms]
+                                         (swap! calls* conj [:update-subscriptions])
+                                         (js/Promise.resolve {:rooms []}))
+                :send-message! (fn [_room-id _message _opts]
+                                (swap! calls* conj [:send-message])
+                                (js/Promise.resolve {:event/id "$start:example.org"}))
+                :heartbeat! (fn [_client-id]
+                              (js/Promise.resolve {:heartbeat/seconds 30}))
+                :set-interval! (fn [_f _ms] :interval-1)
+                :set-timeout! (fn [f ms]
+                                (swap! calls* conj [:set-timeout ms])
+                                (reset! reconnect!* f)
+                                :timeout-1)
+                :open-event-stream! (fn [opts client-id _on-event]
+                                      (let [stream-id (swap! stream-id* inc)]
+                                        (swap! calls* conj [:open-event-stream client-id stream-id])
+                                        (reset! close-handler* (:on-close opts))
+                                        #js {:close (fn [])
+                                             :diagnostics (fn []
+                                                            (clj->js {:stream/id stream-id}))}))}
+          replacement-stream #js {:diagnostics (fn []
+                                                 (clj->js {:stream/id "replacement"}))}
+          pi #js {:sendUserMessage (fn [_message _options])}
+          ctx #js {:cwd "/work/project"
+                   :ui #js {:notify (fn [_message _level])
+                            :setStatus (fn [_id _status])}}]
+      (-> (extension/start-relay! deps pi ctx)
+          (.then (fn [_]
+                   (@close-handler* {:stream/closed? true
+                                     :stream/close-reason "response-close"})
+                   (swap! relay-state* assoc :stream replacement-stream)
+                   (@reconnect!*)
+                   (is (= [[:health]
+                           [:register]
+                           [:acquire-slot]
+                           [:update-subscriptions]
+                           [:send-message]
+                           [:open-event-stream "client-1" 1]
+                           [:set-timeout 0]]
+                          @calls*))
+                   (is (identical? replacement-stream (:stream @relay-state*)))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
 (deftest session-start-loads-room-delivery-modes-before-opening-event-stream
   (async done
     (let [calls* (atom [])

@@ -1002,6 +1002,55 @@
                      (record-diagnostic! diagnostics* :room-delivery-modes-loaded {:rooms (keys cache)})
                      (atom cache))))))))
 
+(defn- reconnecting-stream-marker
+  []
+  #js {:diagnostics (fn []
+                      (clj->js {:stream/reconnecting? true}))})
+
+(defn- claim-empty-stream-slot!
+  [relay-state* client-id marker]
+  (loop []
+    (let [relay-state @relay-state*]
+      (cond
+        (nil? relay-state)
+        false
+
+        (not= client-id (:client-id relay-state))
+        false
+
+        (:stream relay-state)
+        false
+
+        (compare-and-set! relay-state* relay-state (assoc relay-state :stream marker))
+        true
+
+        :else
+        (recur)))))
+
+(defn- replace-stream-marker!
+  [relay-state* marker stream]
+  (loop []
+    (let [relay-state @relay-state*]
+      (cond
+        (not (identical? marker (:stream relay-state)))
+        false
+
+        (compare-and-set! relay-state*
+                          relay-state
+                          (if (some? stream)
+                            (assoc relay-state :stream stream)
+                            (dissoc relay-state :stream)))
+        true
+
+        :else
+        (recur)))))
+
+(defn- close-event-stream!
+  [stream]
+  (when stream
+    (when-let [close (.-close stream)]
+      (close))))
+
 (defn- schedule-event-stream-reconnect!
   [{:keys [set-timeout! event-stream-reconnect-ms diagnostics*]} relay-state* client-id reopen!]
   (when (and relay-state*
@@ -1018,12 +1067,14 @@
   (when open-event-stream!
     (let [stream* (atom nil)
           reopen! (fn []
-                    (when (and relay-state*
-                               (= client-id (:client-id @relay-state*)))
-                      (let [stream (open-relay-event-stream! deps pi ctx relay-state* client-id)]
-                        (when stream
-                          (swap! relay-state* assoc :stream stream)
-                          (record-diagnostic! diagnostics* :event-stream-reopened {:client/id client-id})))))
+                    (let [marker (reconnecting-stream-marker)]
+                      (when (claim-empty-stream-slot! relay-state* client-id marker)
+                        (let [stream (open-relay-event-stream! deps pi ctx relay-state* client-id)]
+                          (if stream
+                            (if (replace-stream-marker! relay-state* marker stream)
+                              (record-diagnostic! diagnostics* :event-stream-reopened {:client/id client-id})
+                              (close-event-stream! stream))
+                            (replace-stream-marker! relay-state* marker nil))))))
           stream (open-event-stream!
                   {:on-error (fn [err]
                                (record-diagnostic! diagnostics* :event-stream-error (error-summary err))

@@ -10,8 +10,9 @@
 (defn socket-path
   "Return the broker Unix domain socket path."
   ([]
-   (or (dirs/runtime-dir config/app-name)
-       (.join path "/tmp" config/app-name "broker.sock")))
+   (if-let [runtime-dir (dirs/runtime-dir config/app-name)]
+     (.join path runtime-dir "broker.sock")
+     (.join path "/tmp" config/app-name "broker.sock")))
   ([env]
    (.join path (or (aget (or env #js {}) "XDG_RUNTIME_DIR")
                    "/tmp")
@@ -101,19 +102,36 @@
          payload (when (some? body) (pr-str body))]
      (js/Promise.
       (fn [resolve reject]
-        (let [req (.request node-http
+        (let [settled? (atom false)
+              response-ended? (atom false)
+              resolve-once! (fn [value]
+                              (when (compare-and-set! settled? false true)
+                                (resolve value)))
+              reject-once! (fn [err]
+                             (when (compare-and-set! settled? false true)
+                               (reject err)))
+              req (.request node-http
                             (request-options env method uri payload)
                             (fn [^js res]
                               (let [chunks #js []]
                                 (.setEncoding res "utf8")
                                 (.on res "data" #(.push chunks %))
+                                (.on res "error" reject-once!)
+                                (.on res "aborted"
+                                     (fn []
+                                       (reject-once! (js/Error. "Broker response aborted"))))
+                                (.on res "close"
+                                     (fn []
+                                       (when-not @response-ended?
+                                         (reject-once! (js/Error. "Broker response closed before end")))))
                                 (.on res "end"
                                      (fn []
+                                       (reset! response-ended? true)
                                        (try
-                                         (resolve (unwrap-envelope (parse-edn (.join chunks ""))))
+                                         (resolve-once! (unwrap-envelope (parse-edn (.join chunks ""))))
                                          (catch js/Error err
-                                           (reject err))))))))]
-          (.on req "error" reject)
+                                           (reject-once! err))))))))]
+          (.on req "error" reject-once!)
           (when payload
             (.write req payload))
           (.end req)))))))
