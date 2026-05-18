@@ -122,6 +122,42 @@
       (json/ok-response (present/subscriptions
                          (store/update-subscriptions! db-conn client-id (:rooms body)))))))
 
+(defn- room-id-param
+  [request]
+  (get-in request [:path-params :roomId]))
+
+(defn- ensure-room-delivery-mode-authorized!
+  [db client-id room-id]
+  (when-not (store/known-room-for-client? db client-id room-id)
+    (throw (ex-info "Client is not registered for the target Matrix room."
+                    {:code :room_not_allowed
+                     :client-id client-id
+                     :room-id room-id}))))
+
+(defn get-room-delivery-mode-handler
+  [{:keys [db-conn]}]
+  (fn [request]
+    (let [client-id (client-id-param request)
+          room-id (room-id-param request)]
+      (ensure-room-delivery-mode-authorized! @db-conn client-id room-id)
+      (json/ok-response (present/room-delivery-mode
+                         (store/room-delivery-mode @db-conn room-id))))))
+
+(defn set-room-delivery-mode-handler
+  [{:keys [db-conn]}]
+  (fn [request]
+    (let [client-id (client-id-param request)
+          room-id (room-id-param request)
+          body (body-params request)]
+      (json/ok-response (present/room-delivery-mode
+                         (store/set-room-default-delivery-mode!
+                          db-conn
+                          {:client-id client-id
+                           :room-id room-id
+                           :default-delivery-mode (:defaultDeliveryMode body)
+                           :updated-by-user (:updatedByUser body)
+                           :now-ms (System/currentTimeMillis)}))))))
+
 (defn heartbeat-handler
   [{:keys [db-conn config]}]
   (fn [request]
@@ -170,20 +206,18 @@
                     (store/mark-client-suspect! db-conn client-id (System/currentTimeMillis)))}))))
 
 (defn resolve-room-handler
-  [{:keys [db-conn matrix-gateway] :as env}]
+  [{:keys [matrix-gateway] :as env}]
   (fn [request]
-    (let [body (body-params request)
-          result (idempotent! env :matrix/resolve-room request #(matrix/resolve-room! matrix-gateway (:room body)))]
-      (store/joined-room! db-conn result)
-      (json/ok-response result))))
+    (let [body (body-params request)]
+      (json/ok-response
+       (idempotent! env :matrix/resolve-room request #(matrix/resolve-room! matrix-gateway (:room body)))))))
 
 (defn create-room-handler
-  [{:keys [db-conn matrix-gateway] :as env}]
+  [{:keys [matrix-gateway] :as env}]
   (fn [request]
-    (let [body (body-params request)
-          result (idempotent! env :matrix/create-room request #(matrix/create-room! matrix-gateway body))]
-      (store/joined-room! db-conn result)
-      (json/ok-response result))))
+    (let [body (body-params request)]
+      (json/ok-response
+       (idempotent! env :matrix/create-room request #(matrix/create-room! matrix-gateway body))))))
 
 (defn- joined-room?
   [room]
@@ -196,14 +230,20 @@
                                    (filter joined-room?)
                                    vec)})))
 
+(defn- joined-room-id?
+  [matrix-gateway room-id]
+  (boolean (some #(and (= room-id (:roomId %))
+                       (joined-room? %))
+                 (matrix/list-rooms! matrix-gateway))))
+
 (defn ensure-send-authorized!
-  [db client-id room-id]
+  [db matrix-gateway client-id room-id]
   (when-not (if client-id
               (store/known-room-for-client? db client-id room-id)
-              (boolean (store/joined-room db room-id)))
+              (joined-room-id? matrix-gateway room-id))
     (throw (ex-info (if client-id
                       "Client is not registered for the target Matrix room."
-                      "Target Matrix room has not been joined or registered for this client.")
+                      "Target Matrix room is not currently joined.")
                     {:code :room_not_allowed
                      :client-id client-id
                      :room-id room-id}))))
@@ -214,7 +254,7 @@
     (let [body (body-params request)
           client-id (:clientId body)
           room-id (get-in body [:target :roomId])]
-      (ensure-send-authorized! @db-conn client-id room-id)
+      (ensure-send-authorized! @db-conn matrix-gateway client-id room-id)
       (json/ok-response
        (idempotent! env :matrix/send-message request #(matrix/send-message! matrix-gateway body))))))
 
@@ -224,7 +264,7 @@
     (let [body (body-params request)
           client-id (:clientId body)
           room-id (:roomId body)]
-      (ensure-send-authorized! @db-conn client-id room-id)
+      (ensure-send-authorized! @db-conn matrix-gateway client-id room-id)
       (json/ok-response
        (idempotent! env :matrix/typing request #(matrix/set-typing! matrix-gateway body))))))
 
@@ -234,7 +274,7 @@
     (let [body (body-params request)
           client-id (:clientId body)
           room-id (:roomId body)]
-      (ensure-send-authorized! @db-conn client-id room-id)
+      (ensure-send-authorized! @db-conn matrix-gateway client-id room-id)
       (json/ok-response
        (idempotent! env :matrix/send-reaction request #(matrix/send-reaction! matrix-gateway body))))))
 
@@ -244,7 +284,7 @@
     (let [body (body-params request)
           client-id (:clientId body)
           room-id (get-in body [:target :roomId])]
-      (ensure-send-authorized! @db-conn client-id room-id)
+      (ensure-send-authorized! @db-conn matrix-gateway client-id room-id)
       (json/ok-response
        (idempotent! env :matrix/send-file request #(matrix/send-file! matrix-gateway body))))))
 
@@ -449,6 +489,8 @@
     ["/clients/:clientId" {:delete (unregister-client-handler env)}]
     ["/clients/:clientId/events" {:get (event-stream-handler env)}]
     ["/clients/:clientId/acks" {:post (acks-handler env)}]
+    ["/clients/:clientId/rooms/:roomId/delivery-mode" {:get (get-room-delivery-mode-handler env)
+                                                       :put (set-room-delivery-mode-handler env)}]
     ["/slots" {:get (list-slots-handler env)}]
     ["/slots/acquire" {:post (acquire-slot-handler env)}]
     ["/slots/release" {:post (release-slot-handler env)}]

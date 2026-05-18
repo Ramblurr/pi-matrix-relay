@@ -142,6 +142,26 @@
    (request-json! opts "PATCH" (client-path client-id "/subscriptions")
                   {:rooms rooms})))
 
+(defn- client-room-path
+  [client-id room-id suffix]
+  (str (client-path client-id "/rooms/")
+       (encode-path-segment room-id)
+       suffix))
+
+(defn get-room-delivery-mode!
+  ([client-id room-id]
+   (get-room-delivery-mode! {} client-id room-id))
+  ([opts client-id room-id]
+   (request-json! opts "GET" (client-room-path client-id room-id "/delivery-mode") nil)))
+
+(defn set-room-delivery-mode!
+  ([client-id room-id default-delivery-mode updated-by-user]
+   (set-room-delivery-mode! {} client-id room-id default-delivery-mode updated-by-user))
+  ([opts client-id room-id default-delivery-mode updated-by-user]
+   (request-json! opts "PUT" (client-room-path client-id room-id "/delivery-mode")
+                  {:defaultDeliveryMode default-delivery-mode
+                   :updatedByUser updated-by-user})))
+
 (defn heartbeat!
   ([client-id]
    (heartbeat! {} client-id))

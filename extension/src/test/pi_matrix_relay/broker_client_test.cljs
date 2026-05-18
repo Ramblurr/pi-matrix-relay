@@ -96,12 +96,14 @@
                       (is false (.-stack err))
                       (done))))))))
 
-(deftest client-path-helpers-url-encode-client-ids
+(deftest client-path-helpers-url-encode-client-and-room-ids
   (async done
     (let [calls* (atom [])
           opts {:env #js {"XDG_RUNTIME_DIR" "/run/user/1000"}}
           client-id "matrix-relay-/work/project"
-          encoded-client-id "matrix-relay-%2Fwork%2Fproject"]
+          encoded-client-id "matrix-relay-%2Fwork%2Fproject"
+          room-id "!slot:example.org"
+          encoded-room-id "!slot%3Aexample.org"]
       (is (= (str "/v1/clients/" encoded-client-id "/events")
              (:path (js->clj (broker-client/event-stream-options #js {"XDG_RUNTIME_DIR" "/run/user/1000"}
                                                                   client-id)
@@ -116,12 +118,18 @@
         (-> (js/Promise.all
              (clj->js [(broker-client/heartbeat! opts client-id)
                        (broker-client/unregister-client! opts client-id "shutdown")
-                       (broker-client/update-subscriptions! opts client-id ["!slot:example.org"])]))
+                       (broker-client/update-subscriptions! opts client-id [room-id])
+                       (broker-client/get-room-delivery-mode! opts client-id room-id)
+                       (broker-client/set-room-delivery-mode! opts client-id room-id "steer" "@alice:example.org")]))
             (.then (fn [_]
                      (is (= [["POST" (str "/v1/clients/" encoded-client-id "/heartbeat") {}]
                              ["DELETE" (str "/v1/clients/" encoded-client-id) {:reason "shutdown"}]
                              ["PATCH" (str "/v1/clients/" encoded-client-id "/subscriptions")
-                              {:rooms ["!slot:example.org"]}]]
+                              {:rooms [room-id]}]
+                             ["GET" (str "/v1/clients/" encoded-client-id "/rooms/" encoded-room-id "/delivery-mode") nil]
+                             ["PUT" (str "/v1/clients/" encoded-client-id "/rooms/" encoded-room-id "/delivery-mode")
+                              {:defaultDeliveryMode "steer"
+                               :updatedByUser "@alice:example.org"}]]
                             @calls*))
                      (done)))
             (.catch (fn [err]

@@ -1,9 +1,9 @@
 {:tasks
- {shadow-server (shell "npx shadow-cljs server")
-  shadow-compile (shell "npx shadow-cljs compile :app")
-  shadow-release (shell "npx shadow-cljs release :app")
+ {shadow-server (shell "./node_modules/.bin/shadow-cljs server")
+  shadow-compile (shell "./node_modules/.bin/shadow-cljs compile :app")
+  shadow-release (shell "./node_modules/.bin/shadow-cljs release :app")
   shadow-test (do
-                (shell "npx shadow-cljs compile test")
+                (shell "./node_modules/.bin/shadow-cljs compile test")
                 (shell "node out/node-tests.js"))
   test {:depends [shadow-test]}
   install-local-extension {:depends [shadow-release]

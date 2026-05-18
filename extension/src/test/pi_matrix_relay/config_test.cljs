@@ -24,8 +24,7 @@
                                           :roomId "!room:example.org"
                                           :canonicalAlias "#pi:example.org"
                                           :name "Pi Room"
-                                          :mode "mentions"
-                                          :busy "follow-up"}}}
+                                          :mode "mentions"}}}
              by-default)))
     (testing "explicit local aliases are honored"
       (is (= "ops" (get-in by-alias [:rooms "ops" :alias]))))

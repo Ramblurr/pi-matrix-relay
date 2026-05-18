@@ -42,7 +42,7 @@
   (.basename path cwd))
 
 (def default-room-mode "mentions")
-(def default-busy-behavior "follow-up")
+(def default-delivery-mode "follow-up")
 
 (defn- nonblank
   [value]
@@ -61,8 +61,7 @@
   (let [alias (derive-local-alias room-result explicit-alias cwd)]
     (cond-> {:alias alias
              :roomId (:roomId room-result)
-             :mode default-room-mode
-             :busy default-busy-behavior}
+             :mode default-room-mode}
       (:canonicalAlias room-result) (assoc :canonicalAlias (:canonicalAlias room-result))
       (:name room-result) (assoc :name (:name room-result)))))
 

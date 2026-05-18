@@ -1,4 +1,18 @@
-(ns pi-matrix-relay.broker.api.presenters)
+(ns pi-matrix-relay.broker.api.presenters
+  (:import [java.text SimpleDateFormat]
+           [java.util Date TimeZone]))
+
+(defn- delivery-mode-name
+  [mode]
+  (when mode
+    (name mode)))
+
+(defn- iso-instant
+  [ms]
+  (when ms
+    (let [fmt (doto (SimpleDateFormat. "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+                (.setTimeZone (TimeZone/getTimeZone "UTC")))]
+      (.format fmt (Date. (long ms))))))
 
 (defn client-registration
   [{:keys [client-id heartbeat-seconds global-operators]}]
@@ -36,3 +50,11 @@
   [{:keys [project-key slots]}]
   {:projectId project-key
    :slots (mapv slot slots)})
+
+(defn room-delivery-mode
+  [{:keys [room-id default-delivery-mode updated-at updated-by-client updated-by-user]}]
+  {:roomId room-id
+   :defaultDeliveryMode (delivery-mode-name default-delivery-mode)
+   :updatedAt (iso-instant updated-at)
+   :updatedByClient updated-by-client
+   :updatedByUser updated-by-user})

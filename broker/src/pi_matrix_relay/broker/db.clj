@@ -47,10 +47,29 @@
     :db/valueType :db.type/keyword
     :db/cardinality :db.cardinality/one
     :db/index true}
-   {:db/ident :client/subscribed-room-id
-    :db/valueType :db.type/string
+   {:db/ident :client/subscribed-room
+    :db/valueType :db.type/ref
     :db/cardinality :db.cardinality/many
     :db/index true}
+
+   {:db/ident :room/id
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity
+    :db/index true}
+   {:db/ident :room/default-delivery-mode
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one
+    :db/index true}
+   {:db/ident :room/default-delivery-mode-updated-at
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :room/default-delivery-mode-updated-by-client
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :room/default-delivery-mode-updated-by-user
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
 
    {:db/ident :slot-room/project
     :db/valueType :db.type/ref
@@ -60,10 +79,10 @@
     :db/valueType :db.type/string
     :db/cardinality :db.cardinality/one
     :db/index true}
-   {:db/ident :slot-room/room-id
-    :db/valueType :db.type/string
+   {:db/ident :slot-room/room
+    :db/valueType :db.type/ref
     :db/cardinality :db.cardinality/one
-    :db/unique :db.unique/identity}
+    :db/index true}
    {:db/ident :slot-room/name
     :db/valueType :db.type/string
     :db/cardinality :db.cardinality/one}
@@ -98,7 +117,7 @@
     :db/valueType :db.type/uuid
     :db/cardinality :db.cardinality/one
     :db/index true}
-   {:db/ident :lease/room
+   {:db/ident :lease/slot-room
     :db/valueType :db.type/ref
     :db/cardinality :db.cardinality/one
     :db/index true}
@@ -120,23 +139,6 @@
     :db/cardinality :db.cardinality/one}
    {:db/ident :lease/release-reason
     :db/valueType :db.type/keyword
-    :db/cardinality :db.cardinality/one}
-
-   {:db/ident :joined-room/room-id
-    :db/valueType :db.type/string
-    :db/cardinality :db.cardinality/one
-    :db/unique :db.unique/identity}
-   {:db/ident :joined-room/name
-    :db/valueType :db.type/string
-    :db/cardinality :db.cardinality/one}
-   {:db/ident :joined-room/canonical-alias
-    :db/valueType :db.type/string
-    :db/cardinality :db.cardinality/one}
-   {:db/ident :joined-room/membership
-    :db/valueType :db.type/string
-    :db/cardinality :db.cardinality/one}
-   {:db/ident :joined-room/updated-at
-    :db/valueType :db.type/instant
     :db/cardinality :db.cardinality/one}
 
    {:db/ident :request/id

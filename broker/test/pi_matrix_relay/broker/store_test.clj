@@ -1,5 +1,6 @@
 (ns pi-matrix-relay.broker.store-test
   (:require [clojure.test :refer [deftest is testing]]
+            [datahike.api :as d]
             [pi-matrix-relay.broker.db :as db]
             [pi-matrix-relay.broker.store :as store]
             [pi-matrix-relay.broker.test-util :as tu]))
@@ -11,6 +12,22 @@
       (f conn)
       (finally
         (db/release-conn! conn)))))
+
+(defn room-ids
+  [conn]
+  (set (d/q '[:find [?room-id ...]
+              :where [_ :room/id ?room-id]]
+            @conn)))
+
+(defn subscribed-room-ids
+  [conn client-id]
+  (set (d/q '[:find [?room-id ...]
+              :in $ ?client-id
+              :where
+              [?client :client/instance-id ?client-id]
+              [?client :client/subscribed-room ?room]
+              [?room :room/id ?room-id]]
+            @conn client-id)))
 
 (deftest clients-subscriptions-and-room-authorization-live-in-datahike
   (with-conn
@@ -30,15 +47,42 @@
                   :heartbeat-seconds 30
                   :global-operators ["@operator:example.org"]}
                  (select-keys registration [:client-id :heartbeat-seconds :global-operators])))
-          (is (= {:project-room true
+          (is (= {:canonical-rooms #{"!project:example.org"}
+                  :subscriptions #{"!project:example.org"}
+                  :project-room true
                   :unknown false}
-                 {:project-room (store/known-room-for-client? @conn "instance-1" "!project:example.org")
+                 {:canonical-rooms (room-ids conn)
+                  :subscriptions (subscribed-room-ids conn "instance-1")
+                  :project-room (store/known-room-for-client? @conn "instance-1" "!project:example.org")
                   :unknown (store/known-room-for-client? @conn "instance-1" "!other:example.org")}))))
-      (testing "subscription replacement removes rooms without touching lease-derived authorization"
+      (testing "subscription replacement removes room refs without deleting canonical rooms"
         (store/update-subscriptions! conn "instance-1" ["!other:example.org"])
-        (is (= {:old false :new true}
-               {:old (store/known-room-for-client? @conn "instance-1" "!project:example.org")
+        (is (= {:canonical-rooms #{"!project:example.org" "!other:example.org"}
+                :subscriptions #{"!other:example.org"}
+                :old false
+                :new true}
+               {:canonical-rooms (room-ids conn)
+                :subscriptions (subscribed-room-ids conn "instance-1")
+                :old (store/known-room-for-client? @conn "instance-1" "!project:example.org")
                 :new (store/known-room-for-client? @conn "instance-1" "!other:example.org")}))))))
+
+(deftest ensure-room-preserves-persisted-default-delivery-mode
+  (with-conn
+    (fn [conn]
+      (store/register-client! conn {:now-ms 1000}
+                              {:instanceId "client-1"
+                               :protocolVersion 1
+                               :project {:id "project"}
+                               :subscriptions {:rooms ["!room:example.org"]}})
+      (store/set-room-default-delivery-mode! conn {:client-id "client-1"
+                                                   :room-id "!room:example.org"
+                                                   :default-delivery-mode :steer
+                                                   :updated-by-user "@alice:example.org"
+                                                   :now-ms 2000})
+      (is (= {:roomId "!room:example.org"
+              :defaultDeliveryMode :steer}
+             (store/ensure-room! conn "!room:example.org")))
+      (is (= :steer (store/room-default-delivery-mode @conn "!room:example.org"))))))
 
 (deftest slot-reservations-use-transaction-time-state-and-cas-lifecycle
   (with-conn
@@ -72,9 +116,19 @@
                           :client-id "client-2"
                           :room-id "!project-B:example.org"
                           :room-name "project-B"})]
-            (is (= [{:slot "A" :state :leased :room-id "!project-A:example.org"}
-                    {:slot "B" :state :leased :room-id "!project-B:example.org"}]
-                   (mapv #(select-keys % [:slot :state :room-id]) [lease-1 lease-2]))))))
+            (is (= [{:slot "A" :state :leased :room-id "!project-A:example.org" :room-name "project-A"}
+                    {:slot "B" :state :leased :room-id "!project-B:example.org" :room-name "project-B"}]
+                   (mapv #(select-keys % [:slot :state :room-id :room-name]) [lease-1 lease-2])))
+            (is (= #{["A" "!project-A:example.org" "project-A"]
+                     ["B" "!project-B:example.org" "project-B"]}
+                   (set (d/q '[:find ?slot ?room-id ?room-name
+                               :where
+                               [?lease :lease/slot ?slot]
+                               [?lease :lease/slot-room ?slot-room]
+                               [?slot-room :slot-room/name ?room-name]
+                               [?slot-room :slot-room/room ?room]
+                               [?room :room/id ?room-id]]
+                             @conn)))))))
       (testing "release uses a state CAS and frees the slot for reuse"
         (is (= {:released true}
                (store/release-slot! conn {:now-ms 1500 :client-id "client-1" :slot "A"})))
@@ -117,6 +171,81 @@
                 {:slot "B" :state :leased}]
                (mapv #(select-keys % [:slot :state])
                      (:slots (store/list-slots @conn "project")))))))))
+
+(deftest room-default-delivery-mode-is-persisted-and-authorized
+  (with-conn
+    (fn [conn]
+      (store/register-client! conn {:now-ms 1000}
+                              {:instanceId "client-1"
+                               :protocolVersion 1
+                               :project {:id "project"}
+                               :subscriptions {:rooms ["!project:example.org"]}})
+      (store/register-client! conn {:now-ms 1000}
+                              {:instanceId "client-2"
+                               :protocolVersion 1
+                               :project {:id "project"}})
+      (let [reservation (store/reserve-slot! conn {:now-ms 1100}
+                                             {:client-id "client-2"
+                                              :project {:id "project"}})]
+        (store/complete-slot-reservation! conn {:now-ms 1200
+                                                :lease-id (:lease-id reservation)
+                                                :reservation-id (:reservation-id reservation)
+                                                :client-id "client-2"
+                                                :room-id "!slot:example.org"
+                                                :room-name "project-A"}))
+      (testing "subscribed room writes persist keyword delivery mode and updater metadata"
+        (is (= {:room-id "!project:example.org"
+                :default-delivery-mode :steer
+                :updated-at 2000
+                :updated-by-client "client-1"
+                :updated-by-user "@alice:example.org"}
+               (store/set-room-default-delivery-mode! conn {:client-id "client-1"
+                                                            :room-id "!project:example.org"
+                                                            :default-delivery-mode "steer"
+                                                            :updated-by-user "@alice:example.org"
+                                                            :now-ms 2000})))
+        (is (= :steer (store/room-default-delivery-mode @conn "!project:example.org")))
+        (is (= {:room-id "!project:example.org"
+                :default-delivery-mode :steer
+                :updated-at 2000
+                :updated-by-client "client-1"
+                :updated-by-user "@alice:example.org"}
+               (store/room-delivery-mode @conn "!project:example.org"))))
+      (testing "leased slot rooms are also authorized"
+        (is (= :reject
+               (:default-delivery-mode
+                (store/set-room-default-delivery-mode! conn {:client-id "client-2"
+                                                             :room-id "!slot:example.org"
+                                                             :default-delivery-mode :reject
+                                                             :updated-by-user "@bob:example.org"
+                                                             :now-ms 3000})))))
+      (testing "unknown or unauthorized rooms are rejected"
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo
+             #"Client is not registered for the target Matrix room"
+             (store/set-room-default-delivery-mode! conn {:client-id "client-1"
+                                                          :room-id "!slot:example.org"
+                                                          :default-delivery-mode :follow-up
+                                                          :updated-by-user "@alice:example.org"
+                                                          :now-ms 4000})))
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo
+             #"Unknown broker client"
+             (store/set-room-default-delivery-mode! conn {:client-id "missing-client"
+                                                          :room-id "!project:example.org"
+                                                          :default-delivery-mode :follow-up
+                                                          :updated-by-user "@alice:example.org"
+                                                          :now-ms 4000}))))
+      (testing "invalid delivery mode values are rejected before persistence"
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo
+             #"Invalid room delivery mode"
+             (store/set-room-default-delivery-mode! conn {:client-id "client-1"
+                                                          :room-id "!project:example.org"
+                                                          :default-delivery-mode "interrupt"
+                                                          :updated-by-user "@alice:example.org"
+                                                          :now-ms 5000})))
+        (is (= :steer (store/room-default-delivery-mode @conn "!project:example.org")))))))
 
 (deftest idempotency-records-are-transactional-and-inline-capped
   (with-conn

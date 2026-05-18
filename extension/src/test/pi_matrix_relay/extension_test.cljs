@@ -75,8 +75,7 @@
                                                    :roomId "!room:example.org"
                                                    :canonicalAlias "#pi:example.org"
                                                    :name "Pi Room"
-                                                   :mode "mentions"
-                                                   :busy "follow-up"}}}}
+                                                   :mode "mentions"}}}}
                           @written*))
                    (is (= [["Bound ops to !room:example.org" "info"]]
                           @notifications*))
@@ -567,6 +566,66 @@
                     (is false (.-stack err))
                     (done)))))))
 
+(deftest session-start-loads-room-delivery-modes-before-opening-event-stream
+  (async done
+    (let [calls* (atom [])
+          deps {:read-project-config! (fn [_cwd]
+                                        {:rooms {"ops" {:alias "ops"
+                                                        :roomId "!room:example.org"
+                                                        :mode "all"}}})
+                :health! (fn []
+                           (swap! calls* conj [:health])
+                           (js/Promise.resolve {:matrix {:connected true
+                                                         :userId "@bot:example.org"}}))
+                :register-client! (fn [_request]
+                                    (swap! calls* conj [:register])
+                                    (js/Promise.resolve {:clientId "client-1"
+                                                         :eventStream "/v1/clients/client-1/events"
+                                                         :heartbeatSeconds 30
+                                                         :globalOperators ["@alice:example.org"]}))
+                :acquire-slot! (fn [_client-id _project _invite]
+                                 (swap! calls* conj [:acquire-slot])
+                                 (js/Promise.resolve {:slot "A"
+                                                      :roomId "!slot:example.org"
+                                                      :roomName "project-A"}))
+                :update-subscriptions! (fn [_client-id rooms]
+                                         (swap! calls* conj [:update-subscriptions rooms])
+                                         (js/Promise.resolve {:rooms rooms}))
+                :get-room-delivery-mode! (fn [client-id room-id]
+                                          (swap! calls* conj [:get-room-delivery-mode client-id room-id])
+                                          (js/Promise.resolve {:roomId room-id
+                                                               :defaultDeliveryMode (when (= "!slot:example.org" room-id)
+                                                                                      "steer")}))
+                :send-message! (fn [room-id _message _opts]
+                                (swap! calls* conj [:send-message room-id])
+                                (js/Promise.resolve {:eventId "$start:example.org"}))
+                :heartbeat! (fn [_client-id]
+                              (js/Promise.resolve {:heartbeatSeconds 30}))
+                :set-interval! (fn [_f _ms] :interval-1)
+                :open-event-stream! (fn [_opts client-id _on-event]
+                                      (swap! calls* conj [:open-event-stream client-id])
+                                      #js {:close (fn [])})}
+          pi #js {:sendUserMessage (fn [_message])}
+          ctx #js {:cwd "/work/project"
+                   :ui #js {:setStatus (fn [_id _status])}}]
+      (-> (extension/start-relay! deps pi ctx)
+          (.then (fn [relay-state]
+                   (is (= [[:health]
+                           [:register]
+                           [:acquire-slot]
+                           [:update-subscriptions ["!room:example.org" "!slot:example.org"]]
+                           [:get-room-delivery-mode "client-1" "!room:example.org"]
+                           [:get-room-delivery-mode "client-1" "!slot:example.org"]
+                           [:send-message "!slot:example.org"]
+                           [:open-event-stream "client-1"]]
+                          @calls*))
+                   (is (= {"!slot:example.org" {:delivery-mode "steer" :source "broker"}}
+                          @(:room-delivery-modes* relay-state)))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
 (deftest session-start-event-handler-reports-stream-active-in-remote-status
   (async done
     (let [sent* (atom [])
@@ -611,6 +670,7 @@
                              :senderIsBot false
                              :timestamp "2026-05-16T12:34:56Z"
                              :text "/status"}})
+                   (is (str/includes? (:message (last @sent*)) "default delivery mode: follow-up (system-default)"))
                    (is (str/includes? (:message (last @sent*)) "stream: active"))
                    (done)))
           (.catch (fn [err]
@@ -901,7 +961,7 @@
                        :sender "@alice:example.org"
                        :timestamp "2026-05-16T12:34:56Z"
                        :text "please respond"}}]
-    (with-redefs [config/default-busy-behavior "reject"]
+    (with-redefs [config/default-delivery-mode "reject"]
       (extension/handle-broker-event! {} pi ctx relay-state event))
     (is (= [] @sent*))
     (is (= [] @pending*))))
@@ -962,6 +1022,7 @@
            (:opts (first @acks*))))
     (is (str/includes? (:message (first @acks*)) "pi-matrix-relay status"))
     (is (str/includes? (:message (first @acks*)) "slot: A project-A"))
+    (is (str/includes? (:message (first @acks*)) "default delivery mode: follow-up (system-default)"))
     (is (str/includes? (:message (first @acks*)) "model: openai-codex/gpt-5.5"))
     (is (str/includes? (:message (first @acks*)) "context: 123456 tokens (45%/272k)"))
     (is (str/includes? (:message (first @acks*)) "usage: ↑360.0k ↓14.0k $4.591"))))
@@ -1024,6 +1085,35 @@
     (is (str/includes? (:message (first @acks*)) "model: anthropic/claude-sonnet"))
     (is (str/includes? (:message (first @acks*)) "context: ?"))
     (is (str/includes? (:message (first @acks*)) "usage: ↑10 ↓5 $0.010"))))
+
+(deftest matrix-status-command-reports-broker-delivery-mode-source
+  (let [acks* (atom [])
+        pi #js {:sendUserMessage (fn [_message _options])}
+        ctx #js {:cwd "/work/project"
+                 :isIdle (fn [] true)}
+        relay-state {:client-id "client-1"
+                     :project-config {}
+                     :project {:id "project"}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"
+                     :slot "A"
+                     :room-id "!slot:example.org"
+                     :room-name "project-A"
+                     :room-delivery-modes* (atom {"!slot:example.org" {:delivery-mode "steer"
+                                                                        :source "broker"}})}
+        deps {:send-message! (fn [room-id message opts]
+                              (swap! acks* conj {:room-id room-id
+                                                 :message message
+                                                 :opts opts})
+                              (js/Promise.resolve {:eventId "$ack:example.org"}))}
+        event {:type "matrix.message"
+               :room {:roomId "!slot:example.org"}
+               :event {:eventId "$status:example.org"
+                       :sender "@alice:example.org"
+                       :timestamp "2026-05-16T12:34:56Z"
+                       :text "/status"}}]
+    (extension/handle-broker-event! deps pi ctx relay-state event)
+    (is (str/includes? (:message (first @acks*)) "default delivery mode: steer (broker)"))))
 
 (deftest matrix-status-command-still-acks-when-branch-usage-is-unavailable
   (let [sent* (atom [])
@@ -1228,91 +1318,155 @@
     (is (= 1 (count @acks*)))
     (is (str/includes? (:message (first @acks*)) "Follow-up message queued"))))
 
-(deftest bare-steer-command-changes-room-default-and-acks
-  (let [sent* (atom [])
-        acks* (atom [])
-        behaviors* (atom {})
-        pi #js {:sendUserMessage (fn [message options]
-                                   (swap! sent* conj {:message message
-                                                      :options (some-> options (js->clj :keywordize-keys true))}))}
-        ctx #js {:cwd "/work/project"
-                 :isIdle (fn [] false)}
-        relay-state {:client-id "client-1"
-                     :project-config {}
-                     :global-operators #{"@alice:example.org"}
-                     :bot-user-id "@bot:example.org"
-                     :slot "A"
-                     :room-id "!slot:example.org"
-                     :room-name "project-A"
-                     :room-behaviors* behaviors*
-                     :pending-auto-replies* (atom [])}
-        deps {:send-message! (fn [room-id message opts]
-                              (swap! acks* conj {:room-id room-id
-                                                 :message message
-                                                 :opts opts})
-                              (js/Promise.resolve {:eventId "$ack:example.org"}))}
-        steer-event {:type "matrix.message"
-                     :room {:roomId "!slot:example.org"}
-                     :event {:eventId "$set-steer:example.org"
-                             :sender "@alice:example.org"
-                             :timestamp "2026-05-16T12:34:56Z"
-                             :text "/steer"}}
-        prompt-event {:type "matrix.message"
-                      :room {:roomId "!slot:example.org"}
-                      :event {:eventId "$next:example.org"
-                              :sender "@alice:example.org"
-                              :timestamp "2026-05-16T12:34:57Z"
-                              :text "ordinary slot prompt"}}]
-    (extension/handle-broker-event! deps pi ctx relay-state steer-event)
-    (is (= {"!slot:example.org" "steer"} @behaviors*))
-    (is (= [] @sent*))
-    (is (str/includes? (:message (first @acks*)) "Default Matrix message behavior for this room is now steer"))
-    (extension/handle-broker-event! deps pi ctx relay-state prompt-event)
-    (is (= 1 (count @sent*)))
-    (is (= {:deliverAs "steer"} (:options (first @sent*))))))
+(deftest bare-steer-command-persists-room-default-before-acking
+  (async done
+    (let [sent* (atom [])
+          acks* (atom [])
+          delivery-modes* (atom {})
+          persist* (atom nil)
+          pi #js {:sendUserMessage (fn [message options]
+                                     (swap! sent* conj {:message message
+                                                        :options (some-> options (js->clj :keywordize-keys true))}))}
+          ctx #js {:cwd "/work/project"
+                   :isIdle (fn [] false)}
+          relay-state {:client-id "client-1"
+                       :project-config {}
+                       :global-operators #{"@alice:example.org"}
+                       :bot-user-id "@bot:example.org"
+                       :slot "A"
+                       :room-id "!slot:example.org"
+                       :room-name "project-A"
+                       :room-delivery-modes* delivery-modes*
+                       :pending-auto-replies* (atom [])}
+          deps {:set-room-delivery-mode! (fn [client-id room-id mode updated-by-user]
+                                          (reset! persist* {:client-id client-id
+                                                           :room-id room-id
+                                                           :mode mode
+                                                           :updated-by-user updated-by-user})
+                                          (js/Promise.resolve {:roomId room-id
+                                                               :defaultDeliveryMode mode}))
+                :send-message! (fn [room-id message opts]
+                                (swap! acks* conj {:room-id room-id
+                                                   :message message
+                                                   :opts opts})
+                                (js/Promise.resolve {:eventId "$ack:example.org"}))}
+          steer-event {:type "matrix.message"
+                       :room {:roomId "!slot:example.org"}
+                       :event {:eventId "$set-steer:example.org"
+                               :sender "@alice:example.org"
+                               :timestamp "2026-05-16T12:34:56Z"
+                               :text "/steer"}}
+          prompt-event {:type "matrix.message"
+                        :room {:roomId "!slot:example.org"}
+                        :event {:eventId "$next:example.org"
+                                :sender "@alice:example.org"
+                                :timestamp "2026-05-16T12:34:57Z"
+                                :text "ordinary slot prompt"}}]
+      (-> (js/Promise.resolve (extension/handle-broker-event! deps pi ctx relay-state steer-event))
+          (.then (fn [_]
+                   (is (= {:client-id "client-1"
+                           :room-id "!slot:example.org"
+                           :mode "steer"
+                           :updated-by-user "@alice:example.org"}
+                          @persist*))
+                   (is (= {"!slot:example.org" {:delivery-mode "steer" :source "broker"}}
+                          @delivery-modes*))
+                   (is (= [] @sent*))
+                   (is (str/includes? (:message (first @acks*))
+                                      "Default delivery mode for this room is now steer"))
+                   (extension/handle-broker-event! deps pi ctx relay-state prompt-event)
+                   (is (= 1 (count @sent*)))
+                   (is (= {:deliverAs "steer"} (:options (first @sent*))))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
 
-(deftest bare-follow-up-command-changes-room-default-and-acks
-  (let [sent* (atom [])
-        acks* (atom [])
-        behaviors* (atom {"!slot:example.org" "steer"})
-        pi #js {:sendUserMessage (fn [message options]
-                                   (swap! sent* conj {:message message
-                                                      :options (some-> options (js->clj :keywordize-keys true))}))}
-        ctx #js {:cwd "/work/project"
-                 :isIdle (fn [] false)}
-        relay-state {:client-id "client-1"
-                     :project-config {}
-                     :global-operators #{"@alice:example.org"}
-                     :bot-user-id "@bot:example.org"
-                     :slot "A"
-                     :room-id "!slot:example.org"
-                     :room-name "project-A"
-                     :room-behaviors* behaviors*
-                     :pending-auto-replies* (atom [])}
-        deps {:send-message! (fn [room-id message opts]
-                              (swap! acks* conj {:room-id room-id
-                                                 :message message
-                                                 :opts opts})
-                              (js/Promise.resolve {:eventId "$ack:example.org"}))}
-        follow-event {:type "matrix.message"
-                      :room {:roomId "!slot:example.org"}
-                      :event {:eventId "$set-follow-up:example.org"
-                              :sender "@alice:example.org"
-                              :timestamp "2026-05-16T12:34:56Z"
-                              :text "/follow-up"}}
-        prompt-event {:type "matrix.message"
-                      :room {:roomId "!slot:example.org"}
-                      :event {:eventId "$next:example.org"
-                              :sender "@alice:example.org"
-                              :timestamp "2026-05-16T12:34:57Z"
-                              :text "ordinary slot prompt"}}]
-    (extension/handle-broker-event! deps pi ctx relay-state follow-event)
-    (is (= {"!slot:example.org" "follow-up"} @behaviors*))
-    (is (= [] @sent*))
-    (is (str/includes? (:message (first @acks*)) "Default Matrix message behavior for this room is now follow-up"))
-    (extension/handle-broker-event! deps pi ctx relay-state prompt-event)
-    (is (= 1 (count @sent*)))
-    (is (= {:deliverAs "followUp"} (:options (first @sent*))))))
+(deftest bare-follow-up-and-reject-commands-persist-room-defaults
+  (async done
+    (let [acks* (atom [])
+          delivery-modes* (atom {"!slot:example.org" {:delivery-mode "steer" :source "broker"}})
+          persisted* (atom [])
+          pi #js {:sendUserMessage (fn [_message _options])}
+          ctx #js {:cwd "/work/project"
+                   :isIdle (fn [] false)}
+          relay-state {:client-id "client-1"
+                       :project-config {}
+                       :global-operators #{"@alice:example.org"}
+                       :bot-user-id "@bot:example.org"
+                       :slot "A"
+                       :room-id "!slot:example.org"
+                       :room-name "project-A"
+                       :room-delivery-modes* delivery-modes*
+                       :pending-auto-replies* (atom [])}
+          deps {:set-room-delivery-mode! (fn [_client-id room-id mode _updated-by-user]
+                                          (swap! persisted* conj mode)
+                                          (js/Promise.resolve {:roomId room-id
+                                                               :defaultDeliveryMode mode}))
+                :send-message! (fn [room-id message opts]
+                                (swap! acks* conj {:room-id room-id
+                                                   :message message
+                                                   :opts opts})
+                                (js/Promise.resolve {:eventId "$ack:example.org"}))}
+          event-for (fn [event-id text]
+                      {:type "matrix.message"
+                       :room {:roomId "!slot:example.org"}
+                       :event {:eventId event-id
+                               :sender "@alice:example.org"
+                               :timestamp "2026-05-16T12:34:56Z"
+                               :text text}})]
+      (-> (js/Promise.resolve (extension/handle-broker-event! deps pi ctx relay-state (event-for "$follow" "/follow-up")))
+          (.then (fn [_]
+                   (extension/handle-broker-event! deps pi ctx relay-state (event-for "$reject" "/reject"))))
+          (.then (fn [_]
+                   (is (= ["follow-up" "reject"] @persisted*))
+                   (is (= {"!slot:example.org" {:delivery-mode "reject" :source "broker"}}
+                          @delivery-modes*))
+                   (is (= ["Default delivery mode for this room is now follow-up."
+                           "Default delivery mode for this room is now reject."]
+                          (mapv :message @acks*)))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest bare-delivery-mode-command-reports-broker-failure-without-changing-cache
+  (async done
+    (let [acks* (atom [])
+          delivery-modes* (atom {"!slot:example.org" {:delivery-mode "steer" :source "broker"}})
+          pi #js {:sendUserMessage (fn [_message _options])}
+          ctx #js {:cwd "/work/project"}
+          relay-state {:client-id "client-1"
+                       :project-config {}
+                       :global-operators #{"@alice:example.org"}
+                       :bot-user-id "@bot:example.org"
+                       :slot "A"
+                       :room-id "!slot:example.org"
+                       :room-name "project-A"
+                       :room-delivery-modes* delivery-modes*}
+          deps {:set-room-delivery-mode! (fn [_client-id _room-id _mode _updated-by-user]
+                                          (js/Promise.reject (js/Error. "broker write failed")))
+                :send-message! (fn [room-id message opts]
+                                (swap! acks* conj {:room-id room-id
+                                                   :message message
+                                                   :opts opts})
+                                (js/Promise.resolve {:eventId "$ack:example.org"}))}
+          event {:type "matrix.message"
+                 :room {:roomId "!slot:example.org"}
+                 :event {:eventId "$set-steer:example.org"
+                         :sender "@alice:example.org"
+                         :timestamp "2026-05-16T12:34:56Z"
+                         :text "/follow-up"}}]
+      (-> (js/Promise.resolve (extension/handle-broker-event! deps pi ctx relay-state event))
+          (.then (fn [_]
+                   (is (= {"!slot:example.org" {:delivery-mode "steer" :source "broker"}}
+                          @delivery-modes*))
+                   (is (str/includes? (:message (first @acks*))
+                                      "Default delivery mode update failed: broker write failed"))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
 
 (deftest matrix-abort-command-aborts-current-turn-and-sends-ack
   (let [aborted? (atom false)

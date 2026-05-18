@@ -1,5 +1,6 @@
 (ns pi-matrix-relay.broker.store
-  (:require [datahike.api :as d]
+  (:require [clojure.string :as str]
+            [datahike.api :as d]
             [pi-matrix-relay.broker.json :as json]
             [pi-matrix-relay.broker.slots :as slots])
   (:import [java.security MessageDigest]
@@ -7,6 +8,7 @@
 
 (def active-lease-states #{:reserved :leased :suspect})
 (def terminal-lease-states #{:released :failed})
+(def allowed-delivery-modes #{:follow-up :steer :reject})
 (def idempotency-result-byte-limit 2048)
 
 (defn- now-date
@@ -67,6 +69,30 @@
                    :where [?project :project/key ?project-key]]
                  key)))
 
+(defn- room-from-entity
+  [db entity-id]
+  (when entity-id
+    (let [room (d/pull db [:room/id :room/default-delivery-mode] entity-id)]
+      {:roomId (:room/id room)
+       :defaultDeliveryMode (:room/default-delivery-mode room)})))
+
+(defn room-by-id
+  [db room-id]
+  (room-from-entity
+   db
+   (first-entity db
+                 '[:find ?room
+                   :in $ ?room-id
+                   :where [?room :room/id ?room-id]]
+                 room-id)))
+
+(defn ensure-room!
+  [conn room-id]
+  (when (str/blank? (str room-id))
+    (throw (ex-info "Matrix room ID is required." {:code :invalid_request})))
+  (d/transact conn [{:room/id room-id}])
+  (room-by-id @conn room-id))
+
 (defn ensure-project!
   [conn project]
   (let [key (project-key project)]
@@ -95,7 +121,7 @@
                              :client/registered-at
                              :client/last-heartbeat-at
                              :client/state
-                             :client/subscribed-room-id
+                             {:client/subscribed-room [:room/id]}
                              {:client/project [:project/id :project/key :project/root :project/display-name]}]
                          entity-id)]
       {:client-id (:client/instance-id client)
@@ -105,7 +131,7 @@
                  :project-root (get-in client [:client/project :project/root])
                  :project-display-name (get-in client [:client/project :project/display-name])}
        :metadata (parse-json-map (:client/metadata-json client))
-       :subscriptions (set (:client/subscribed-room-id client))
+       :subscriptions (set (keep :room/id (:client/subscribed-room client)))
        :registered-at (instant->ms (:client/registered-at client))
        :last-heartbeat-at (instant->ms (:client/last-heartbeat-at client))
        :state (:client/state client)})))
@@ -134,23 +160,26 @@
 
 (defn- subscribed-room-ids
   [db client-id]
-  (set (d/q '[:find [?room ...]
+  (set (d/q '[:find [?room-id ...]
               :in $ ?client-id
               :where
               [?client :client/instance-id ?client-id]
-              [?client :client/subscribed-room-id ?room]]
+              [?client :client/subscribed-room ?room]
+              [?room :room/id ?room-id]]
             db client-id)))
 
 (defn- set-client-subscriptions!
   [conn client-id rooms]
   (require-client @conn client-id)
   (let [rooms (set (or rooms []))
+        _ (doseq [room rooms]
+            (ensure-room! conn room))
         old (subscribed-room-ids @conn client-id)
         tx-data (concat
                  (for [room (remove rooms old)]
-                   [:db/retract [:client/instance-id client-id] :client/subscribed-room-id room])
+                   [:db/retract [:client/instance-id client-id] :client/subscribed-room [:room/id room]])
                  (for [room (remove old rooms)]
-                   [:db/add [:client/instance-id client-id] :client/subscribed-room-id room]))]
+                   [:db/add [:client/instance-id client-id] :client/subscribed-room [:room/id room]]))]
     (when (seq tx-data)
       (d/transact conn (vec tx-data)))
     {:rooms (vec rooms)}))
@@ -196,7 +225,7 @@
                             :lease/release-reason
                             {:lease/project [:project/id :project/key]}
                             {:lease/client [:client/instance-id :client/metadata-json]}
-                            {:lease/room [:slot-room/room-id :slot-room/name]}]
+                            {:lease/slot-room [:slot-room/name {:slot-room/room [:room/id]}]}]
                         entity-id)]
       (cond-> {:lease-id (:lease/id lease)
                :slot (:lease/slot lease)
@@ -211,10 +240,10 @@
                :last-heartbeat-at (instant->ms (:lease/last-heartbeat-at lease))
                :suspect-at (instant->ms (:lease/suspect-at lease))
                :released-at (instant->ms (:lease/released-at lease))}
-        (get-in lease [:lease/room :slot-room/room-id])
-        (assoc :room-id (get-in lease [:lease/room :slot-room/room-id]))
-        (get-in lease [:lease/room :slot-room/name])
-        (assoc :room-name (get-in lease [:lease/room :slot-room/name]))
+        (get-in lease [:lease/slot-room :slot-room/room :room/id])
+        (assoc :room-id (get-in lease [:lease/slot-room :slot-room/room :room/id]))
+        (get-in lease [:lease/slot-room :slot-room/name])
+        (assoc :room-name (get-in lease [:lease/slot-room :slot-room/name]))
         (:lease/release-reason lease)
         (assoc :release-reason (:lease/release-reason lease))))))
 
@@ -300,60 +329,65 @@
   [db entity-id]
   (when entity-id
     (let [room (d/pull db [:slot-room/slot
-                           :slot-room/room-id
+                           {:slot-room/room [:room/id]}
                            :slot-room/name
                            :slot-room/created-at
                            :slot-room/updated-at
                            {:slot-room/project [:project/id :project/key]}]
                        entity-id)]
       {:slot (:slot-room/slot room)
-       :room-id (:slot-room/room-id room)
+       :room-id (get-in room [:slot-room/room :room/id])
        :room-name (:slot-room/name room)
        :project-id (get-in room [:slot-room/project :project/id])
        :project-key (get-in room [:slot-room/project :project/key])
        :created-at (instant->ms (:slot-room/created-at room))
        :updated-at (instant->ms (:slot-room/updated-at room))})))
 
+(defn- slot-room-eid
+  [db project-key slot]
+  (first-entity db
+                '[:find ?room
+                  :in $ ?project-key ?slot
+                  :where
+                  [?project :project/key ?project-key]
+                  [?room :slot-room/project ?project]
+                  [?room :slot-room/slot ?slot]]
+                project-key slot))
+
 (defn slot-room
   [db project-key slot]
-  (slot-room-from-entity
-   db
-   (first-entity db
-                 '[:find ?room
-                   :in $ ?project-key ?slot
-                   :where
-                   [?project :project/key ?project-key]
-                   [?room :slot-room/project ?project]
-                   [?room :slot-room/slot ?slot]]
-                 project-key slot)))
+  (slot-room-from-entity db (slot-room-eid db project-key slot)))
+
+(defn- slot-room-eid-by-room-id
+  [db room-id]
+  (first-entity db
+                '[:find ?slot-room
+                  :in $ ?room-id
+                  :where
+                  [?room :room/id ?room-id]
+                  [?slot-room :slot-room/room ?room]]
+                room-id))
 
 (defn- slot-room-by-room-id
   [db room-id]
-  (slot-room-from-entity
-   db
-   (first-entity db
-                 '[:find ?room
-                   :in $ ?room-id
-                   :where [?room :slot-room/room-id ?room-id]]
-                 room-id)))
+  (slot-room-from-entity db (slot-room-eid-by-room-id db room-id)))
 
 (defn remember-slot-room!
   [conn {:keys [project slot room-id room-name now-ms] :as command}]
   (let [project-key (or (:project-key command) (project-key project))
         project (ensure-project! conn (or project {:id project-key}))
         now (now-date now-ms)
+        _ (when-not (seq slot)
+            (throw (ex-info "Slot is required." {:code :invalid_request})))
+        _ (ensure-room! conn room-id)
         existing (or (slot-room @conn project-key slot)
                      (slot-room-by-room-id @conn room-id))]
-    (when-not (seq slot)
-      (throw (ex-info "Slot is required." {:code :invalid_request})))
-    (when-not (seq room-id)
-      (throw (ex-info "Matrix room ID is required." {:code :invalid_request})))
     (if existing
       existing
       (do
         (d/transact conn [{:slot-room/project [:project/id (:project-id project)]
                            :slot-room/slot slot
-                           :slot-room/room-id room-id
+                           :slot-room/room [:room/id room-id]
                            :slot-room/name room-name
                            :slot-room/created-at now
                            :slot-room/updated-at now}])
@@ -371,19 +405,22 @@
                       {:code :slot_not_found
                        :client-id client-id
                        :slot (:slot lease)})))
-    (let [room-exists? (slot-room-by-room-id @conn room-id)]
+    (ensure-room! conn room-id)
+    (let [slot-room-eid (slot-room-eid-by-room-id @conn room-id)
+          slot-room-ref (or slot-room-eid -1)]
       (d/transact
        conn
-       (cond-> [[:db/cas [:lease/id lease-id] :lease/state :reserved :leased]
-                (cond-> {:slot-room/project [:project/id (:project-id lease)]
-                         :slot-room/slot (:slot lease)
-                         :slot-room/room-id room-id
-                         :slot-room/name room-name
-                         :slot-room/updated-at now}
-                  (nil? room-exists?) (assoc :slot-room/created-at now))
-                [:db/add [:lease/id lease-id] :lease/room [:slot-room/room-id room-id]]
-                [:db/add [:lease/id lease-id] :lease/acquired-at now]
-                [:db/add [:lease/id lease-id] :lease/last-heartbeat-at now]])))
+       [[:db/cas [:lease/id lease-id] :lease/state :reserved :leased]
+        (cond-> {:db/id slot-room-ref
+                 :slot-room/project [:project/id (:project-id lease)]
+                 :slot-room/slot (:slot lease)
+                 :slot-room/room [:room/id room-id]
+                 :slot-room/name room-name
+                 :slot-room/updated-at now}
+          (nil? slot-room-eid) (assoc :slot-room/created-at now))
+        [:db/add [:lease/id lease-id] :lease/slot-room slot-room-ref]
+        [:db/add [:lease/id lease-id] :lease/acquired-at now]
+        [:db/add [:lease/id lease-id] :lease/last-heartbeat-at now]]))
     (lease-by-id @conn lease-id)))
 
 (defn abandon-slot-reservation!
@@ -535,37 +572,89 @@
 
 (defn known-room-for-client?
   [db client-id room-id]
-  (let [client (require-client db client-id)]
-    (boolean
-     (or (contains? (:subscriptions client) room-id)
-         (some #(= room-id (:room-id %)) (active-leases-for-client db client-id))))))
+  (require-client db client-id)
+  (boolean
+   (or (seq (d/q '[:find [?room ...]
+                   :in $ ?client-id ?room-id
+                   :where
+                   [?client :client/instance-id ?client-id]
+                   [?room :room/id ?room-id]
+                   [?client :client/subscribed-room ?room]]
+                 db client-id room-id))
+       (seq (d/q '[:find [?lease ...]
+                   :in $ ?client-id ?room-id
+                   :where
+                   [?client :client/instance-id ?client-id]
+                   [?room :room/id ?room-id]
+                   [?slot-room :slot-room/room ?room]
+                   [?lease :lease/slot-room ?slot-room]
+                   [?lease :lease/client ?client]
+                   [?lease :lease/state ?lease-state]
+                   [(contains? #{:reserved :leased :suspect} ?lease-state)]]
+                 db client-id room-id)))))
 
-(defn joined-room!
-  [conn room]
-  (let [now (now-date nil)]
-    (d/transact conn [(cond-> {:joined-room/room-id (:roomId room)
-                               :joined-room/updated-at now}
-                        (:name room) (assoc :joined-room/name (:name room))
-                        (:canonicalAlias room) (assoc :joined-room/canonical-alias (:canonicalAlias room))
-                        (:membership room) (assoc :joined-room/membership (:membership room)))])
-    room))
+(defn- normalize-delivery-mode
+  [mode]
+  (cond
+    (keyword? mode) mode
+    (string? mode) (keyword mode)
+    :else mode))
 
-(defn joined-room
+(defn- validate-delivery-mode!
+  [mode]
+  (let [mode (normalize-delivery-mode mode)]
+    (when-not (contains? allowed-delivery-modes mode)
+      (throw (ex-info "Invalid room delivery mode."
+                      {:code :invalid_request
+                       :default-delivery-mode (if (keyword? mode) (name mode) mode)
+                       :allowed (mapv name (sort allowed-delivery-modes))})))
+    mode))
+
+(defn room-default-delivery-mode
   [db room-id]
-  (when-let [entity-id (first-entity db
-                                     '[:find ?room
-                                       :in $ ?room-id
-                                       :where [?room :joined-room/room-id ?room-id]]
-                                     room-id)]
-    (let [room (d/pull db [:joined-room/room-id
-                           :joined-room/name
-                           :joined-room/canonical-alias
-                           :joined-room/membership]
-                       entity-id)]
-      {:roomId (:joined-room/room-id room)
-       :name (:joined-room/name room)
-       :canonicalAlias (:joined-room/canonical-alias room)
-       :membership (:joined-room/membership room)})))
+  (:defaultDeliveryMode (room-by-id db room-id)))
+
+(defn room-delivery-mode
+  [db room-id]
+  (let [entity-id (first-entity db
+                                '[:find ?room
+                                  :in $ ?room-id
+                                  :where [?room :room/id ?room-id]]
+                                room-id)]
+    (if entity-id
+      (let [room (d/pull db [:room/id
+                             :room/default-delivery-mode
+                             :room/default-delivery-mode-updated-at
+                             :room/default-delivery-mode-updated-by-user
+                             {:room/default-delivery-mode-updated-by-client [:client/instance-id]}]
+                         entity-id)]
+        {:room-id (:room/id room)
+         :default-delivery-mode (:room/default-delivery-mode room)
+         :updated-at (instant->ms (:room/default-delivery-mode-updated-at room))
+         :updated-by-client (get-in room [:room/default-delivery-mode-updated-by-client :client/instance-id])
+         :updated-by-user (:room/default-delivery-mode-updated-by-user room)})
+      {:room-id room-id
+       :default-delivery-mode nil
+       :updated-at nil
+       :updated-by-client nil
+       :updated-by-user nil})))
+
+(defn set-room-default-delivery-mode!
+  [conn {:keys [client-id room-id default-delivery-mode updated-by-user now-ms]}]
+  (let [mode (validate-delivery-mode! default-delivery-mode)
+        now (now-date now-ms)]
+    (when-not (known-room-for-client? @conn client-id room-id)
+      (throw (ex-info "Client is not registered for the target Matrix room."
+                      {:code :room_not_allowed
+                       :client-id client-id
+                       :room-id room-id})))
+    (ensure-room! conn room-id)
+    (d/transact conn (cond-> [[:db/add [:room/id room-id] :room/default-delivery-mode mode]
+                              [:db/add [:room/id room-id] :room/default-delivery-mode-updated-at now]
+                              [:db/add [:room/id room-id] :room/default-delivery-mode-updated-by-client [:client/instance-id client-id]]]
+                       (some? updated-by-user)
+                       (conj [:db/add [:room/id room-id] :room/default-delivery-mode-updated-by-user updated-by-user])))
+    (room-delivery-mode @conn room-id)))
 
 (defn clients-for-room
   [db room-id]
@@ -576,15 +665,17 @@
                                    :in $ ?room-id
                                    :where
                                    [?client :client/instance-id ?client-id]
-                                   [?client :client/subscribed-room-id ?room-id]
                                    [?client :client/state ?state]
-                                   [(not= ?state :unregistered)]]
+                                   [(not= ?state :unregistered)]
+                                   [?room :room/id ?room-id]
+                                   [?client :client/subscribed-room ?room]]
                                  db room-id)
                             (d/q '[:find [?client-id ...]
                                    :in $ ?room-id
                                    :where
-                                   [?room :slot-room/room-id ?room-id]
-                                   [?lease :lease/room ?room]
+                                   [?room :room/id ?room-id]
+                                   [?slot-room :slot-room/room ?room]
+                                   [?lease :lease/slot-room ?slot-room]
                                    [?lease :lease/state ?lease-state]
                                    [(contains? #{:reserved :leased :suspect} ?lease-state)]
                                    [?lease :lease/client ?client]

@@ -45,38 +45,66 @@
         (is (.exists (io/file state-dir "broker.sqlite")))
         (is (= {:project/id [:db.type/uuid :db.cardinality/one :db.unique/identity false]
                 :project/key [:db.type/string :db.cardinality/one :db.unique/value true]
+                :room/id [:db.type/string :db.cardinality/one :db.unique/identity true]
+                :room/default-delivery-mode [:db.type/keyword :db.cardinality/one nil true]
+                :room/default-delivery-mode-updated-by-client [:db.type/ref :db.cardinality/one nil false]
                 :client/instance-id [:db.type/string :db.cardinality/one :db.unique/identity false]
-                :client/subscribed-room-id [:db.type/string :db.cardinality/many nil true]
+                :client/subscribed-room [:db.type/ref :db.cardinality/many nil true]
                 :lease/id [:db.type/uuid :db.cardinality/one :db.unique/identity false]
                 :lease/state [:db.type/keyword :db.cardinality/one nil true]
+                :lease/slot-room [:db.type/ref :db.cardinality/one nil true]
                 :slot-room/project [:db.type/ref :db.cardinality/one nil true]
-                :slot-room/room-id [:db.type/string :db.cardinality/one :db.unique/identity false]
+                :slot-room/room [:db.type/ref :db.cardinality/one nil true]
                 :request/id [:db.type/string :db.cardinality/one :db.unique/identity false]
                 :request/status [:db.type/keyword :db.cardinality/one nil true]}
                {:project/id (attr-schema conn :project/id)
                 :project/key (attr-schema conn :project/key)
+                :room/id (attr-schema conn :room/id)
+                :room/default-delivery-mode (attr-schema conn :room/default-delivery-mode)
+                :room/default-delivery-mode-updated-by-client (attr-schema conn :room/default-delivery-mode-updated-by-client)
                 :client/instance-id (attr-schema conn :client/instance-id)
-                :client/subscribed-room-id (attr-schema conn :client/subscribed-room-id)
+                :client/subscribed-room (attr-schema conn :client/subscribed-room)
                 :lease/id (attr-schema conn :lease/id)
                 :lease/state (attr-schema conn :lease/state)
+                :lease/slot-room (attr-schema conn :lease/slot-room)
                 :slot-room/project (attr-schema conn :slot-room/project)
-                :slot-room/room-id (attr-schema conn :slot-room/room-id)
+                :slot-room/room (attr-schema conn :slot-room/room)
                 :request/id (attr-schema conn :request/id)
                 :request/status (attr-schema conn :request/status)}))
         (is (every? (schema-idents conn)
                     [:project/id
                      :project/key
+                     :room/id
+                     :room/default-delivery-mode
+                     :room/default-delivery-mode-updated-at
+                     :room/default-delivery-mode-updated-by-client
+                     :room/default-delivery-mode-updated-by-user
                      :client/instance-id
-                     :client/subscribed-room-id
+                     :client/subscribed-room
                      :lease/id
                      :lease/state
+                     :lease/slot-room
                      :slot-room/project
                      :slot-room/slot
-                     :slot-room/room-id
+                     :slot-room/room
                      :slot-room/name
                      :request/id
                      :request/fingerprint
                      :request/result-json]))
+        (is (not-any? (schema-idents conn)
+                      [:client/subscribed-room-id
+                       :slot-room/room-id
+                       :lease/room
+                       :joined-room/room-id
+                       :joined-room/name
+                       :joined-room/canonical-alias
+                       :joined-room/membership]))
+        (is (= #{:room/id
+                 :room/default-delivery-mode
+                 :room/default-delivery-mode-updated-at
+                 :room/default-delivery-mode-updated-by-client
+                 :room/default-delivery-mode-updated-by-user}
+               (set (filter #(= "room" (namespace %)) (schema-idents conn)))))
         (finally
           (db/release-conn! conn))))))
 

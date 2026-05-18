@@ -12,6 +12,8 @@
   {:health! broker-client/health!
    :register-client! broker-client/register-client!
    :update-subscriptions! broker-client/update-subscriptions!
+   :get-room-delivery-mode! broker-client/get-room-delivery-mode!
+   :set-room-delivery-mode! broker-client/set-room-delivery-mode!
    :heartbeat! broker-client/heartbeat!
    :unregister-client! broker-client/unregister-client!
    :acquire-slot! broker-client/acquire-slot!
@@ -159,29 +161,24 @@
      :roomId (:room-id relay-state)
      :roomClass "slot"
      :mode "all"
-     :busy config/default-busy-behavior
      :autoReply true
      :slot (:slot relay-state)}))
 
-(defn- room-behavior
+(defn- cached-room-delivery-mode
   [relay-state room-id]
-  (when-let [behaviors* (:room-behaviors* relay-state)]
-    (get @behaviors* room-id)))
+  (when-let [delivery-modes* (:room-delivery-modes* relay-state)]
+    (get @delivery-modes* room-id)))
 
-(defn- with-room-behavior
-  [relay-state room-id binding]
-  (when binding
-    (if-let [behavior (room-behavior relay-state room-id)]
-      (assoc binding :busy behavior)
-      binding)))
+(defn- effective-room-delivery-mode
+  [relay-state room-id]
+  (or (cached-room-delivery-mode relay-state room-id)
+      {:delivery-mode config/default-delivery-mode
+       :source "system-default"}))
 
 (defn- binding-for-relay-room
   [relay-state room-id]
-  (with-room-behavior
-    relay-state
-    room-id
-    (or (slot-binding-for-room-id relay-state room-id)
-        (binding-for-room-id (:project-config relay-state) room-id))))
+  (or (slot-binding-for-room-id relay-state room-id)
+      (binding-for-room-id (:project-config relay-state) room-id)))
 
 (defn- authorized-sender?
   [{:keys [project-config global-operators]} sender]
@@ -294,12 +291,12 @@
     true))
 
 (defn- deliver-user-message!
-  [^js pi ^js ctx binding prompt]
+  [^js pi ^js ctx relay-state room-id prompt]
   (if (idle? ctx)
     (do
       (.sendUserMessage pi prompt)
       true)
-    (case (or (:busy binding) config/default-busy-behavior)
+    (case (:delivery-mode (effective-room-delivery-mode relay-state room-id))
       "steer" (do
                  (.sendUserMessage pi prompt #js {:deliverAs "steer"})
                  true)
@@ -311,8 +308,8 @@
         true))))
 
 (defn- deliver-command-message!
-  [^js pi prompt behavior]
-  (.sendUserMessage pi prompt #js {:deliverAs (if (= "steer" behavior)
+  [^js pi prompt delivery-mode]
+  (.sendUserMessage pi prompt #js {:deliverAs (if (= "steer" delivery-mode)
                                                 "steer"
                                                 "followUp")})
   true)
@@ -454,22 +451,26 @@
     (str "usage: ↑" (format-count input) " ↓" (format-count output) " " (format-currency cost))))
 
 (defn- remote-status-message
-  [relay-state binding room-id ctx]
-  (str "pi-matrix-relay status\n"
-       "project: " (or (get-in relay-state [:project :id]) "unknown") "\n"
-       "slot: " (or (:slot relay-state) "?") " " (or (:room-name relay-state) "unknown") "\n"
-       "room: " room-id "\n"
-       "default message behavior: " (or (:busy binding) config/default-busy-behavior) "\n"
-       "heartbeat: " (if (:heartbeat-id relay-state) "active" "inactive") "\n"
-       "stream: " (if (:stream relay-state) "active" "inactive") "\n"
-       (ctx-model-line ctx) "\n"
-       (ctx-context-line ctx) "\n"
-       (ctx-usage-line ctx)))
+  [relay-state _binding room-id ctx]
+  (let [{:keys [delivery-mode source]} (effective-room-delivery-mode relay-state room-id)]
+    (str "pi-matrix-relay status\n"
+         "project: " (or (get-in relay-state [:project :id]) "unknown") "\n"
+         "slot: " (or (:slot relay-state) "?") " " (or (:room-name relay-state) "unknown") "\n"
+         "room: " room-id "\n"
+         "default delivery mode: " delivery-mode " (" source ")\n"
+         "heartbeat: " (if (:heartbeat-id relay-state) "active" "inactive") "\n"
+         "stream: " (if (:stream relay-state) "active" "inactive") "\n"
+         (ctx-model-line ctx) "\n"
+         (ctx-context-line ctx) "\n"
+         (ctx-usage-line ctx))))
 
-(defn- set-room-behavior!
-  [relay-state room-id behavior]
-  (when-let [behaviors* (:room-behaviors* relay-state)]
-    (swap! behaviors* assoc room-id behavior)))
+(defn- cache-room-delivery-mode!
+  [relay-state room-id delivery-mode]
+  (when-let [delivery-modes* (:room-delivery-modes* relay-state)]
+    (if (some? delivery-mode)
+      (swap! delivery-modes* assoc room-id {:delivery-mode delivery-mode
+                                            :source "broker"})
+      (swap! delivery-modes* dissoc room-id))))
 
 (defn- remote-command-name
   [name]
@@ -478,6 +479,7 @@
     "steer" :steer
     "follow-up" :follow-up
     "followup" :follow-up
+    "reject" :reject
     "abort" :abort
     "compact" :compact
     "new" :new
@@ -623,6 +625,25 @@
   [deps pi relay-state room-id event-id]
   (queue-new-session-command! deps pi relay-state room-id event-id))
 
+(defn- persist-room-delivery-mode-command!
+  [{:keys [set-room-delivery-mode!] :as deps} relay-state room-id event-id sender delivery-mode]
+  (if-not set-room-delivery-mode!
+    (do
+      (send-room-ack! deps relay-state room-id event-id
+                      "Default delivery mode update failed: broker client is not available.")
+      (promise true))
+    (-> (promise (set-room-delivery-mode! (:client-id relay-state) room-id delivery-mode sender))
+        (.then (fn [result]
+                 (let [persisted-mode (or (:defaultDeliveryMode result) delivery-mode)]
+                   (cache-room-delivery-mode! relay-state room-id persisted-mode)
+                   (send-room-ack! deps relay-state room-id event-id
+                                   (str "Default delivery mode for this room is now " persisted-mode "."))
+                   true)))
+        (.catch (fn [err]
+                  (send-room-ack! deps relay-state room-id event-id
+                                  (str "Default delivery mode update failed: " (or (.-message err) (str err))))
+                  true)))))
+
 (defn- handle-remote-command!
   [deps pi ctx relay-state binding {:keys [room event] :as matrix-event}]
   (let [room-id (:roomId room)
@@ -648,11 +669,7 @@
 
           :steer
           (if (str/blank? args)
-            (do
-              (set-room-behavior! relay-state room-id "steer")
-              (send-room-ack! deps relay-state room-id event-id
-                              "Default Matrix message behavior for this room is now steer.")
-              true)
+            (persist-room-delivery-mode-command! deps relay-state room-id event-id (:sender event) "steer")
             (let [prompt-event (command-prompt-event matrix-event args)
                   prompt (matrix-message-prompt (:project-config relay-state) binding prompt-event)]
               (deliver-command-message! pi prompt "steer")
@@ -662,16 +679,20 @@
 
           :follow-up
           (if (str/blank? args)
-            (do
-              (set-room-behavior! relay-state room-id "follow-up")
-              (send-room-ack! deps relay-state room-id event-id
-                              "Default Matrix message behavior for this room is now follow-up.")
-              true)
+            (persist-room-delivery-mode-command! deps relay-state room-id event-id (:sender event) "follow-up")
             (let [prompt-event (command-prompt-event matrix-event args)
                   prompt (matrix-message-prompt (:project-config relay-state) binding prompt-event)]
               (deliver-command-message! pi prompt "follow-up")
               (record-pending-auto-reply! relay-state binding room-id event-id)
               (send-room-ack! deps relay-state room-id event-id "Follow-up message queued.")
+              true))
+
+          :reject
+          (if (str/blank? args)
+            (persist-room-delivery-mode-command! deps relay-state room-id event-id (:sender event) "reject")
+            (do
+              (send-room-ack! deps relay-state room-id event-id
+                              "Reject only changes the default delivery mode; omit message text.")
               true)))
         (catch js/Error err
           (record-diagnostic! (:diagnostics* deps)
@@ -701,11 +722,13 @@
       (when (and binding
                  (not (:senderIsBot message))
                  (authorized-sender? relay-state (:sender message)))
-        (when-not (handle-remote-command! deps pi ctx relay-state binding event)
-          (when (message-allowed-by-mode? binding (:text message) (:bot-user-id relay-state))
-            (let [delivered? (deliver-user-message! pi ctx binding (matrix-message-prompt (:project-config relay-state) binding event))]
-              (when delivered?
-                (record-pending-auto-reply! relay-state binding room-id (:eventId message))))))))
+        (let [command-result (handle-remote-command! deps pi ctx relay-state binding event)]
+          (if command-result
+            command-result
+            (when (message-allowed-by-mode? binding (:text message) (:bot-user-id relay-state))
+              (let [delivered? (deliver-user-message! pi ctx relay-state room-id (matrix-message-prompt (:project-config relay-state) binding event))]
+                (when delivered?
+                  (record-pending-auto-reply! relay-state binding room-id (:eventId message)))))))))
 
     "matrix.reaction"
     (let [room-id (get-in event [:room :roomId])
@@ -714,13 +737,12 @@
       (when (and binding
                  (not (:senderIsBot reaction))
                  (authorized-sender? relay-state (:sender reaction)))
-        (deliver-user-message! pi ctx binding (matrix-reaction-prompt (:project-config relay-state) binding event))))
+        (deliver-user-message! pi ctx relay-state room-id (matrix-reaction-prompt (:project-config relay-state) binding event))))
 
     "broker.notice"
     (notify! ctx (:message event) (or (:level event) "info"))
 
-    nil)
-  nil)
+    nil))
 
 (defn handle-broker-event!
   [deps pi ctx relay-state event]
@@ -752,6 +774,29 @@
                      (record-diagnostic! diagnostics* :heartbeat-error (error-summary err))
                      (notify! ctx (str "Matrix relay heartbeat failed: " (.-message err)) "warning")))))
      (* 1000 (or heartbeat-seconds 30)))))
+
+(defn- load-room-delivery-modes!
+  [{:keys [get-room-delivery-mode! diagnostics*]} client-id room-ids]
+  (let [room-ids (vec (distinct (remove str/blank? room-ids)))]
+    (if-not get-room-delivery-mode!
+      (promise (atom {}))
+      (-> (js/Promise.all
+           (clj->js
+            (mapv (fn [room-id]
+                    (-> (promise (get-room-delivery-mode! client-id room-id))
+                        (.then (fn [result]
+                                 {:room-id room-id
+                                  :delivery-mode (:defaultDeliveryMode result)}))))
+                  room-ids)))
+          (.then (fn [results]
+                   (let [cache (->> (js->clj results :keywordize-keys true)
+                                    (keep (fn [{:keys [room-id delivery-mode]}]
+                                            (when (some? delivery-mode)
+                                              [room-id {:delivery-mode delivery-mode
+                                                        :source "broker"}])))
+                                    (into {}))]
+                     (record-diagnostic! diagnostics* :room-delivery-modes-loaded {:rooms (keys cache)})
+                     (atom cache))))))))
 
 (defn start-relay!
   [{:keys [read-project-config! health! register-client! acquire-slot!
@@ -793,6 +838,9 @@
                                     (fn [_]
                                       (record-diagnostic! diagnostics* :subscriptions-updated {:clientId client-id
                                                                                                :rooms subscriptions})
+                                      (load-room-delivery-modes! deps client-id subscriptions)))
+                                   (.then
+                                    (fn [room-delivery-modes*]
                                       (-> (promise (send-message! slot-room-id banner {:clientId client-id}))
                                           (.then
                                            (fn [_]
@@ -806,7 +854,7 @@
                                                                 :slot (:slot slot)
                                                                 :room-id slot-room-id
                                                                 :room-name (:roomName slot)
-                                                                :room-behaviors* (atom {})
+                                                                :room-delivery-modes* room-delivery-modes*
                                                                 :pending-auto-replies* (atom [])
                                                                 :last-start-banner banner
                                                                 :heartbeat-id heartbeat-id}

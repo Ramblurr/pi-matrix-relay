@@ -19,6 +19,22 @@
        (finally
          (db/release-conn! conn))))))
 
+(defn path-encode
+  [s]
+  (-> (str s)
+      (str/replace "/" "%2F")
+      (str/replace ":" "%3A")))
+
+(defn delivery-mode-path
+  [client-id room-id]
+  (str "/v1/clients/" (path-encode client-id)
+       "/rooms/" (path-encode room-id)
+       "/delivery-mode"))
+
+(defn normalize-delivery-response
+  [response]
+  (update-in response [:data :updatedAt] boolean))
+
 (deftest health-and-client-registration-use-json-envelope
   (testing "health and client registration expose stable v1 envelopes without an API state atom"
     (with-env
@@ -186,28 +202,31 @@
                                              (tu/calls gateway)))})))))))
 
 (deftest matrix-send-without-client-id-is-allowed-for-joined-rooms
-  (testing "the local command path can send to a broker-joined room without a registered client"
+  (testing "the local command path verifies joined-room status through the Matrix gateway"
     (with-env
+      (tu/fake-gateway {:rooms [{:roomId "!joined:example.org"
+                                 :name "joined room"
+                                 :membership "join"}
+                                {:roomId "!left:example.org"
+                                 :name "left room"
+                                 :membership "leave"}]})
       (fn [env _]
         (let [app (api/app env)]
-          (tu/json-request app :post "/v1/matrix/rooms/resolve"
-                           {:requestId "resolve-local-command"
-                            :room "!joined:example.org"})
           (is (= {:allowed {:ok true
                             :data {:roomId "!joined:example.org"
                                    :eventId "$message:example.org"}}
                   :forbidden {:ok false
                               :error {:code "room_not_allowed"
-                                      :message "Target Matrix room has not been joined or registered for this client."
+                                      :message "Target Matrix room is not currently joined."
                                       :details {:client-id nil
-                                                :room-id "!missing:example.org"}}}}
+                                                :room-id "!left:example.org"}}}}
                  {:allowed (tu/json-request app :post "/v1/matrix/messages"
                                             {:requestId "send-local-command"
                                              :target {:roomId "!joined:example.org"}
                                              :body "hello from local command"})
                   :forbidden (tu/json-request app :post "/v1/matrix/messages"
                                               {:requestId "send-local-command-forbidden"
-                                               :target {:roomId "!missing:example.org"}
+                                               :target {:roomId "!left:example.org"}
                                                :body "nope"})})))))))
 
 (deftest matrix-reaction-requires-known-room
@@ -251,12 +270,12 @@
 (deftest matrix-send-forwards-reply-target
   (testing "reply metadata reaches the Matrix gateway"
     (with-env
+      (tu/fake-gateway {:rooms [{:roomId "!joined:example.org"
+                                 :name "joined room"
+                                 :membership "join"}]})
       (fn [env _]
         (let [gateway (:matrix-gateway env)
               app (api/app env)]
-          (tu/json-request app :post "/v1/matrix/rooms/resolve"
-                           {:requestId "resolve-reply"
-                            :room "!joined:example.org"})
           (tu/json-request app :post "/v1/matrix/messages"
                            {:requestId "send-reply"
                             :target {:roomId "!joined:example.org"}
@@ -280,13 +299,107 @@
                                 {:roomId "!left:example.org"
                                  :name "left room"
                                  :membership "leave"}]})
-      (fn [env _]
+      (fn [env conn]
         (let [app (api/app env)]
+          (store/ensure-room! conn "!only-in-db:example.org")
           (is (= {:ok true
                   :data {:rooms [{:roomId "!joined:example.org"
                                   :name "joined room"
                                   :membership "join"}]}}
                  (tu/response-json (tu/request app :get "/v1/matrix/rooms")))))))))
+
+(deftest room-delivery-mode-endpoints-are-client-scoped-and-persistent
+  (testing "clients can read and write default room delivery mode only for known rooms"
+    (with-env
+      (fn [env _]
+        (let [app (api/app env)]
+          (tu/json-request app :post "/v1/clients"
+                           {:requestId "register-delivery-mode-1"
+                            :instanceId "matrix-relay-/work/project"
+                            :protocolVersion 1
+                            :project {:id "project"}
+                            :subscriptions {:rooms ["!project:example.org"]}})
+          (tu/json-request app :post "/v1/clients"
+                           {:requestId "register-delivery-mode-2"
+                            :instanceId "client-slot"
+                            :protocolVersion 1
+                            :project {:id "project"}})
+          (let [slot (tu/json-request app :post "/v1/slots/acquire"
+                                      {:requestId "acquire-delivery-slot"
+                                       :clientId "client-slot"
+                                       :project {:id "project"}})
+                project-path (delivery-mode-path "matrix-relay-/work/project" "!project:example.org")
+                slot-path (delivery-mode-path "client-slot" (get-in slot [:data :roomId]))]
+            (is (= {:before {:ok true
+                             :data {:roomId "!project:example.org"
+                                    :defaultDeliveryMode nil
+                                    :updatedAt false
+                                    :updatedByClient nil
+                                    :updatedByUser nil}}
+                    :write {:ok true
+                            :data {:roomId "!project:example.org"
+                                   :defaultDeliveryMode "steer"
+                                   :updatedAt true
+                                   :updatedByClient "matrix-relay-/work/project"
+                                   :updatedByUser "@alice:example.org"}}
+                    :after {:ok true
+                            :data {:roomId "!project:example.org"
+                                   :defaultDeliveryMode "steer"
+                                   :updatedAt true
+                                   :updatedByClient "matrix-relay-/work/project"
+                                   :updatedByUser "@alice:example.org"}}
+                    :slot-write {:ok true
+                                 :data {:roomId "!project-A:example.org"
+                                        :defaultDeliveryMode "reject"
+                                        :updatedAt true
+                                        :updatedByClient "client-slot"
+                                        :updatedByUser "@bob:example.org"}}}
+                   {:before (normalize-delivery-response (tu/json-request app :get project-path nil))
+                    :write (normalize-delivery-response
+                            (tu/json-request app :put project-path
+                                             {:defaultDeliveryMode "steer"
+                                              :updatedByUser "@alice:example.org"}))
+                    :after (normalize-delivery-response (tu/json-request app :get project-path nil))
+                    :slot-write (normalize-delivery-response
+                                 (tu/json-request app :put slot-path
+                                                  {:defaultDeliveryMode "reject"
+                                                   :updatedByUser "@bob:example.org"}))}))))))))
+
+(deftest room-delivery-mode-endpoints-reject-invalid-or-unauthorized-requests
+  (with-env
+    (fn [env _]
+      (let [app (api/app env)
+            project-path (delivery-mode-path "client-1" "!project:example.org")
+            other-path (delivery-mode-path "client-1" "!other:example.org")]
+        (tu/json-request app :post "/v1/clients"
+                         {:requestId "register-delivery-mode-rejects"
+                          :instanceId "client-1"
+                          :protocolVersion 1
+                          :project {:id "project"}
+                          :subscriptions {:rooms ["!project:example.org"]}})
+        (is (= {:unknown {:ok false
+                          :error {:code "client_not_found"
+                                  :message "Unknown broker client."
+                                  :details {:client-id "missing-client"}}}
+                :unauthorized {:ok false
+                               :error {:code "room_not_allowed"
+                                       :message "Client is not registered for the target Matrix room."
+                                       :details {:client-id "client-1"
+                                                 :room-id "!other:example.org"}}}
+                :invalid {:ok false
+                          :error {:code "invalid_request"
+                                  :message "Invalid room delivery mode."
+                                  :details {:default-delivery-mode "interrupt"
+                                            :allowed ["follow-up" "reject" "steer"]}}}}
+               {:unknown (tu/json-request app :get
+                                          (delivery-mode-path "missing-client" "!project:example.org")
+                                          nil)
+                :unauthorized (tu/json-request app :put other-path
+                                               {:defaultDeliveryMode "steer"
+                                                :updatedByUser "@alice:example.org"})
+                :invalid (tu/json-request app :put project-path
+                                          {:defaultDeliveryMode "interrupt"
+                                           :updatedByUser "@alice:example.org"})}))))))
 
 (deftest slot-acquire-discovers-existing-joined-room-before-creating
   (testing "empty process runtime is reconciled from joined Matrix rooms and persisted"
