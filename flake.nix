@@ -119,6 +119,7 @@
           ];
           packages = [
             (if self ? packages then self.packages.${pkgs.system}.locker else pkgs.deps-lock)
+            pkgs.pre-commit
             # pkgs.foobar
           ];
 

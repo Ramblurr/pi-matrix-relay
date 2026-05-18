@@ -1,0 +1,9 @@
+repos:
+  - repo: local
+    hooks:
+      - id: forbid-prompts-files
+        name: Forbid committing prompts/ files
+        entry: scripts/pre-commit/forbid-prompts-files.sh
+        language: script
+        pass_filenames: false
+        always_run: true
