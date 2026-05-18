@@ -48,6 +48,8 @@ cd extension && bb install-local-extension
 
 That task must overwrite the stable file above. Do not create timestamped, hashed, or otherwise unique extension bundle names such as `pi-matrix-relay-<hash>.js`; Pi loads every discovered extension file, so duplicate bundles start duplicate relay clients and can lease multiple Matrix slots.
 
+When adding npm dependencies to the extension, they must be bundled into the single copied extension file. Pi loads `.pi/extensions/pi-matrix-relay.js` directly and does not have `extension/node_modules` beside it. The app build uses shadow-cljs `:js-provider :shadow` with `:keep-native-requires true` so npm deps are bundled while Node built-ins stay native. After adding a dependency, run `cd extension && bb shadow-release` and verify the released bundle does not contain external `require("<dep>")` for the new package. Do not fix missing runtime deps by copying `node_modules` into `.pi/extensions/`.
+
 Before live testing after extension work:
 
 1. Run `cd extension && bb install-local-extension`.
