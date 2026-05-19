@@ -11,6 +11,8 @@
 
 (defonce client-instance-id (str (random-uuid)))
 
+(def matrix-message-custom-type "matrix-relay")
+
 (def node-path (js/require "path"))
 
 (def default-deps
@@ -462,34 +464,64 @@
          "Matrix metadata:\n"
          (str/join "\n" metadata))))
 
+(defn- matrix-event-details
+  [binding event kind]
+  (cond-> {"kind" kind
+           "room-label" (room-label binding event)
+           "room/id" (:room/id event)
+           "event/id" (:event/id event)
+           "event/sender" (:event/sender event)
+           "event/timestamp" (:event/timestamp event)}
+    (:room/class binding) (assoc "room/class" (:room/class binding))
+    (:event/text event) (assoc "event/text" (:event/text event))
+    (:event/reply-to-id event) (assoc "event/reply-to-id" (:event/reply-to-id event))
+    (:event/reacts-to-id event) (assoc "event/reacts-to-id" (:event/reacts-to-id event))
+    (:reaction/key event) (assoc "reaction/key" (:reaction/key event))))
+
+(defn- matrix-custom-message
+  [binding event prompt kind]
+  #js {:customType matrix-message-custom-type
+       :content prompt
+       :display true
+       :details (clj->js (matrix-event-details binding event kind))})
+
+(defn- send-custom-matrix-message!
+  [^js pi message options]
+  (if (.-sendMessage pi)
+    (if options
+      (.sendMessage pi message options)
+      (.sendMessage pi message))
+    (throw (js/Error. "Pi custom message injection is not available."))))
+
 (defn- idle?
   [^js ctx]
   (if-let [is-idle (.-isIdle ctx)]
     (boolean (is-idle))
     true))
 
-(defn- deliver-user-message!
-  [^js pi ^js ctx relay-state room-id prompt]
+(defn- deliver-matrix-message!
+  [^js pi ^js ctx relay-state room-id message]
   (if (idle? ctx)
     (do
-      (.sendUserMessage pi prompt)
+      (send-custom-matrix-message! pi message #js {:triggerTurn true})
       true)
     (case (:delivery-mode (effective-room-delivery-mode relay-state room-id))
       "steer" (do
-                (.sendUserMessage pi prompt #js {:deliverAs "steer"})
+                (send-custom-matrix-message! pi message #js {:deliverAs "steer"})
                 true)
       "reject" (do
                  (notify! ctx "Matrix message ignored because the agent is busy." "warning")
                  false)
       (do
-        (.sendUserMessage pi prompt #js {:deliverAs "followUp"})
+        (send-custom-matrix-message! pi message #js {:deliverAs "followUp"})
         true))))
 
 (defn- deliver-command-message!
-  [^js pi prompt delivery-mode]
-  (.sendUserMessage pi prompt #js {:deliverAs (if (= "steer" delivery-mode)
-                                                "steer"
-                                                "followUp")})
+  [^js pi message delivery-mode]
+  (send-custom-matrix-message! pi message #js {:deliverAs (if (= "steer" delivery-mode)
+                                                            "steer"
+                                                            "followUp")
+                                             :triggerTurn true})
   true)
 
 (defn- record-pending-auto-reply!
@@ -574,6 +606,106 @@
       :else (js->clj value :keywordize-keys true))
     (catch js/Error _
       nil)))
+
+(defn- theme-fg
+  [theme color text]
+  (try
+    (if-let [fg (and theme (aget theme "fg"))]
+      (fg color (str text))
+      (str text))
+    (catch js/Error _
+      (str text))))
+
+(defn- message-content-text
+  [message]
+  (let [content (if (map? message)
+                  (:content message)
+                  (aget message "content"))]
+    (cond
+      (string? content) content
+      (array? content) (->> (array-seq content)
+                            (keep (fn [part]
+                                    (let [part (js->clj-safe part)]
+                                      (when (= "text" (:type part))
+                                        (:text part)))))
+                            (str/join "\n"))
+      :else (str content))))
+
+(defn- one-line-preview
+  [text]
+  (-> (str text)
+      (str/replace #"[\r\n]+" " ")
+      str/trim))
+
+(defn- ellipsize
+  [text max-chars]
+  (let [text (str text)
+        max-chars (max 0 (or max-chars 0))]
+    (cond
+      (<= (count text) max-chars) text
+      (<= max-chars 1) "…"
+      (<= max-chars 3) (subs "..." 0 max-chars)
+      :else (str (subs text 0 (- max-chars 3)) "..."))))
+
+(defn- matrix-render-body
+  [details fallback-content]
+  (case (:kind details)
+    "reaction" (str "reacted " (or (:reaction/key details) "")
+                    " to event " (or (:event/reacts-to-id details) "unknown"))
+    (or (:event/text details) fallback-content "")))
+
+(defn- matrix-metadata-lines
+  [details]
+  (->> [["eventId" (:event/id details)]
+        ["roomId" (:room/id details)]
+        ["sender" (:event/sender details)]
+        ["timestamp" (:event/timestamp details)]
+        ["replyToEventId" (:event/reply-to-id details)]
+        ["reactsToEventId" (:event/reacts-to-id details)]]
+       (keep (fn [[label value]]
+               (when (seq (str value))
+                 (str label ": " value))))))
+
+(defn- matrix-message-render-lines
+  [message options theme width]
+  (let [details (or (js->clj-safe (if (map? message)
+                                    (:details message)
+                                    (aget message "details")))
+                    {})
+        fallback-content (message-content-text message)
+        body (one-line-preview (matrix-render-body details fallback-content))
+        room-label (or (:room-label details) "matrix")
+        sender (or (:event/sender details) "unknown")
+        label "[m]"
+        meta (str "[" room-label " · " sender "]")
+        width (max 20 (or width 80))
+        body-width (- width (count label) 1 (count meta) 1)
+        body (ellipsize body body-width)
+        main-line (str (theme-fg theme "customMessageLabel" label)
+                       " "
+                       (theme-fg theme "muted" meta)
+                       " "
+                       (theme-fg theme "customMessageText" body))
+        expanded? (boolean (when options (aget options "expanded")))
+        metadata (when expanded?
+                   (map #(theme-fg theme "dim" (str "  " %))
+                        (matrix-metadata-lines details)))]
+    (vec (cond-> [main-line]
+           (seq metadata) (into metadata)))))
+
+(defn- matrix-message-component
+  [message options theme]
+  #js {:render (fn [width]
+                  (clj->js (matrix-message-render-lines message options theme width)))
+       :invalidate (fn [] nil)})
+
+(defn- register-matrix-message-renderer!
+  [^js pi]
+  (when (.-registerMessageRenderer pi)
+    (.registerMessageRenderer pi
+                              matrix-message-custom-type
+                              (fn [message options theme]
+                                (matrix-message-component message options theme)))))
 
 (defn- safe-invoke0
   [f]
@@ -1396,8 +1528,9 @@
           (if (str/blank? args)
             (persist-room-delivery-mode-command! deps relay-state room-id event-id (:event/sender matrix-event) "steer")
             (let [prompt-event (command-prompt-event matrix-event args)
-                  prompt (matrix-message-prompt (:project-config relay-state) binding prompt-event)]
-              (deliver-command-message! pi prompt "steer")
+                  prompt (matrix-message-prompt (:project-config relay-state) binding prompt-event)
+                  custom-message (matrix-custom-message binding prompt-event prompt "message")]
+              (deliver-command-message! pi custom-message "steer")
               (record-pending-auto-reply! relay-state binding room-id event-id)
               (send-room-ack! deps relay-state room-id event-id "Steering message sent.")
               true))
@@ -1406,8 +1539,9 @@
           (if (str/blank? args)
             (persist-room-delivery-mode-command! deps relay-state room-id event-id (:event/sender matrix-event) "follow-up")
             (let [prompt-event (command-prompt-event matrix-event args)
-                  prompt (matrix-message-prompt (:project-config relay-state) binding prompt-event)]
-              (deliver-command-message! pi prompt "follow-up")
+                  prompt (matrix-message-prompt (:project-config relay-state) binding prompt-event)
+                  custom-message (matrix-custom-message binding prompt-event prompt "message")]
+              (deliver-command-message! pi custom-message "follow-up")
               (record-pending-auto-reply! relay-state binding room-id event-id)
               (send-room-ack! deps relay-state room-id event-id "Follow-up message queued.")
               true))
@@ -1451,7 +1585,9 @@
           (if command-result
             command-result
             (when (message-allowed-by-mode? binding (:event/text message) (:bot-user-id relay-state))
-              (let [delivered? (deliver-user-message! pi ctx relay-state room-id (matrix-message-prompt (:project-config relay-state) binding event))]
+              (let [prompt (matrix-message-prompt (:project-config relay-state) binding event)
+                    custom-message (matrix-custom-message binding event prompt "message")
+                    delivered? (deliver-matrix-message! pi ctx relay-state room-id custom-message)]
                 (when delivered?
                   (record-pending-auto-reply! relay-state binding room-id (:event/id message)))))))))
 
@@ -1463,7 +1599,9 @@
                  (not (:event/sender-is-bot? reaction))
                  (authorized-sender? relay-state (:event/sender reaction))
                  (reaction-allowed-by-mode? binding))
-        (deliver-user-message! pi ctx relay-state room-id (matrix-reaction-prompt (:project-config relay-state) binding event))))
+        (let [prompt (matrix-reaction-prompt (:project-config relay-state) binding event)
+              custom-message (matrix-custom-message binding event prompt "reaction")]
+          (deliver-matrix-message! pi ctx relay-state room-id custom-message))))
 
     "broker.notice"
     (notify! ctx (:message event) (or (:level event) "info"))
@@ -2596,6 +2734,7 @@
                                         :diagnostics* diagnostics*
                                         :pending-new-sessions* pending-new-sessions*
                                         :pi pi})]
+     (register-matrix-message-renderer! pi)
      (doseq [command-name ["matrix-relay" "mr"]]
        (.registerCommand pi command-name
                          #js {:description "Control the Pi Matrix relay"

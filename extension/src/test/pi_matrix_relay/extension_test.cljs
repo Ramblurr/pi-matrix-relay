@@ -69,20 +69,34 @@
   [[kind]]
   (= :message kind))
 
+(defn- pi-capturing-pi-messages
+  [sent*]
+  #js {:sendUserMessage (fn [message & [options]]
+                           (swap! sent* conj {:kind :user
+                                              :message message
+                                              :options (some-> options (js->clj :keywordize-keys true))}))
+       :sendMessage (fn [message options]
+                      (swap! sent* conj {:kind :custom
+                                         :message (js->clj message :keywordize-keys true)
+                                         :options (some-> options (js->clj :keywordize-keys true))}))})
+
 
 (deftest greeting-includes-target
   (testing "the extension test runner can load project namespaces"
     (is (= "Hello, Matrix, from ClojureScript!"
            (extension/greeting "Matrix")))))
 
-(deftest registers-long-and-short-commands-and-send-tool
+(deftest registers-long-and-short-commands-send-tools-and-matrix-message-renderer
   (let [commands* (atom {})
         tools* (atom {})
+        renderers* (atom {})
         active-tools* (atom ["read" "bash"])
         pi #js {:registerCommand (fn [name opts]
                                    (swap! commands* assoc name opts))
                 :registerTool (fn [tool]
                                 (swap! tools* assoc (.-name tool) tool))
+                :registerMessageRenderer (fn [custom-type renderer]
+                                           (swap! renderers* assoc custom-type renderer))
                 :getActiveTools (fn []
                                   (clj->js @active-tools*))
                 :setActiveTools (fn [tools]
@@ -93,6 +107,24 @@
     (is (= #{"send_matrix_message" "send_matrix_reaction"
              "matrix_relay_diagnostics" "matrix_relay_control"}
            (set (keys @tools*))))
+    (is (= #{"matrix-relay"}
+           (set (keys @renderers*))))
+    (let [renderer (get @renderers* "matrix-relay")]
+      (is (fn? renderer))
+      (when renderer
+        (let [theme #js {:fg (fn [color text]
+                               (str "<" color ">" text "</" color ">"))}
+              ^js component (renderer #js {:content "Matrix ops from @alice:example.org at 12:34:56Z\nplease check status\n\nMatrix metadata:\neventId: $event:example.org"
+                                        :details (clj->js {"kind" "message"
+                                                           "room-label" "ops"
+                                                           "event/sender" "@alice:example.org"
+                                                           "event/text" "please check status"
+                                                           "event/id" "$event:example.org"})}
+                                  #js {:expanded false}
+                                  theme)
+              lines (js->clj (.render component 80))]
+          (is (= ["<customMessageLabel>[m]</customMessageLabel> <muted>[ops · @alice:example.org]</muted> <customMessageText>please check status</customMessageText>"]
+                 lines)))))
     (is (= ["read" "bash"] @active-tools*)
         "extension load must not call runtime action methods such as setActiveTools")
     (let [send-tool ^js (get @tools* "send_matrix_message")
@@ -1875,9 +1907,7 @@
 
 (deftest authorized-slot-room-message-is-injected-with-all-mode
   (let [sent* (atom [])
-        pi #js {:sendUserMessage (fn [message options]
-                                   (swap! sent* conj {:message message
-                                                      :options (some-> options (js->clj :keywordize-keys true))}))}
+        pi (pi-capturing-pi-messages sent*)
         ctx #js {:cwd "/work/project"
                  :isIdle (fn [] true)}
         relay-state {:project-config {}
@@ -1894,14 +1924,15 @@
                        :event/text "no bot mention needed in slot rooms"}]
     (extension/handle-broker-event! {} pi ctx relay-state event)
     (is (= 1 (count @sent*)))
-    (is (str/includes? (:message (first @sent*)) "Matrix project-A from @alice:example.org at 12:34:56Z"))
-    (is (str/includes? (:message (first @sent*)) "no bot mention needed in slot rooms"))))
+    (is (= :custom (:kind (first @sent*))))
+    (is (= "matrix-relay" (get-in (first @sent*) [:message :customType])))
+    (is (str/includes? (get-in (first @sent*) [:message :content]) "Matrix project-A from @alice:example.org at 12:34:56Z"))
+    (is (str/includes? (get-in (first @sent*) [:message :content]) "no bot mention needed in slot rooms"))))
 
 (deftest slot-room-message-records-auto-reply-target-after-delivery
   (let [sent* (atom [])
         pending* (atom [])
-        pi #js {:sendUserMessage (fn [message]
-                                   (swap! sent* conj message))}
+        pi (pi-capturing-pi-messages sent*)
         ctx #js {:cwd "/work/project"
                  :isIdle (fn [] true)}
         relay-state {:project-config {}
@@ -1926,8 +1957,7 @@
 (deftest project-room-message-does-not-record-auto-reply-target
   (let [sent* (atom [])
         pending* (atom [])
-        pi #js {:sendUserMessage (fn [message]
-                                   (swap! sent* conj message))}
+        pi (pi-capturing-pi-messages sent*)
         ctx #js {:cwd "/work/project"
                  :isIdle (fn [] true)}
         relay-state {:project-config {:rooms {"ops" {:alias "ops"
@@ -1944,6 +1974,7 @@
                        :event/text "project prompt"}]
     (extension/handle-broker-event! {} pi ctx relay-state event)
     (is (= 1 (count @sent*)))
+    (is (= :custom (:kind (first @sent*))))
     (is (= [] @pending*))))
 
 (deftest rejected-slot-room-message-does-not-record-auto-reply-target
@@ -2563,9 +2594,7 @@
   (let [sent* (atom [])
         acks* (atom [])
         pending* (atom [])
-        pi #js {:sendUserMessage (fn [message options]
-                                   (swap! sent* conj {:message message
-                                                      :options (some-> options (js->clj :keywordize-keys true))}))}
+        pi (pi-capturing-pi-messages sent*)
         ctx #js {:cwd "/work/project"
                  :isIdle (fn [] false)}
         relay-state {:client-id "client-1"
@@ -2589,8 +2618,10 @@
                        :event/text "/steer focus on the failing test"}]
     (extension/handle-broker-event! deps pi ctx relay-state event)
     (is (= 1 (count @sent*)))
-    (is (str/includes? (:message (first @sent*)) "focus on the failing test"))
-    (is (= {:deliverAs "steer"} (:options (first @sent*))))
+    (is (= :custom (:kind (first @sent*))))
+    (is (= "matrix-relay" (get-in (first @sent*) [:message :customType])))
+    (is (str/includes? (get-in (first @sent*) [:message :content]) "focus on the failing test"))
+    (is (= {:deliverAs "steer" :triggerTurn true} (:options (first @sent*))))
     (is (= [{:room-id "!slot:example.org"
              :event-id "$steer:example.org"}]
            @pending*))
@@ -2600,9 +2631,7 @@
 (deftest matrix-follow-up-command-injects-follow-up-prompt-and-sends-ack
   (let [sent* (atom [])
         acks* (atom [])
-        pi #js {:sendUserMessage (fn [message options]
-                                   (swap! sent* conj {:message message
-                                                      :options (some-> options (js->clj :keywordize-keys true))}))}
+        pi (pi-capturing-pi-messages sent*)
         ctx #js {:cwd "/work/project"
                  :isIdle (fn [] false)}
         relay-state {:client-id "client-1"
@@ -2626,8 +2655,10 @@
                        :event/text "/follow-up run the next check"}]
     (extension/handle-broker-event! deps pi ctx relay-state event)
     (is (= 1 (count @sent*)))
-    (is (str/includes? (:message (first @sent*)) "run the next check"))
-    (is (= {:deliverAs "followUp"} (:options (first @sent*))))
+    (is (= :custom (:kind (first @sent*))))
+    (is (= "matrix-relay" (get-in (first @sent*) [:message :customType])))
+    (is (str/includes? (get-in (first @sent*) [:message :content]) "run the next check"))
+    (is (= {:deliverAs "followUp" :triggerTurn true} (:options (first @sent*))))
     (is (= 1 (count @acks*)))
     (is (str/includes? (:message (first @acks*)) "Follow-up message queued"))))
 
@@ -2637,9 +2668,7 @@
           acks* (atom [])
           delivery-modes* (atom {})
           persist* (atom nil)
-          pi #js {:sendUserMessage (fn [message options]
-                                     (swap! sent* conj {:message message
-                                                        :options (some-> options (js->clj :keywordize-keys true))}))}
+          pi (pi-capturing-pi-messages sent*)
           ctx #js {:cwd "/work/project"
                    :isIdle (fn [] false)}
           relay-state {:client-id "client-1"
@@ -2689,6 +2718,7 @@
                                       "Default delivery mode for this room is now steer"))
                    (extension/handle-broker-event! deps pi ctx relay-state prompt-event)
                    (is (= 1 (count @sent*)))
+                   (is (= :custom (:kind (first @sent*))))
                    (is (= {:deliverAs "steer"} (:options (first @sent*))))
                    (done)))
           (.catch (fn [err]
@@ -2787,9 +2817,7 @@
           acks* (atom [])
           prompt-modes* (atom {"!room:example.org" {:mode "commands-only" :source "broker"}})
           persist* (atom nil)
-          pi #js {:sendUserMessage (fn [message options]
-                                     (swap! sent* conj {:message message
-                                                        :options (some-> options (js->clj :keywordize-keys true))}))}
+          pi (pi-capturing-pi-messages sent*)
           ctx #js {:cwd "/work/project"
                    :isIdle (fn [] true)}
           relay-state {:client-id "client-1"
@@ -2837,7 +2865,8 @@
                                       "Prompt mode for this room is now all"))
                    (extension/handle-broker-event! deps pi ctx relay-state message-event)
                    (is (= 1 (count @sent*)))
-                   (is (str/includes? (:message (first @sent*)) "ordinary project prompt"))
+                   (is (= :custom (:kind (first @sent*))))
+                   (is (str/includes? (get-in (first @sent*) [:message :content]) "ordinary project prompt"))
                    (done)))
           (.catch (fn [err]
                     (is false (.-stack err))
@@ -3219,8 +3248,7 @@
 
 (deftest project-room-mentions-mode-still-requires-a-bot-mention
   (let [sent* (atom [])
-        pi #js {:sendUserMessage (fn [message]
-                                   (swap! sent* conj message))}
+        pi (pi-capturing-pi-messages sent*)
         ctx #js {:cwd "/work/project"
                  :isIdle (fn [] true)}
         relay-state {:project-config {:rooms {"ops" {:alias "ops"
@@ -3251,7 +3279,8 @@
               :event/timestamp "2026-05-16T12:34:57Z"
               :event/text "@bot please inspect this"})
     (is (= 1 (count @sent*)))
-    (is (str/includes? (first @sent*) "@bot please inspect this"))))
+    (is (= :custom (:kind (first @sent*))))
+    (is (str/includes? (get-in (first @sent*) [:message :content]) "@bot please inspect this"))))
 
 (deftest project-room-commands-only-mode-processes-commands-but-ignores-prompts
   (let [sent* (atom [])
@@ -3312,12 +3341,35 @@
     (is (= 1 (count @acks*)))
     (is (str/includes? (:message (first @acks*)) "pi-matrix-relay status"))))
 
-(deftest authorized-matrix-message-from-bound-room-is-injected-as-user-message
+(deftest busy-matrix-message-uses-custom-message-with-room-delivery-mode
+  (let [sent* (atom [])
+        pi (pi-capturing-pi-messages sent*)
+        ctx #js {:cwd "/work/project"
+                 :isIdle (fn [] false)}
+        relay-state {:project-config {}
+                     :global-operators #{"@alice:example.org"}
+                     :bot-user-id "@bot:example.org"
+                     :slot "A"
+                     :room-id "!slot:example.org"
+                     :room-name "project-A"
+                     :room-delivery-modes* (atom {"!slot:example.org" {:delivery-mode "steer"
+                                                                        :source "broker"}})}
+        event {:type "matrix.message"
+               :room/id "!slot:example.org"
+               :event/id "$slot-event:example.org"
+               :event/sender "@alice:example.org"
+               :event/timestamp "2026-05-16T12:34:56Z"
+               :event/text "steer this into the current turn"}]
+    (extension/handle-broker-event! {} pi ctx relay-state event)
+    (is (= 1 (count @sent*)))
+    (is (= :custom (:kind (first @sent*))))
+    (is (= "matrix-relay" (get-in (first @sent*) [:message :customType])))
+    (is (= {:deliverAs "steer"} (:options (first @sent*))))))
+
+(deftest authorized-matrix-message-from-bound-room-is-injected-as-matrix-relay-custom-message
   (let [sent* (atom [])
         notifications* (atom [])
-        pi #js {:sendUserMessage (fn [message options]
-                                   (swap! sent* conj {:message message
-                                                      :options (some-> options (js->clj :keywordize-keys true))}))}
+        pi (pi-capturing-pi-messages sent*)
         ctx #js {:cwd "/work/project"
                  :isIdle (fn [] true)
                  :ui #js {:notify (fn [message level]
@@ -3335,18 +3387,26 @@
                        :event/text "please check status"}]
     (extension/handle-broker-event! {} pi ctx relay-state event)
     (is (= 1 (count @sent*)))
-    (is (str/includes? (:message (first @sent*)) "Matrix ops from @alice:example.org at 12:34:56Z"))
-    (is (str/includes? (:message (first @sent*)) "please check status"))
-    (is (not (str/includes? (:message (first @sent*)) "roomId: !room:example.org")))
-    (is (str/includes? (:message (first @sent*)) "eventId: $event:example.org"))
-    (is (nil? (:options (first @sent*))))
+    (is (= :custom (:kind (first @sent*))))
+    (is (= {:customType "matrix-relay"
+            :display true}
+           (select-keys (:message (first @sent*)) [:customType :display])))
+    (is (str/includes? (get-in (first @sent*) [:message :content]) "Matrix ops from @alice:example.org at 12:34:56Z"))
+    (is (str/includes? (get-in (first @sent*) [:message :content]) "please check status"))
+    (is (= {:kind "message"
+            :room-label "ops"
+            :room/id "!room:example.org"
+            :event/id "$event:example.org"
+            :event/sender "@alice:example.org"
+            :event/timestamp "2026-05-16T12:34:56Z"
+            :event/text "please check status"}
+           (get-in (first @sent*) [:message :details])))
+    (is (= {:triggerTurn true} (:options (first @sent*))))
     (is (= [] @notifications*))))
 
-(deftest matrix-reaction-from-bound-room-is-injected-as-user-message
+(deftest matrix-reaction-from-bound-room-is-injected-as-matrix-relay-custom-message
   (let [sent* (atom [])
-        pi #js {:sendUserMessage (fn [message options]
-                                   (swap! sent* conj {:message message
-                                                      :options (some-> options (js->clj :keywordize-keys true))}))}
+        pi (pi-capturing-pi-messages sent*)
         ctx #js {:cwd "/work/project"
                  :isIdle (fn [] true)}
         relay-state {:project-config {:rooms {"ops" {:alias "ops"
@@ -3363,14 +3423,15 @@
                        :reaction/key "👍"}]
     (extension/handle-broker-event! {} pi ctx relay-state event)
     (is (= 1 (count @sent*)))
-    (is (str/includes? (:message (first @sent*)) "Matrix reaction in ops from @alice:example.org at 12:34:56Z"))
-    (is (str/includes? (:message (first @sent*)) "reacted 👍 to event $event:example.org"))
-    (is (not (str/includes? (:message (first @sent*)) "roomId: !room:example.org")))))
+    (is (= :custom (:kind (first @sent*))))
+    (is (= "matrix-relay" (get-in (first @sent*) [:message :customType])))
+    (is (str/includes? (get-in (first @sent*) [:message :content]) "Matrix reaction in ops from @alice:example.org at 12:34:56Z"))
+    (is (str/includes? (get-in (first @sent*) [:message :content]) "reacted 👍 to event $event:example.org"))
+    (is (not (str/includes? (get-in (first @sent*) [:message :content]) "roomId: !room:example.org")))))
 
 (deftest matrix-message-includes-room-id-when-room-label-is-ambiguous
   (let [sent* (atom [])
-        pi #js {:sendUserMessage (fn [message]
-                                   (swap! sent* conj message))}
+        pi (pi-capturing-pi-messages sent*)
         ctx #js {:cwd "/work/project"
                  :isIdle (fn [] true)}
         relay-state {:project-config {:rooms [{:room/name "Shared"
@@ -3389,8 +3450,9 @@
                        :event/text "hello from ambiguous room"}]
     (extension/handle-broker-event! {} pi ctx relay-state event)
     (is (= 1 (count @sent*)))
-    (is (str/includes? (first @sent*) "Matrix Shared from @alice:example.org at 12:34:56+02:00"))
-    (is (str/includes? (first @sent*) "roomId: !first:example.org"))))
+    (is (= :custom (:kind (first @sent*))))
+    (is (str/includes? (get-in (first @sent*) [:message :content]) "Matrix Shared from @alice:example.org at 12:34:56+02:00"))
+    (is (str/includes? (get-in (first @sent*) [:message :content]) "roomId: !first:example.org"))))
 
 (deftest unauthorized-matrix-message-is-ignored
   (let [sent* (atom [])
