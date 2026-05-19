@@ -785,6 +785,19 @@
                   nil)))
     (js/Promise.resolve nil)))
 
+(defn- send-slot-status!
+  [{:keys [send-message! diagnostics*]} relay-state message]
+  (if (and send-message!
+           (:client-id relay-state)
+           (slot-room-id relay-state))
+    (-> (promise (send-message! (slot-room-id relay-state)
+                                message
+                                {:client/id (:client-id relay-state)}))
+        (.catch (fn [err]
+                  (record-diagnostic! diagnostics* :status/send-error (or (.-message err) (str err)))
+                  nil)))
+    (js/Promise.resolve nil)))
+
 (defn- tool-message-batch-body
   [messages]
   (if (= 1 (count messages))
@@ -1116,6 +1129,16 @@
     (str "Compaction completed."
          (when-let [tokens-before (:tokensBefore result)]
            (str " Tokens before: " tokens-before ".")))))
+
+(def reload-started-message "Reloading Pi…")
+(def reload-completed-message "Reload complete.")
+(def compaction-started-message "Compaction started.")
+
+(defn- compaction-entry-from-event
+  [event]
+  (or (:compactionEntry event)
+      (:compaction-entry event)
+      (when event (.-compactionEntry ^js event))))
 
 (defn- handle-compact-command!
   [deps ctx relay-state room-id event-id args]
@@ -2593,13 +2616,19 @@
      (register-control-tool! pi deps)
      (when-let [on (.-on pi)]
        (on "session_start"
-           (fn [_event ctx]
-             (activate-relay-tools! pi)
-             (-> (start-relay! deps pi ctx)
-                 (.then #(reset! relay-state* %))
-                 (.catch (fn [err]
-                           (record-diagnostic! diagnostics* :start-error (error-summary err))
-                           (notify! ctx (str "Matrix relay receive disabled: " (.-message err)) "warning"))))))
+           (fn [event ctx]
+             (let [reason (:reason (js->clj-safe event))]
+               (activate-relay-tools! pi)
+               (-> (start-relay! deps pi ctx)
+                   (.then (fn [relay-state]
+                            (reset! relay-state* relay-state)
+                            (if (= "reload" reason)
+                              (-> (send-slot-status! deps relay-state reload-completed-message)
+                                  (.then (fn [_] relay-state)))
+                              relay-state)))
+                   (.catch (fn [err]
+                             (record-diagnostic! diagnostics* :start-error (error-summary err))
+                             (notify! ctx (str "Matrix relay receive disabled: " (.-message err)) "warning"))))))
        (on "agent_start"
            (fn [_event _ctx]
              (when-let [relay-state @relay-state*]
@@ -2618,13 +2647,27 @@
                (js/Promise.all
                 (clj->js [(stop-slot-typing! deps relay-state* relay-state)
                           (handle-agent-end! deps relay-state (js->clj event :keywordize-keys true))])))))
+       (on "session_before_compact"
+           (fn [_event _ctx]
+             (if-let [relay-state @relay-state*]
+               (send-slot-status! deps relay-state compaction-started-message)
+               (js/Promise.resolve nil))))
+       (on "session_compact"
+           (fn [event _ctx]
+             (if-let [relay-state @relay-state*]
+               (send-slot-status! deps relay-state (compact-complete-message (compaction-entry-from-event event)))
+               (js/Promise.resolve nil))))
        (on "session_shutdown"
-           (fn [_event ctx]
-             (let [relay-state @relay-state*]
-               (-> (when relay-state
-                     (stop-slot-typing! deps relay-state* relay-state))
-                   (promise)
+           (fn [event ctx]
+             (let [event (js->clj-safe event)
+                   relay-state @relay-state*]
+               (-> (if (and relay-state (= "reload" (:reason event)))
+                     (send-slot-status! deps relay-state reload-started-message)
+                     (js/Promise.resolve nil))
+                   (.then (fn [_]
+                            (when relay-state
+                              (stop-slot-typing! deps relay-state* relay-state))))
                    (.then (fn [_]
                             (stop-relay! deps ctx relay-state)))
                    (.finally (fn []
-                               (reset! relay-state* nil)))))))))))
+                               (reset! relay-state* nil))))))))))))

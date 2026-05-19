@@ -331,6 +331,111 @@
                         (is false (.-stack err))
                         (done)))))))))
 
+(deftest reload-events-send-direct-status-messages-to-slot-room
+  (async done
+    (let [events* (atom {})
+          calls* (atom [])
+          project-config {:project {:project/id "project"}
+                          :progress {:verbosity "quiet"}}
+          pi (pi-with-events events*)
+          ctx #js {:cwd "/work/project"
+                   :ui #js {:setStatus (fn [_key _status])
+                            :notify (fn [_message _level])}}
+          deps (assoc (progress-test-deps project-config calls*)
+                      :get-room-tool-message-settings!
+                      (fn [_client-id room-id]
+                        (js/Promise.resolve {:room/id room-id
+                                             :room/tool-messages-enabled? false
+                                             :room/tool-message-batch-ms 60000})))]
+      (extension/init pi deps)
+      (let [session-start (get @events* "session_start")
+            session-shutdown (get @events* "session_shutdown")]
+        (is (fn? session-start))
+        (is (fn? session-shutdown))
+        (if-not (and session-start session-shutdown)
+          (done)
+          (-> (call-handler! session-start #js {:reason "startup"} ctx)
+              (.then (fn [_]
+                       (reset! calls* [])
+                       (call-handler! session-shutdown #js {:reason "reload"} ctx)))
+              (.then (fn [_]
+                       (let [messages (filter message-call? @calls*)]
+                         (is (some (fn [[_kind room-id message opts]]
+                                     (and (= "!slot:example.org" room-id)
+                                          (str/includes? message "Reloading")
+                                          (= {:client/id "client-1"} opts)))
+                                   messages))
+                         (is (not-any? #(= :timeout (first %)) @calls*)))
+                       (reset! calls* [])
+                       (call-handler! session-start #js {:reason "reload"} ctx)))
+              (.then (fn [_]
+                       (let [messages (filter message-call? @calls*)]
+                         (is (some (fn [[_kind room-id message opts]]
+                                     (and (= "!slot:example.org" room-id)
+                                          (str/includes? message "Reload complete")
+                                          (= {:client/id "client-1"} opts)))
+                                   messages))
+                         (is (not-any? #(= :timeout (first %)) @calls*)))
+                       (done)))
+              (.catch (fn [err]
+                        (is false (.-stack err))
+                        (done)))))))))
+
+(deftest compaction-events-send-direct-status-messages-to-slot-room
+  (async done
+    (let [events* (atom {})
+          calls* (atom [])
+          project-config {:project {:project/id "project"}
+                          :progress {:verbosity "quiet"}}
+          pi (pi-with-events events*)
+          ctx #js {:cwd "/work/project"
+                   :ui #js {:setStatus (fn [_key _status])
+                            :notify (fn [_message _level])}}
+          deps (assoc (progress-test-deps project-config calls*)
+                      :get-room-tool-message-settings!
+                      (fn [_client-id room-id]
+                        (js/Promise.resolve {:room/id room-id
+                                             :room/tool-messages-enabled? false
+                                             :room/tool-message-batch-ms 60000})))]
+      (extension/init pi deps)
+      (let [session-start (get @events* "session_start")
+            session-before-compact (get @events* "session_before_compact")
+            session-compact (get @events* "session_compact")]
+        (is (fn? session-start))
+        (is (fn? session-before-compact))
+        (is (fn? session-compact))
+        (if-not (and session-start session-before-compact session-compact)
+          (done)
+          (-> (call-handler! session-start #js {:reason "startup"} ctx)
+              (.then (fn [_]
+                       (reset! calls* [])
+                       (call-handler! session-before-compact #js {} ctx)))
+              (.then (fn [_]
+                       (let [messages (filter message-call? @calls*)]
+                         (is (some (fn [[_kind room-id message opts]]
+                                     (and (= "!slot:example.org" room-id)
+                                          (str/includes? message "Compaction started")
+                                          (= {:client/id "client-1"} opts)))
+                                   messages))
+                         (is (not-any? #(= :timeout (first %)) @calls*)))
+                       (reset! calls* [])
+                       (call-handler! session-compact
+                                      #js {:compactionEntry #js {:tokensBefore 12345}}
+                                      ctx)))
+              (.then (fn [_]
+                       (let [messages (filter message-call? @calls*)]
+                         (is (some (fn [[_kind room-id message opts]]
+                                     (and (= "!slot:example.org" room-id)
+                                          (str/includes? message "Compaction completed")
+                                          (str/includes? message "12345")
+                                          (= {:client/id "client-1"} opts)))
+                                   messages))
+                         (is (not-any? #(= :timeout (first %)) @calls*)))
+                       (done)))
+              (.catch (fn [err]
+                        (is false (.-stack err))
+                        (done)))))))))
+
 (deftest room-bind-resolves-room-and-writes-project-config
   (async done
     (let [notifications* (atom [])
