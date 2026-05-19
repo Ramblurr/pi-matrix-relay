@@ -133,3 +133,94 @@
               [:recent :client "!dm:example.org" {:limit 7
                                                    :timeout-ms 123}]]
              @calls*)))))
+
+(deftest verification-summary-removes-raw-objects-and-keeps-sas-data
+  (is (= {:id "verification-1"
+          :kind "user"
+          :direction "incoming"
+          :their-user-id "@alice:example.org"
+          :their-device-id "DEVICE"
+          :room-id "!dm:example.org"
+          :request-event-id "$request"
+          :state "start"
+          :sas-state "comparison-by-user"
+          :emojis [{:emoji "⚓"
+                    :description "Anchor"}
+                   {:emoji "🐱"
+                    :description "Cat"}]
+          :decimal [1234 5678 9012]}
+         (sut/verification-summary
+          {::mx/verification-id "verification-1"
+           ::mx/verification-kind "user"
+           ::mx/verification-direction "incoming"
+           ::mx/their-user-id "@alice:example.org"
+           ::mx/their-device-id "DEVICE"
+           ::mx/room-id "!dm:example.org"
+           ::mx/request-event-id "$request"
+           ::mx/raw ::raw-verification
+           ::mx/verification-state {::mx/kind "start"
+                                    ::mx/raw ::raw-state
+                                    ::mx/sas-state {::mx/kind "comparison-by-user"
+                                                    ::mx/raw ::raw-sas
+                                                    ::mx/sas-decimal [1234 5678 9012]
+                                                    ::mx/sas-emojis [{::mx/emoji "⚓"
+                                                                      ::mx/description "Anchor"
+                                                                      ::mx/raw ::raw-emoji}
+                                                                     {::mx/emoji "🐱"
+                                                                      ::mx/description "Cat"}]}}}))))
+
+(deftest verification-summaries-read-current-status
+  (with-redefs [matrix/verification-status (fn [gateway]
+                                             {:gateway gateway
+                                              :verifications [{:verification-id "verification-1"
+                                                               :verification-state {:kind "ready"}}]})]
+    (is (= [{:id "verification-1"
+             :state "ready"}]
+           (sut/verification-summaries :gateway)))
+    (is (= {:id "verification-1"
+            :state "ready"}
+           (sut/current-verification-summary :gateway)))))
+
+(deftest current-verification-actions-use-current-verification-id
+  (let [calls* (atom [])]
+    (with-redefs [matrix/verification-status (fn [gateway]
+                                             (swap! calls* conj [:status gateway])
+                                             {:verifications [{:verification-id "verification-1"
+                                                              :verification-state {:kind "comparison-by-user"}}]})
+                  matrix/verification-accept! (fn [gateway verification-id]
+                                                (swap! calls* conj [:accept gateway verification-id])
+                                                {:verification-id verification-id
+                                                 :verification-state {:kind "ready"}})
+                  matrix/verification-confirm! (fn [gateway verification-id]
+                                                 (swap! calls* conj [:confirm gateway verification-id])
+                                                 {:verification-id verification-id
+                                                  :verification-state {:kind "wait-for-done"}})
+                  matrix/verification-no-match! (fn [gateway verification-id]
+                                                  (swap! calls* conj [:no-match gateway verification-id])
+                                                  {:verification-id verification-id
+                                                   :verification-state {:kind "cancel"}})
+                  matrix/verification-cancel! (fn [gateway verification-id]
+                                                (swap! calls* conj [:cancel gateway verification-id])
+                                                {:verification-id verification-id
+                                                 :verification-state {:kind "cancel"}})]
+      (is (= {:id "verification-1"
+              :state "ready"}
+             (sut/accept-current! :gateway)))
+      (is (= {:id "verification-1"
+              :state "wait-for-done"}
+             (sut/confirm-current! :gateway)))
+      (is (= {:id "verification-1"
+              :state "cancel"}
+             (sut/no-match-current! :gateway)))
+      (is (= {:id "verification-1"
+              :state "cancel"}
+             (sut/cancel-current! :gateway)))
+      (is (= [[:status :gateway]
+              [:accept :gateway "verification-1"]
+              [:status :gateway]
+              [:confirm :gateway "verification-1"]
+              [:status :gateway]
+              [:no-match :gateway "verification-1"]
+              [:status :gateway]
+              [:cancel :gateway "verification-1"]]
+             @calls*)))))

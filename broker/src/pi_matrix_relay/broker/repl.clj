@@ -3,7 +3,39 @@
 
   These functions are intentionally small wrappers around broker and public
   `trixnity-clj` APIs. They return plain EDN maps where possible so a Pi agent
-  can use them from `brepl` without writing nested Missionary/Trixnity plumbing."
+  can use them from `brepl` without writing nested Missionary/Trixnity plumbing.
+
+  ## Element verification workflow
+
+  Element verification against the bot creates an encrypted direct-message room
+  request. The broker should auto-join direct-message invites, but when debugging
+  a running session you can still force activation of recent request events:
+
+  ```clojure
+  (require '[pi-matrix-relay.broker.repl :as r] :reload)
+
+  (r/activate-recent-room-requests! {:limit 5 :room-timeout-ms 10000})
+  (r/verification-summaries)
+
+  ;; Accept the incoming verification request.
+  (r/accept-current!)
+
+  ;; After the operator clicks “verify by emoji” in Element, accept the SAS start.
+  (r/accept-current!)
+
+  ;; Read emoji in the terminal and compare with Element.
+  (r/current-verification-summary)
+
+  ;; If the operator says they match:
+  (r/confirm-current!)
+
+  ;; If they do not match:
+  (r/no-match-current!)
+  ```
+
+  During live Element verification, keep instructions and emoji in the Pi
+  terminal rather than Matrix messages. Switching away from Element to read the
+  Matrix relay room can reset or time out the verification UI."
   (:require
    [missionary.core :as m]
    [ol.trixnity.event :as event]
@@ -64,6 +96,88 @@
    (verification-status (dev-gateway)))
   ([gateway]
    (matrix/verification-status gateway)))
+
+(declare accept! confirm! no-match! cancel!)
+
+(defn- sas-emoji-summary
+  [emoji]
+  (let [emoji (plain-edn emoji)]
+    (cond-> {}
+      (:emoji emoji) (assoc :emoji (:emoji emoji))
+      (:description emoji) (assoc :description (:description emoji)))))
+
+(defn verification-summary
+  "Returns a concise summary of one active Matrix verification map."
+  [verification]
+  (when verification
+    (let [verification (plain-edn verification)
+          state (:verification-state verification)
+          sas-state (:sas-state state)]
+      (cond-> {}
+        (:verification-id verification) (assoc :id (:verification-id verification))
+        (:verification-kind verification) (assoc :kind (:verification-kind verification))
+        (:verification-direction verification) (assoc :direction (:verification-direction verification))
+        (:their-user-id verification) (assoc :their-user-id (:their-user-id verification))
+        (:their-device-id verification) (assoc :their-device-id (:their-device-id verification))
+        (:room-id verification) (assoc :room-id (:room-id verification))
+        (:request-event-id verification) (assoc :request-event-id (:request-event-id verification))
+        (:transaction-id verification) (assoc :transaction-id (:transaction-id verification))
+        (:kind state) (assoc :state (:kind state))
+        (:kind sas-state) (assoc :sas-state (:kind sas-state))
+        (:sas-emojis sas-state) (assoc :emojis (mapv sas-emoji-summary (:sas-emojis sas-state)))
+        (:sas-decimal sas-state) (assoc :decimal (:sas-decimal sas-state))
+        (:reason state) (assoc :reason (:reason state))
+        (:cancel-code state) (assoc :cancel-code (:cancel-code state))))))
+
+(defn verification-summaries
+  "Returns concise summaries for all active Matrix verifications."
+  ([]
+   (verification-summaries (dev-gateway)))
+  ([gateway]
+   (mapv verification-summary (:verifications (verification-status gateway)))))
+
+(defn current-verification-summary
+  "Returns the first active Matrix verification summary, or nil."
+  ([]
+   (current-verification-summary (dev-gateway)))
+  ([gateway]
+   (first (verification-summaries gateway))))
+
+(defn- current-verification-id
+  [gateway]
+  (or (:id (current-verification-summary gateway))
+      (throw (ex-info "No active Matrix verification found." {}))))
+
+(defn accept-current!
+  "Accepts the current verification request or pending SAS start.
+
+  This intentionally calls [[accept!]] for both the initial incoming request and
+  the later `their-sas-start` state used after Element clicks “verify by emoji”."
+  ([]
+   (accept-current! (dev-gateway)))
+  ([gateway]
+   (verification-summary (accept! gateway (current-verification-id gateway)))))
+
+(defn confirm-current!
+  "Confirms the current verification after matching SAS emoji with Element."
+  ([]
+   (confirm-current! (dev-gateway)))
+  ([gateway]
+   (verification-summary (confirm! gateway (current-verification-id gateway)))))
+
+(defn no-match-current!
+  "Rejects the current verification after SAS emoji do not match Element."
+  ([]
+   (no-match-current! (dev-gateway)))
+  ([gateway]
+   (verification-summary (no-match! gateway (current-verification-id gateway)))))
+
+(defn cancel-current!
+  "Cancels the current active verification."
+  ([]
+   (cancel-current! (dev-gateway)))
+  ([gateway]
+   (verification-summary (cancel! gateway (current-verification-id gateway)))))
 
 (defn start-user-verification!
   "Starts Matrix user verification for `user-id`."
