@@ -170,6 +170,31 @@
       (catch Throwable _
         nil))))
 
+(defn- timeline-event-value
+  [value]
+  (try
+    (if (map? value)
+      value
+      (flow-value value))
+    (catch Throwable _
+      value)))
+
+(defn- activate-recent-room-verification-requests!
+  [client room-id]
+  (let [events (or (flow-value
+                    (room/get-last-timeline-events-list
+                     client
+                     room-id
+                     20
+                     1
+                     {::mx/decryption-timeout (Duration/ofSeconds 8)
+                      ::mx/fetch-timeout (Duration/ofSeconds 8)}))
+                   [])]
+    (->> events
+         (keep timeline-event-value)
+         (keep #(activate-room-verification-request! client %))
+         vec)))
+
 (defn- verification-event-type
   [snapshot]
   (let [state-kind (get-in snapshot [:verification-state :kind])
@@ -281,6 +306,46 @@
     (let [seen* (atom {})]
       {:device (start-verification-flow! (verification/active-device-verification client) publish! seen*)
        :users (start-verification-flow! (verification/active-user-verifications client) publish! seen*)})))
+
+(def ^:private direct-invite-join-timeout (Duration/ofSeconds 15))
+
+(defn- direct-invite?
+  [room-snapshot]
+  (and (= "invite" (some-> (::mx/membership room-snapshot) name))
+       (true? (::mx/is-direct room-snapshot))))
+
+(defn- join-direct-invite!
+  [client room-snapshot]
+  (when (direct-invite? room-snapshot)
+    (let [room-id (::mx/room-id room-snapshot)]
+      (m/? (room/join-room client room-id {::mx/timeout direct-invite-join-timeout}))
+      {:room/id room-id
+       :joined? true
+       :activated (activate-recent-room-verification-requests! client room-id)})))
+
+(defn- start-direct-invite-loop!
+  [client]
+  (let [seen* (atom #{})]
+    (start-virtual-thread!
+     (fn []
+       (m/?
+        (m/reduce
+         (fn [_ rooms]
+           (doseq [room-snapshot (or rooms [])]
+             (let [room-id (::mx/room-id room-snapshot)]
+               (when (and room-id
+                          (direct-invite? room-snapshot)
+                          (not (contains? @seen* room-id)))
+                 (swap! seen* conj room-id)
+                 (try
+                   (join-direct-invite! client room-snapshot)
+                   (catch Throwable ex
+                     (tap> {:event :matrix/direct-invite-join-failed
+                            :room/id room-id
+                            :error (ex-message ex)}))))))
+           nil)
+         nil
+         (room/get-all-flat client)))))))
 
 (def ^:private default-space-key "default")
 (def ^:private space-join-timeout (Duration/ofSeconds 15))
@@ -475,6 +540,7 @@
                             :user-id (client/current-user-id opened)
                             :timeline-loop (start-timeline-loop! opened event-sink)
                             :verification-loop (start-verification-loop! opened event-sink)
+                            :direct-invite-loop (start-direct-invite-loop! opened)
                             :started-at (System/currentTimeMillis)}))))
     this)
   (stop! [_]

@@ -287,6 +287,61 @@
       (is (nil? (#'sut/activate-room-verification-request! :client ::event)))
       (is (= [] @calls*)))))
 
+(deftest recent-room-verification-requests-are-activated-after-joining-invite
+  (let [calls* (atom [])
+        snapshot {::mx/verification-id "user:!dm:example.org:$request"
+                  ::mx/verification-kind :user
+                  ::mx/room-id "!dm:example.org"
+                  ::mx/request-event-id "$request"
+                  ::mx/verification-state {::mx/kind :their-request}}]
+    (with-redefs [room/get-last-timeline-events-list
+                  (fn [client room-id max-size min-size opts]
+                    (swap! calls* conj [:recent client room-id max-size min-size opts])
+                    (m/seed [[{:kind :request-event} {:kind :ordinary-event}]]))
+                  event/text? (fn [ev]
+                                (= {:kind :request-event} ev))
+                  event/body (constantly nil)
+                  event/room-id (constantly "!dm:example.org")
+                  event/event-id (fn [ev]
+                                   (case (:kind ev)
+                                     :request-event "$request"
+                                     :ordinary-event "$ordinary"))
+                  verification/get-active-user-verification!
+                  (fn [client room-id event-id]
+                    (swap! calls* conj [:activate client room-id event-id])
+                    (m/sp snapshot))]
+      (is (= [{:verification-id "user:!dm:example.org:$request"
+               :verification-kind :user
+               :room-id "!dm:example.org"
+               :request-event-id "$request"
+               :verification-state {:kind :their-request}}]
+             (#'sut/activate-recent-room-verification-requests! :client "!dm:example.org")))
+      (is (= [[:recent :client "!dm:example.org" 20 1 {::mx/decryption-timeout (Duration/ofSeconds 8)
+                                                        ::mx/fetch-timeout (Duration/ofSeconds 8)}]
+              [:activate :client "!dm:example.org" "$request"]]
+             @calls*)))))
+
+(deftest direct-invites-are-joined-and-scanned-for-verification-requests
+  (let [calls* (atom [])
+        invite {::mx/room-id "!dm:example.org"
+                ::mx/membership "invite"
+                ::mx/is-direct true}]
+    (with-redefs [room/join-room (fn [client room-id opts]
+                                    (swap! calls* conj [:join client room-id opts])
+                                    (m/sp room-id))
+                  sut/activate-recent-room-verification-requests!
+                  (fn [client room-id]
+                    (swap! calls* conj [:activate-recent client room-id])
+                    [{:verification-id "verification-1"}])]
+      (is (= {:room/id "!dm:example.org"
+              :joined? true
+              :activated [{:verification-id "verification-1"}]}
+             (#'sut/join-direct-invite! :client invite)))
+      (is (= [[:join :client "!dm:example.org" {::mx/timeout (Duration/ofSeconds 15)}]
+              [:activate-recent :client "!dm:example.org"]]
+             @calls*)))))
+
+
 (deftest verification-actions-use-public-trixnity-verification-api
   (let [gateway (sut/gateway (gateway-config nil) {})
         calls* (atom [])
