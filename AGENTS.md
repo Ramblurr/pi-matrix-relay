@@ -76,7 +76,7 @@ See local-git-reference skill if you need to reference more codebases, do not mu
 Pre-reqs:
 
 - read tmux skill
-- read clojure-eval still
+- read clojure-eval skill
 
 Start/Stop
 
@@ -84,3 +84,18 @@ Start/Stop
 - if this session doesnt exist, then create it with `tmuxb new pi-matrix-relay`
   use tmuxb list to see if it exists
 - broker repl entrypoint is the `dev` ns: broker/dev/dev.clj
+
+Live Clojure evaluation
+
+- Before evaluating Clojure, read and follow the clojure-eval skill.
+- Use the project `brepl` workflow with heredocs for live broker evaluation, for example:
+  ```bash
+  cd broker
+  brepl "$(cat <<'EOF'
+  (require '[dev :as dev])
+  ;; inspect or mutate the running broker JVM state here
+  EOF
+  )"
+  ```
+- Do not hand-roll nREPL/bencode clients, ad-hoc socket clients, or Python wrappers for REPL evaluation.
+- Do not use a fresh `clojure -e` process when debugging live broker/Matrix state; it will not share the running broker's Matrix client, sync loop, encryption store, or in-memory state.
