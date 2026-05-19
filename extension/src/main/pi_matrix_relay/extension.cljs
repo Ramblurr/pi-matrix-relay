@@ -62,9 +62,9 @@
   [^js ctx status]
   (if (some? status)
     (try
-      (if-let [^js theme (some-> ctx .-ui .-theme)]
-        (if (.-fg theme)
-          (.fg theme "dim" status)
+      (if-let [theme (some-> ctx .-ui (aget "theme"))]
+        (if-let [fg (aget theme "fg")]
+          (fg "dim" status)
           status)
         status)
       (catch js/Error _
