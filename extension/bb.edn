@@ -1,5 +1,6 @@
 {:tasks
- {:init (do (require '[clojure.string :as str])
+ {:init (do (require '[clojure.string :as str]
+             '[babashka.fs :as fs])
             (def paths ["src/main" "src/test"])
             (defn assert-marked-bundled []
               (let [bundle (slurp "dist/pi-matrix-relay.js")]
@@ -21,6 +22,9 @@
   install-local-extension {:depends [shadow-release]
                            :task (do
                                    (shell "mkdir -p ../.pi/extensions")
-                                   (shell "cp dist/pi-matrix-relay.js ../.pi/extensions/pi-matrix-relay.js")
-                                   (println "Installed ../.pi/extensions/pi-matrix-relay.js"))}
+                                   (doseq [file (fs/glob "../.pi/extensions" "pi-matrix-relay*")]
+                                     (fs/delete-if-exists file))
+                                   (let [target (str "../.pi/extensions/pi-matrix-relay-" (System/currentTimeMillis) ".js")]
+                                     (shell "cp" "dist/pi-matrix-relay.js" target)
+                                     (println "Installed" target)))}
   shadow-node-repl (shell "npx shadow-cljs node-repl")}}
