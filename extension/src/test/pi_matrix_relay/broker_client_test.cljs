@@ -116,6 +116,7 @@
         (-> (js/Promise.all
              (clj->js [(broker-client/verification-start! opts {:user/id "@alice:example.org"
                                                                  :device/id "DEVICE"})
+                       (broker-client/verification-bootstrap! opts {})
                        (broker-client/verification-accept! opts "verification/1")
                        (broker-client/verification-start-sas! opts "verification/1")
                        (broker-client/verification-confirm! opts "verification/1")
@@ -126,6 +127,7 @@
                      (is (= [["POST" "/v1/verification/start"
                               {:user/id "@alice:example.org"
                                :device/id "DEVICE"}]
+                             ["POST" "/v1/verification/bootstrap" {}]
                              ["POST" "/v1/verification/verification%2F1/accept" {}]
                              ["POST" "/v1/verification/verification%2F1/start-sas" {}]
                              ["POST" "/v1/verification/verification%2F1/confirm" {}]

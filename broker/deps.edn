@@ -17,7 +17,7 @@
                                             :git/sha    "2d1d8dc01d4a85b622e37dc8a6a84a48edd39fc7"
                                             :exclusions [org.suskalo/coffi]}
          com.outskirtslabs/trixnity-clj    {:git/url    "https://github.com/outskirtslabs/trixnity-clj.git"
-                                            :git/sha    "427ab83eb89826958bba6a4cf4d6d7eb3bd5e963"
+                                            :git/sha    "c766b384e554e25256792828fef818c70ac65b61"
                                             :exclusions [org.suskalo/coffi andersmurphy/sqlite4clj]}
          org.suskalo/coffi                 {:git/url "https://github.com/ramblurr/coffi"
                                             :git/sha "9b05e268b915b1992bfd4175cb7c8c7c45d8973a"}}

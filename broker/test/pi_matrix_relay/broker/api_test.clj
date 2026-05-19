@@ -197,6 +197,8 @@
                                     {:request/id "verification-start-1"
                                      :user/id "@alice:example.org"
                                      :device/id "ALICEDEVICE"})
+              bootstrap (tu/edn-request app :post "/v1/verification/bootstrap"
+                                        {:request/id "verification-bootstrap-1"})
               accept (tu/edn-request app :post "/v1/verification/verification-1/accept" {})
               start-sas (tu/edn-request app :post "/v1/verification/verification-1/start-sas" {})
               confirm (tu/edn-request app :post "/v1/verification/verification-1/confirm" {})
@@ -204,6 +206,9 @@
               cancel (tu/edn-request app :post "/v1/verification/verification-1/cancel" {})
               status (tu/edn-request app :get "/v1/verification/status" nil)]
           (is (= {:start {:ok true :data {:verification-id "verification-1"}}
+                  :bootstrap {:ok true :data {:kind "success"
+                                               :recovery-key "RECOVERY"
+                                               :uia {:kind "success"}}}
                   :accept {:ok true :data {:verification-id "verification-1"}}
                   :start-sas {:ok true :data {:verification-id "verification-1"}}
                   :confirm {:ok true :data {:verification-id "verification-1"}}
@@ -213,12 +218,14 @@
                   :calls [[:verification-start {:request/id "verification-start-1"
                                                 :user/id "@alice:example.org"
                                                 :device/id "ALICEDEVICE"}]
+                          [:verification-bootstrap {:request/id "verification-bootstrap-1"}]
                           [:verification-accept "verification-1"]
                           [:verification-start-sas "verification-1"]
                           [:verification-confirm "verification-1"]
                           [:verification-no-match "verification-1"]
                           [:verification-cancel "verification-1"]]}
                  {:start start
+                  :bootstrap bootstrap
                   :accept accept
                   :start-sas start-sas
                   :confirm confirm

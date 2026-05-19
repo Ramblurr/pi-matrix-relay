@@ -43,12 +43,17 @@
         [action a b & more] parts]
     (cond
       (or (str/blank? verify-args) (str/blank? action))
-      (error "Usage: verify <start|accept|start-sas|confirm|no-match|cancel|status> ...")
+      (error "Usage: verify <bootstrap|start|accept|start-sas|confirm|no-match|cancel|status> ...")
 
       (= "status" action)
       (if (or a (seq more))
         (error "Usage: verify status")
         {:op :verify-status})
+
+      (= "bootstrap" action)
+      (if (or a (seq more))
+        (error "Usage: verify bootstrap")
+        {:op :verify-bootstrap})
 
       (= "start" action)
       (cond

@@ -78,6 +78,11 @@
   (verification-start! [_ request]
     (swap! calls* conj [:verification-start request])
     {:verification-id "verification-1"})
+  (verification-bootstrap! [_ request]
+    (swap! calls* conj [:verification-bootstrap request])
+    {:kind "success"
+     :recovery-key "RECOVERY"
+     :uia {:kind "success"}})
   (verification-accept! [_ verification-id]
     (swap! calls* conj [:verification-accept verification-id])
     {:verification-id verification-id})

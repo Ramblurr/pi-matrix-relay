@@ -36,6 +36,7 @@
    :send-message! broker-client/send-message!
    :set-typing! broker-client/set-typing!
    :send-reaction! broker-client/send-reaction!
+   :verification-bootstrap! broker-client/verification-bootstrap!
    :verification-start! broker-client/verification-start!
    :verification-accept! broker-client/verification-accept!
    :verification-start-sas! broker-client/verification-start-sas!
@@ -2330,6 +2331,7 @@
        "  room mode <target> <mode>          Set a bound prompt mode: all, mentions, commands-only.\n"
        "  progress <quiet|normal|verbose>  Configure slot-room typing/progress detail.\n"
        "  send <alias-or-room-id> <message>  Send a message to a bound room or raw room id.\n"
+       "  verify bootstrap                 Bootstrap bot cross-signing.\n"
        "  verify start <user> [device]       Start Matrix verification.\n"
        "  verify accept|start-sas|confirm|no-match|cancel <id>  Continue verification.\n"
        "  verify status                      Show active Matrix verifications.\n\n"
@@ -2592,9 +2594,29 @@
            (str " " description)))
     (str emoji)))
 
+(defn- uia-summary
+  [uia]
+  (let [kind (:kind uia)
+        flows (:flows uia)
+        error-message (:error-message uia)]
+    (cond-> (str "UIA " kind)
+      (seq flows) (str "; flows: " (str/join ", " (map #(str/join "+" %) flows)))
+      error-message (str "; error: " error-message))))
+
 (defn- verification-summary
   [action result]
   (case action
+    :bootstrap (case (:kind result)
+                 "success" (str "Matrix cross-signing bootstrap completed. Recovery key: "
+                                (:recovery-key result)
+                                "\nStore this recovery key securely.")
+                 "uia-required" (str "Matrix cross-signing bootstrap needs additional authentication. "
+                                     (uia-summary (:uia result))
+                                     "\nRecovery key: " (:recovery-key result))
+                 "uia-error" (str "Matrix cross-signing bootstrap authentication failed. "
+                                  (uia-summary (:uia result))
+                                  "\nRecovery key: " (:recovery-key result))
+                 (str "Matrix cross-signing bootstrap returned " (:kind result) "."))
     :start (str "Started Matrix verification " (or (verification-id-from result) "")
                 " with " (verification-peer result) ".")
     :accept (str "Accepted Matrix verification " (or (verification-id-from result) "") ".")
@@ -2643,12 +2665,13 @@
     (notify! ctx message (if (#{"verification.cancelled"} (:type event)) "warning" "info"))))
 
 (defn- handle-verify-command!
-  [{:keys [verification-start! verification-accept! verification-start-sas!
+  [{:keys [verification-bootstrap! verification-start! verification-accept! verification-start-sas!
            verification-confirm! verification-no-match! verification-cancel!
            verification-status!]} command ctx]
   (let [op (:op command)
         verification-id (:verification/id command)
         action (case op
+                 :verify-bootstrap :bootstrap
                  :verify-start :start
                  :verify-accept :accept
                  :verify-start-sas :start-sas
@@ -2659,6 +2682,7 @@
         request (cond-> {:user/id (:user/id command)}
                   (:device/id command) (assoc :device/id (:device/id command)))
         call (case op
+               :verify-bootstrap #(verification-bootstrap! {})
                :verify-start #(verification-start! request)
                :verify-accept #(verification-accept! verification-id)
                :verify-start-sas #(verification-start-sas! verification-id)
@@ -2688,6 +2712,7 @@
        :room-prompt-mode (handle-room-prompt-mode! deps command ctx)
        :progress-verbosity (handle-progress-verbosity! deps command ctx)
        :send (handle-send! deps command ctx)
+       :verify-bootstrap (handle-verify-command! deps command ctx)
        :verify-start (handle-verify-command! deps command ctx)
        :verify-accept (handle-verify-command! deps command ctx)
        :verify-start-sas (handle-verify-command! deps command ctx)

@@ -3,6 +3,7 @@
             [missionary.core :as m]
             [ol.trixnity.client :as client]
             [ol.trixnity.event :as event]
+            [ol.trixnity.key :as key]
             [ol.trixnity.repo :as repo]
             [ol.trixnity.room :as room]
             [ol.trixnity.room.message :as msg]
@@ -581,6 +582,17 @@
       (if-let [device-id (:device/id request)]
         (verification-task-result (verification/start-device-verification! c user-id device-id))
         (verification-task-result (verification/start-user-verification! c user-id)))))
+  (verification-bootstrap! [_ request]
+    (let [c (:client @runtime*)
+          password (get-in config [:matrix :password])
+          user-id (bot-user-id runtime* config)
+          opts (cond-> {::mx/password password
+                         ::mx/user-id user-id}
+                 (str/blank? (str password)) (dissoc ::mx/password)
+                 (str/blank? user-id) (dissoc ::mx/user-id))]
+      (if-let [passphrase (:passphrase request)]
+        (verification-task-result (key/bootstrap-cross-signing-from-passphrase! c passphrase opts))
+        (verification-task-result (key/bootstrap-cross-signing! c opts)))))
   (verification-accept! [_ verification-id]
     (verification-task-result (verification/accept! (:client @runtime*) verification-id)))
   (verification-start-sas! [_ verification-id]

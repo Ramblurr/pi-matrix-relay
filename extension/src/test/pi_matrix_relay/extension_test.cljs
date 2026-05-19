@@ -1227,7 +1227,13 @@
           snapshot {:verification-id "verification-1"
                     :their-user-id "@alice:example.org"
                     :their-device-id "DEVICE"}
-          deps {:verification-start! (fn [request]
+          bootstrap-snapshot {:kind "success"
+                              :recovery-key "RECOVERY"
+                              :uia {:kind "success"}}
+          deps {:verification-bootstrap! (fn [request]
+                                           (swap! calls* conj [:bootstrap request])
+                                           (js/Promise.resolve bootstrap-snapshot))
+                :verification-start! (fn [request]
                                        (swap! calls* conj [:start request])
                                        (js/Promise.resolve snapshot))
                 :verification-accept! (fn [verification-id]
@@ -1251,7 +1257,8 @@
           ctx #js {:cwd "/work/project"
                    :ui #js {:notify (fn [message level]
                                       (swap! notifications* conj [message level]))}}]
-      (-> (extension/handle-command! deps "verify start @alice:example.org DEVICE" ctx)
+      (-> (extension/handle-command! deps "verify bootstrap" ctx)
+          (.then (fn [_] (extension/handle-command! deps "verify start @alice:example.org DEVICE" ctx)))
           (.then (fn [_] (extension/handle-command! deps "verify start @alice:example.org" ctx)))
           (.then (fn [_] (extension/handle-command! deps "verify accept verification-1" ctx)))
           (.then (fn [_] (extension/handle-command! deps "verify start-sas verification-1" ctx)))
@@ -1260,7 +1267,8 @@
           (.then (fn [_] (extension/handle-command! deps "verify cancel verification-1" ctx)))
           (.then (fn [_] (extension/handle-command! deps "verify status" ctx)))
           (.then (fn [_]
-                   (is (= [[:start {:user/id "@alice:example.org" :device/id "DEVICE"}]
+                   (is (= [[:bootstrap {}]
+                           [:start {:user/id "@alice:example.org" :device/id "DEVICE"}]
                            [:start {:user/id "@alice:example.org"}]
                            [:accept "verification-1"]
                            [:start-sas "verification-1"]

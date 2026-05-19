@@ -472,6 +472,11 @@
   (fn [request]
     (response/ok-response (idempotent! env :verification/start request #(matrix/verification-start! matrix-gateway (body-params request))))))
 
+(defn verification-bootstrap-handler
+  [{:keys [matrix-gateway] :as env}]
+  (fn [request]
+    (response/ok-response (idempotent! env :verification/bootstrap request #(matrix/verification-bootstrap! matrix-gateway (body-params request))))))
+
 (defn verification-accept-handler
   [{:keys [matrix-gateway]}]
   (fn [request]
@@ -531,6 +536,7 @@
     ["/matrix/rooms" {:get (list-rooms-handler env)
                       :post (create-room-handler env)}]
     ["/verification/start" {:post (verification-start-handler env)}]
+    ["/verification/bootstrap" {:post (verification-bootstrap-handler env)}]
     ["/verification/:verification-id/accept" {:post (verification-accept-handler env)}]
     ["/verification/:verification-id/start-sas" {:post (verification-start-sas-handler env)}]
     ["/verification/:verification-id/confirm" {:post (verification-confirm-handler env)}]

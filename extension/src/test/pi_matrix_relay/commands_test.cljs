@@ -45,6 +45,16 @@
     (is (= {:op :progress-verbosity
             :verbosity "verbose"}
            (commands/parse "progress verbose"))))
+  (testing "verification commands parse bootstrap and active verification actions"
+    (is (= {:op :verify-bootstrap}
+           (commands/parse "verify bootstrap")))
+    (is (= {:op :verify-start
+            :user/id "@alice:example.org"
+            :device/id "DEVICE"}
+           (commands/parse "verify start @alice:example.org DEVICE")))
+    (is (= {:op :verify-confirm
+            :verification/id "verification-1"}
+           (commands/parse "verify confirm verification-1"))))
   (testing "internal new-session bridge command"
     (is (= {:op :internal-new-session
             :request-id "req-123"}

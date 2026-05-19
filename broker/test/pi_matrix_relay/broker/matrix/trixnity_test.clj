@@ -2,6 +2,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [missionary.core :as m]
             [ol.trixnity.event :as event]
+            [ol.trixnity.key :as key]
             [ol.trixnity.room :as room]
             [ol.trixnity.schemas :as mx]
             [ol.trixnity.space :as space]
@@ -362,3 +363,35 @@
                 :cancel cancel-result
                 :status status-result
                 :calls @calls*}))))))
+
+(deftest verification-bootstrap-uses-public-trixnity-key-api-and-broker-password
+  (let [gateway (sut/gateway {:matrix {:homeserver-url "https://matrix.example.org"
+                                       :user-id "@bot:example.org"
+                                       :password "bot-password"}}
+                             {})
+        calls* (atom [])
+        snapshot {::mx/kind "success"
+                  ::mx/recovery-key "RECOVERY"
+                  ::mx/uia {::mx/kind "success"}}]
+    (reset! (:runtime* gateway) {:client :client})
+    (with-redefs [key/bootstrap-cross-signing!
+                  (fn [client opts]
+                    (swap! calls* conj [:bootstrap client opts])
+                    (m/sp snapshot))
+                  key/bootstrap-cross-signing-from-passphrase!
+                  (fn [client passphrase opts]
+                    (swap! calls* conj [:bootstrap-passphrase client passphrase opts])
+                    (m/sp snapshot))]
+      (is (= {:kind "success"
+              :recovery-key "RECOVERY"
+              :uia {:kind "success"}}
+             (matrix/verification-bootstrap! gateway {})))
+      (is (= {:kind "success"
+              :recovery-key "RECOVERY"
+              :uia {:kind "success"}}
+             (matrix/verification-bootstrap! gateway {:passphrase "storage-passphrase"})))
+      (is (= [[:bootstrap :client {::mx/password "bot-password"
+                                   ::mx/user-id "@bot:example.org"}]
+              [:bootstrap-passphrase :client "storage-passphrase" {::mx/password "bot-password"
+                                                                    ::mx/user-id "@bot:example.org"}]]
+             @calls*)))))

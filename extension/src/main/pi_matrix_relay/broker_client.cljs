@@ -196,6 +196,14 @@
   ([opts request]
    (http/request-edn! opts "POST" "/v1/verification/start" request)))
 
+(defn verification-bootstrap!
+  ([]
+   (verification-bootstrap! {} {}))
+  ([request]
+   (verification-bootstrap! {} request))
+  ([opts request]
+   (http/request-edn! opts "POST" "/v1/verification/bootstrap" request)))
+
 (defn- verification-path
   [verification-id suffix]
   (str "/v1/verification/" (http/encode-path-segment verification-id) suffix))
