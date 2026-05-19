@@ -7,5 +7,9 @@
   },
   "dependencies": {
     "marked": "15.0.12"
+  },
+  "pi": {
+    "extensions": ["./dist/pi-matrix-relay.js"],
+    "skills": ["./skills"]
   }
 }

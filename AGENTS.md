@@ -34,10 +34,10 @@ Run from the repo root:
 
 ### Local extension install for live Pi/Matrix testing
 
-Use exactly one project-local relay extension bundle during development. The install task writes a cache-busted filename like:
+Use exactly one project-local relay extension package directory during development. The install task writes a cache-busted bundle inside it like:
 
 ```text
-.pi/extensions/pi-matrix-relay-<epoch-ms>.js
+.pi/extensions/pi-matrix-relay/pi-matrix-relay-<epoch-ms>.js
 ```
 
 Install or replace it only with:
@@ -46,14 +46,14 @@ Install or replace it only with:
 cd extension && bb install-local-extension
 ```
 
-That task must remove any existing `.pi/extensions/pi-matrix-relay*` files before copying the new cache-busted bundle. Do not leave multiple timestamped, hashed, or otherwise unique relay bundle names in `.pi/extensions/`; Pi loads every discovered extension file, so duplicate bundles start duplicate relay clients and can lease multiple Matrix slots.
+That task must remove any existing `.pi/extensions/pi-matrix-relay*` files or directories before copying the new package directory. The package `package.json` must point at exactly one cache-busted bundle via `pi.extensions`. Do not leave multiple timestamped, hashed, or otherwise unique relay bundle names discoverable in `.pi/extensions/`; Pi loads every discovered extension entry, so duplicates start duplicate relay clients and can lease multiple Matrix slots.
 
-When adding npm dependencies to the extension, they must be bundled into the copied extension file. Pi loads the copied `.pi/extensions/pi-matrix-relay-<epoch-ms>.js` directly and does not have `extension/node_modules` beside it. The app build uses shadow-cljs `:js-provider :shadow` with `:keep-native-requires true` so npm deps are bundled while Node built-ins stay native. After adding a dependency, run `cd extension && bb shadow-release` and verify the released bundle does not contain external `require("<dep>")` for the new package. Do not fix missing runtime deps by copying `node_modules` into `.pi/extensions/`.
+When adding npm dependencies to the extension, they must be bundled into the copied extension file. Pi loads `.pi/extensions/pi-matrix-relay/package.json`, then the package's cache-busted bundle, and does not have `extension/node_modules` beside it. The app build uses shadow-cljs `:js-provider :shadow` with `:keep-native-requires true` so npm deps are bundled while Node built-ins stay native. After adding a dependency, run `cd extension && bb shadow-release` and verify the released bundle does not contain external `require("<dep>")` for the new package. Do not fix missing runtime deps by copying `node_modules` into `.pi/extensions/`.
 
 Before live testing after extension work:
 
 1. Run `cd extension && bb install-local-extension`.
-2. Ensure `.pi/extensions/` contains only one `pi-matrix-relay*.js` file for this relay; remove stale copies if needed.
+2. Ensure `.pi/extensions/` contains only one `pi-matrix-relay` package directory for this relay and no stale flat `pi-matrix-relay*.js` files.
 3. Reload Pi (`/reload` or `reload_runtime`).
 4. Run `matrix_relay_diagnostics` and verify this Pi process has exactly one active relay client/slot before testing Matrix behavior.
 

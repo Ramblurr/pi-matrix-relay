@@ -11,6 +11,8 @@
 
 (defonce client-instance-id (str (random-uuid)))
 
+(def node-path (js/require "path"))
+
 (def default-deps
   {:health! broker-client/health!
    :register-client! broker-client/register-client!
@@ -42,6 +44,10 @@
 (defn- promise
   [value]
   (js/Promise.resolve value))
+
+(defn- bundled-skills-path
+  []
+  (.join node-path js/__dirname "skills"))
 
 (defn- ctx-cwd
   [^js ctx]
@@ -2600,6 +2606,9 @@
      (register-diagnostics-tool! pi deps)
      (register-control-tool! pi deps)
      (when-let [on (.-on pi)]
+       (on "resources_discover"
+           (fn [_event _ctx]
+             #js {:skillPaths #js [(bundled-skills-path)]}))
        (on "session_start"
            (fn [event ctx]
              (let [reason (:reason (js->clj-safe event))]

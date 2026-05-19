@@ -23,8 +23,23 @@
                            :task (do
                                    (shell "mkdir -p ../.pi/extensions")
                                    (doseq [file (fs/glob "../.pi/extensions" "pi-matrix-relay*")]
-                                     (fs/delete-if-exists file))
-                                   (let [target (str "../.pi/extensions/pi-matrix-relay-" (System/currentTimeMillis) ".js")]
+                                     (if (fs/directory? file)
+                                       (fs/delete-tree file)
+                                       (fs/delete-if-exists file)))
+                                   (let [install-dir "../.pi/extensions/pi-matrix-relay"
+                                         bundle-name (str "pi-matrix-relay-" (System/currentTimeMillis) ".js")
+                                         target (str install-dir "/" bundle-name)]
+                                     (fs/create-dirs install-dir)
                                      (shell "cp" "dist/pi-matrix-relay.js" target)
+                                     (fs/copy-tree "skills" (str install-dir "/skills") {:replace-existing true})
+                                     (spit (str install-dir "/package.json")
+                                           (str "{\n"
+                                                "  \"name\": \"pi-matrix-relay-local\",\n"
+                                                "  \"private\": true,\n"
+                                                "  \"pi\": {\n"
+                                                "    \"extensions\": [\"./" bundle-name "\"],\n"
+                                                "    \"skills\": [\"./skills\"]\n"
+                                                "  }\n"
+                                                "}\n"))
                                      (println "Installed" target)))}
   shadow-node-repl (shell "npx shadow-cljs node-repl")}}
