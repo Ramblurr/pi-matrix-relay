@@ -110,7 +110,11 @@
    (record-diagnostic! diagnostics* type {}))
   ([diagnostics* type details]
    (when diagnostics*
-     (let [event (merge {:at (now-iso)
+     (let [details (cond
+                     (map? details) details
+                     (nil? details) {}
+                     :else {:message (str details)})
+           event (merge {:at (now-iso)
                          :type (name type)}
                         details)]
        (swap! diagnostics* update :events

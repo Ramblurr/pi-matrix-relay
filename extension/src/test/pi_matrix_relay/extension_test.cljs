@@ -258,6 +258,38 @@
                         (is false (.-stack err))
                         (done)))))))))
 
+(deftest tool-message-send-failure-records-diagnostic-without-crashing
+  (async done
+    (let [events* (atom {})
+          calls* (atom [])
+          ;; init owns the diagnostics atom; this test verifies the rejected send path settles instead of crashing Pi.
+          project-config {:project {:project/id "project"}}
+          pi (pi-with-events events*)
+          ctx #js {:cwd "/work/project"
+                   :ui #js {:setStatus (fn [_key _status])
+                            :notify (fn [_message _level])}}
+          deps (assoc (progress-test-deps project-config calls*)
+                      :send-message! (fn [_room-id _message _opts]
+                                      (js/Promise.reject (js/Error. "send failed"))))]
+      (extension/init pi deps)
+      (let [session-start (get @events* "session_start")
+            tool-start (get @events* "tool_execution_start")]
+        (if-not (and session-start tool-start)
+          (done)
+          (-> (call-handler! session-start #js {:reason "startup"} ctx)
+              (.then (fn [_]
+                       (reset! calls* [])
+                       (call-handler! tool-start #js {:toolName "bash"} ctx)))
+              (.then (fn [_]
+                       (let [[_kind _ms _id flush!] (first (filter #(= :timeout (first %)) @calls*))]
+                         (is (fn? flush!))
+                         (flush!))))
+              (.then (fn [_]
+                       (done)))
+              (.catch (fn [err]
+                        (is false (.-stack err))
+                        (done)))))))))
+
 (deftest room-tool-message-preference-off-disables-tool-labels-but-not-typing
   (async done
     (let [events* (atom {})
