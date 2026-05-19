@@ -1098,6 +1098,8 @@
           ctx #js {:cwd "/work/project"
                    :ui #js {:notify (fn [message level]
                                       (swap! notifications* conj [message level]))
+                                      :theme #js {:fg (fn [color text]
+                                                        (str "[" color "]" text "[/" color "]"))}
                             :setStatus (fn [id status]
                                          (swap! statuses* conj [id status]))}}]
       (-> (extension/start-relay! deps pi ctx)
@@ -1124,7 +1126,7 @@
                                                     :session/status :session/path])))
                    (is (string? (:session/started-at relay-state)))
                    (is (nil? (:last-start-banner relay-state)))
-                   (is (= [["pi-matrix-relay" "matrix: slot A project-A; rooms: ops"]]
+                   (is (= [["pi-matrix-relay" "[dim][m]: slot A; rooms: ops[/dim]"]]
                           @statuses*))
                    (done)))
           (.catch (fn [err]
@@ -1676,7 +1678,9 @@
           statuses* (atom [])
           pi #js {:sendUserMessage (fn [_message])}
           ctx #js {:cwd "/work/project"
-                   :ui #js {:setStatus (fn [id status]
+                   :ui #js {:theme #js {:fg (fn [color text]
+                                              (str "[" color "]" text "[/" color "]"))}
+                            :setStatus (fn [id status]
                                          (swap! statuses* conj [id status]))}}]
       (-> (extension/start-relay! deps pi ctx)
           (.then (fn [_relay-state]
@@ -1690,7 +1694,7 @@
                            [:update-subscriptions "client-1" ["!slot:example.org"]]
                            [:open-event-stream "client-1" true]]
                           @calls*))
-                   (is (= [["pi-matrix-relay" "matrix: slot A project-A"]]
+                   (is (= [["pi-matrix-relay" "[dim][m]: slot A[/dim]"]]
                           @statuses*))
                    (done)))
           (.catch (fn [err]

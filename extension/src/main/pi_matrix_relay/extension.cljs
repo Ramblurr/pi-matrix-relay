@@ -58,11 +58,24 @@
   [ctx message]
   (notify! ctx message "error"))
 
+(defn- dim-status-text
+  [^js ctx status]
+  (if (some? status)
+    (try
+      (if-let [^js theme (some-> ctx .-ui .-theme)]
+        (if (.-fg theme)
+          (.fg theme "dim" status)
+          status)
+        status)
+      (catch js/Error _
+        status))
+    js/undefined))
+
 (defn- set-status!
   [^js ctx status]
   (when-let [ui (.-ui ctx)]
     (when-let [set-status (.-setStatus ui)]
-      (set-status "pi-matrix-relay" (if (nil? status) js/undefined status)))))
+      (set-status "pi-matrix-relay" (dim-status-text ctx status)))))
 
 (defn- room-bindings
   [project-config]
@@ -202,7 +215,7 @@
                           (remove str/blank?)
                           distinct
                           vec)
-        base (str "matrix: slot " (:slot slot) " " (:room/name slot))]
+        base (str "[m]: slot " (or (:slot slot) "?"))]
     (if (seq room-aliases)
       (str base "; rooms: " (str/join ", " room-aliases))
       base)))
