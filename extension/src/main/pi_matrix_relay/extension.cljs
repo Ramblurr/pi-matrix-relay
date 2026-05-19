@@ -631,28 +631,15 @@
                             (str/join "\n"))
       :else (str content))))
 
-(defn- one-line-preview
+(defn- split-render-lines
   [text]
-  (-> (str text)
-      (str/replace #"[\r\n]+" " ")
-      str/trim))
+  (str/split (str text) #"\r?\n"))
 
-(defn- ellipsize
-  [text max-chars]
-  (let [text (str text)
-        max-chars (max 0 (or max-chars 0))]
-    (cond
-      (<= (count text) max-chars) text
-      (<= max-chars 1) "…"
-      (<= max-chars 3) (subs "..." 0 max-chars)
-      :else (str (subs text 0 (- max-chars 3)) "..."))))
-
-(defn- matrix-render-body
-  [details fallback-content]
-  (case (:kind details)
-    "reaction" (str "reacted " (or (:reaction/key details) "")
-                    " to event " (or (:event/reacts-to-id details) "unknown"))
-    (or (:event/text details) fallback-content "")))
+(defn- style-content-line
+  [theme line]
+  (if (str/blank? line)
+    ""
+    (theme-fg theme "customMessageText" line)))
 
 (defn- matrix-metadata-lines
   [details]
@@ -667,30 +654,25 @@
                  (str label ": " value))))))
 
 (defn- matrix-message-render-lines
-  [message options theme width]
+  [message options theme _width]
   (let [details (or (js->clj-safe (if (map? message)
                                     (:details message)
                                     (aget message "details")))
                     {})
-        fallback-content (message-content-text message)
-        body (one-line-preview (matrix-render-body details fallback-content))
+        content-lines (map #(style-content-line theme %)
+                           (split-render-lines (message-content-text message)))
         room-label (or (:room-label details) "matrix")
-        sender (or (:event/sender details) "unknown")
-        label "[m]"
-        meta (str "[" room-label " · " sender "]")
-        width (max 20 (or width 80))
-        body-width (- width (count label) 1 (count meta) 1)
-        body (ellipsize body body-width)
-        main-line (str (theme-fg theme "customMessageLabel" label)
-                       " "
-                       (theme-fg theme "muted" meta)
-                       " "
-                       (theme-fg theme "customMessageText" body))
+        label (theme-fg theme "customMessageLabel" "[m]")
+        room (theme-fg theme "muted" (str "[" room-label "]"))
+        prefix (str label " " room " ")
+        main-lines (if-let [first-line (first content-lines)]
+                     (into [(str prefix first-line)] (rest content-lines))
+                     [prefix])
         expanded? (boolean (when options (aget options "expanded")))
         metadata (when expanded?
                    (map #(theme-fg theme "dim" (str "  " %))
                         (matrix-metadata-lines details)))]
-    (vec (cond-> [main-line]
+    (vec (cond-> main-lines
            (seq metadata) (into metadata)))))
 
 (defn- matrix-message-component

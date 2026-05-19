@@ -114,16 +114,22 @@
       (when renderer
         (let [theme #js {:fg (fn [color text]
                                (str "<" color ">" text "</" color ">"))}
-              ^js component (renderer #js {:content "Matrix ops from @alice:example.org at 12:34:56Z\nplease check status\n\nMatrix metadata:\neventId: $event:example.org"
+              ^js component (renderer #js {:content "Matrix ops from @alice:example.org at 12:34:56Z\nfull\nmulti-line\nmessage\n\nMatrix metadata:\neventId: $event:example.org"
                                         :details (clj->js {"kind" "message"
                                                            "room-label" "ops"
                                                            "event/sender" "@alice:example.org"
-                                                           "event/text" "please check status"
+                                                           "event/text" "full\nmulti-line\nmessage"
                                                            "event/id" "$event:example.org"})}
                                   #js {:expanded false}
                                   theme)
-              lines (js->clj (.render component 80))]
-          (is (= ["<customMessageLabel>[m]</customMessageLabel> <muted>[ops · @alice:example.org]</muted> <customMessageText>please check status</customMessageText>"]
+              lines (js->clj (.render component 40))]
+          (is (= ["<customMessageLabel>[m]</customMessageLabel> <muted>[ops]</muted> <customMessageText>Matrix ops from @alice:example.org at 12:34:56Z</customMessageText>"
+                  "<customMessageText>full</customMessageText>"
+                  "<customMessageText>multi-line</customMessageText>"
+                  "<customMessageText>message</customMessageText>"
+                  ""
+                  "<customMessageText>Matrix metadata:</customMessageText>"
+                  "<customMessageText>eventId: $event:example.org</customMessageText>"]
                  lines)))))
     (is (= ["read" "bash"] @active-tools*)
         "extension load must not call runtime action methods such as setActiveTools")
