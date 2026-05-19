@@ -183,7 +183,7 @@
              (select-keys (get-in params [:properties :format]) [:type :enum :default])))
       (is (= #{:target :message :format :replyToEventId}
              (set (keys (:properties params)))))
-      (is (= "text/markdown (default): render Markdown to Matrix HTML; text/plain: literal text; text/html: pre-rendered Matrix-safe HTML."
+      (is (= "text/markdown (default): render Markdown to Matrix HTML; do not mix raw HTML tags into Markdown. text/plain: literal text. text/html: pre-rendered Matrix-safe HTML."
              format-desc)))
     (is (fn? (.-execute ^js (get @tools* "send_matrix_reaction"))))
     (is (fn? (.-execute ^js (get @tools* "matrix_relay_diagnostics"))))
@@ -285,6 +285,45 @@
               (.catch (fn [err]
                         (is false (.-stack err))
                         (done)))))))))
+
+(deftest turn-end-clears-slot-typing-even-before-agent-end
+  (async done
+    (let [events* (atom {})
+          calls* (atom [])
+          project-config {:project {:project/id "project"}}
+          pi (pi-with-events events*)
+          ctx #js {:cwd "/work/project"
+                   :ui #js {:setStatus (fn [_key _status])
+                            :notify (fn [_message _level])}}
+          deps (progress-test-deps project-config calls*)]
+      (extension/init pi deps)
+      (let [session-start (get @events* "session_start")
+            agent-start (get @events* "agent_start")
+            turn-end (get @events* "turn_end")]
+        (is (fn? turn-end))
+        (if-not (and session-start agent-start turn-end)
+          (done)
+          (-> (call-handler! session-start #js {:reason "startup"} ctx)
+              (.then (fn [_]
+                       (call-handler! agent-start #js {} ctx)))
+              (.then (fn [_]
+                       (reset! calls* [])
+                       (call-handler! turn-end #js {:turnIndex 1} ctx)))
+              (.then (fn [_]
+                       (is (some #(= :clear-interval (first %)) @calls*))
+                       (is (some (fn [[kind room-id typing? opts]]
+                                   (and (= :typing kind)
+                                        (= "!slot:example.org" room-id)
+                                        (false? typing?)
+                                        (= {:client/id "client-1"
+                                            :timeout/ms 30000}
+                                           opts)))
+                                 @calls*))
+                       (done)))
+              (.catch (fn [err]
+                        (is false (.-stack err))
+                        (done)))))))))
+
 
 (deftest quiet-progress-verbosity-disables-automatic-progress-and-typing-start
   (async done

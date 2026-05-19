@@ -2834,7 +2834,7 @@
       (js/Promise.reject (js/Error. (str "No Matrix room binding for target " target))))))
 
 (def send-message-format-description
-  "text/markdown (default): render Markdown to Matrix HTML; text/plain: literal text; text/html: pre-rendered Matrix-safe HTML.")
+  "text/markdown (default): render Markdown to Matrix HTML; do not mix raw HTML tags into Markdown. text/plain: literal text. text/html: pre-rendered Matrix-safe HTML.")
 
 (def send-matrix-message-parameters
   #js {:type "object"
@@ -2999,6 +2999,10 @@
            (fn [_event _ctx]
              (when-let [relay-state @relay-state*]
                (handle-agent-start-progress! deps relay-state* relay-state))))
+       (on "turn_start"
+           (fn [_event _ctx]
+             (when-let [relay-state @relay-state*]
+               (handle-agent-start-progress! deps relay-state* relay-state))))
        (on "tool_execution_start"
            (fn [event _ctx]
              (when-let [relay-state @relay-state*]
@@ -3007,6 +3011,10 @@
            (fn [event _ctx]
              (when-let [relay-state @relay-state*]
                (handle-tool-end-progress! deps relay-state (js->clj event :keywordize-keys true)))))
+       (on "turn_end"
+           (fn [_event _ctx]
+             (when-let [relay-state @relay-state*]
+               (stop-slot-typing! deps relay-state* relay-state))))
        (on "agent_end"
            (fn [event _ctx]
              (when-let [relay-state @relay-state*]

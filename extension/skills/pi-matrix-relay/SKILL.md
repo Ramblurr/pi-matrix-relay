@@ -51,9 +51,13 @@ Use a text Matrix message instead of a reaction when the operator needs details,
 
 ## Formatting
 
-By default you can send markdown in your replies and it will be properly formatted. But you cannot send mixed markdown html. e.g., `foobar <code>baz</code>` does not work for the markdown content type.
+Use one format mode consistently for each `send_matrix_message` call:
 
-You optionally can use html or plain text as per the `send_matrix_message` tool description.
+- `text/markdown` renders Markdown to Matrix HTML. Use Markdown syntax only; do not embed raw HTML tags such as `<code>`, `<p>`, `<br>`, or `<table>` inside Markdown messages.
+- `text/plain` sends literal text. Prefer it for terse Matrix replies, verification emoji, status notes, and anything that does not need Markdown formatting.
+- `text/html` is only for fully pre-rendered Matrix-safe HTML.
+
+Do not mix Markdown and HTML in one Matrix message. For inline code in Markdown, use backticks, not raw `<code>` tags.
 
 ## Etiquette
 
