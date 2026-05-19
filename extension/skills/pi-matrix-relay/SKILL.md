@@ -49,6 +49,12 @@ Use a text Matrix message instead of a reaction when the operator needs details,
 - `matrix_relay_diagnostics` inspects this Pi process and broker state.
 - `matrix_relay_control` can start, stop, restart, or inspect the relay; check status/diagnostics before mutating relay state.
 
+## Formatting
+
+By default you can send markdown in your replies and it will be properly formatted. But you cannot send mixed markdown html. e.g., `foobar <code>baz</code>` does not work for the markdown content type.
+
+You optionally can use html or plain text as per the `send_matrix_message` tool description.
+
 ## Etiquette
 
 - Keep Matrix status updates concise.
