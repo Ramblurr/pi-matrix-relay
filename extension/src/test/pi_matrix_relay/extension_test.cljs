@@ -114,23 +114,55 @@
       (when renderer
         (let [theme #js {:fg (fn [color text]
                                (str "<" color ">" text "</" color ">"))}
-              ^js component (renderer #js {:content "Matrix ops from @alice:example.org at 12:34:56Z\nfull\nmulti-line\nmessage\n\nMatrix metadata:\neventId: $event:example.org"
-                                        :details (clj->js {"kind" "message"
-                                                           "room-label" "ops"
-                                                           "event/sender" "@alice:example.org"
-                                                           "event/text" "full\nmulti-line\nmessage"
-                                                           "event/id" "$event:example.org"})}
-                                  #js {:expanded false}
-                                  theme)
-              lines (js->clj (.render component 40))]
-          (is (= ["<customMessageLabel>[m]</customMessageLabel> <muted>[ops]</muted> <customMessageText>Matrix ops from @alice:example.org at 12:34:56Z</customMessageText>"
+              message #js {:content "Matrix ops from @alice:example.org at 12:34:56Z\nfull\nmulti-line\nmessage\n\nMatrix metadata:\neventId: $event:example.org"
+                           :details (clj->js {"kind" "message"
+                                               "room-label" "ops"
+                                               "room/id" "!room:example.org"
+                                               "event/sender" "@alice:example.org"
+                                               "event/timestamp" "2026-05-16T12:34:56Z"
+                                               "event/text" "full\nmulti-line\nmessage"
+                                               "event/id" "$event:example.org"})}
+              ^js component (renderer message #js {:expanded false} theme)
+              collapsed-lines (js->clj (.render component 80))
+              ^js expanded-component (renderer message #js {:expanded true} theme)
+              expanded-lines (js->clj (.render expanded-component 80))
+              plain-theme #js {:fg (fn [_color text] text)}
+              long-message #js {:content "ignored prompt content"
+                                :details (clj->js {"kind" "message"
+                                                    "room-label" "pi-matrix-relay-B"
+                                                    "event/sender" "@ramblurr:outskirtslabs.com"
+                                                    "event/timestamp" "2026-05-16T09:37:26Z"
+                                                    "event/text" "abcdefghijklmnopqrstuvwxyz"})}
+              ^js wrapped-component (renderer long-message #js {:expanded false} plain-theme)
+              wrapped-lines (js->clj (.render wrapped-component 20))]
+          (is (= ["<customMessageLabel>[m]</customMessageLabel> <muted>[ops]</muted> <muted>[from alice]</muted> <muted>[12:34:56Z]</muted>"
+                  ""
+                  "<customMessageText>full</customMessageText>"
+                  "<customMessageText>multi-line</customMessageText>"
+                  "<customMessageText>message</customMessageText>"]
+                 collapsed-lines))
+          (is (= ["<customMessageLabel>[m]</customMessageLabel> <muted>[ops]</muted> <muted>[from alice]</muted> <muted>[12:34:56Z]</muted>"
+                  ""
                   "<customMessageText>full</customMessageText>"
                   "<customMessageText>multi-line</customMessageText>"
                   "<customMessageText>message</customMessageText>"
                   ""
-                  "<customMessageText>Matrix metadata:</customMessageText>"
-                  "<customMessageText>eventId: $event:example.org</customMessageText>"]
-                 lines)))))
+                  "<dim>Matrix metadata:</dim>"
+                  "<dim>  eventId: $event:example.org</dim>"
+                  "<dim>  roomId: !room:example.org</dim>"
+                  "<dim>  sender: @alice:example.org</dim>"
+                  "<dim>  timestamp: 2026-05-16T12:34:56Z</dim>"]
+                 expanded-lines))
+          (is (every? #(<= (count %) 20) wrapped-lines))
+          (is (not-any? #(str/includes? % "...") wrapped-lines))
+          (is (= (str "[m] [pi-matrix-"
+                      "relay-B] [from"
+                      " ramblurr]"
+                      " [09:37:26Z]"
+                      ""
+                      "abcdefghijklmnop"
+                      "qrstuvwxyz")
+                 (apply str wrapped-lines))))))
     (is (= ["read" "bash"] @active-tools*)
         "extension load must not call runtime action methods such as setActiveTools")
     (let [send-tool ^js (get @tools* "send_matrix_message")

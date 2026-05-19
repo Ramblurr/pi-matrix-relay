@@ -635,11 +635,98 @@
   [text]
   (str/split (str text) #"\r?\n"))
 
-(defn- style-content-line
-  [theme line]
-  (if (str/blank? line)
-    ""
-    (theme-fg theme "customMessageText" line)))
+(defn- char-display-width
+  [ch]
+  (let [cp (.codePointAt ch 0)]
+    (cond
+      (or (zero? cp)
+          (< cp 32)
+          (and (<= 0x7f cp) (< cp 0xa0))
+          (<= 0x0300 cp 0x036f)
+          (<= 0x1ab0 cp 0x1aff)
+          (<= 0x1dc0 cp 0x1dff)
+          (<= 0x20d0 cp 0x20ff)
+          (<= 0xfe20 cp 0xfe2f))
+      0
+
+      (or (<= 0x1100 cp 0x115f)
+          (<= 0x2329 cp 0x232a)
+          (<= 0x2e80 cp 0xa4cf)
+          (<= 0xac00 cp 0xd7a3)
+          (<= 0xf900 cp 0xfaff)
+          (<= 0xfe10 cp 0xfe19)
+          (<= 0xfe30 cp 0xfe6f)
+          (<= 0xff00 cp 0xff60)
+          (<= 0xffe0 cp 0xffe6)
+          (<= 0x1f300 cp 0x1faff))
+      2
+
+      :else 1)))
+
+(defn- wrap-plain-line
+  [line width]
+  (let [width (max 1 (or width 80))
+        chars (array-seq (js/Array.from (str line)))]
+    (if (empty? chars)
+      [""]
+      (loop [remaining chars
+             current ""
+             current-width 0
+             lines []]
+        (if-let [ch (first remaining)]
+          (let [ch-width (char-display-width ch)]
+            (if (and (seq current) (> (+ current-width ch-width) width))
+              (recur remaining "" 0 (conj lines current))
+              (recur (rest remaining)
+                     (str current ch)
+                     (+ current-width ch-width)
+                     lines)))
+          (conj lines current))))))
+
+(defn- wrap-text-lines
+  [text width]
+  (mapcat #(wrap-plain-line % width)
+          (split-render-lines text)))
+
+(defn- style-wrapped-lines
+  [theme color width text]
+  (map #(if (str/blank? %)
+          ""
+          (theme-fg theme color %))
+       (wrap-text-lines text width)))
+
+(defn- matrix-render-body
+  [details fallback-content]
+  (case (:kind details)
+    "reaction" (str "reacted " (or (:reaction/key details) "")
+                    " to event " (or (:event/reacts-to-id details) "unknown"))
+    (or (:event/text details) fallback-content "")))
+
+(defn- matrix-header-plain
+  [details]
+  (let [sender (or (localpart (:event/sender details))
+                   (:event/sender details)
+                   "unknown")
+        timestamp (short-time (:event/timestamp details))]
+    (str "[m] [" (or (:room-label details) "matrix") "]"
+         " [from " sender "]"
+         " [" timestamp "]")))
+
+(defn- matrix-header-lines
+  [theme details width]
+  (let [plain (matrix-header-plain details)
+        wrapped (vec (wrap-plain-line plain width))]
+    (if (= 1 (count wrapped))
+      [(str (theme-fg theme "customMessageLabel" "[m]")
+            " "
+            (theme-fg theme "muted" (str "[" (or (:room-label details) "matrix") "]"))
+            " "
+            (theme-fg theme "muted" (str "[from " (or (localpart (:event/sender details))
+                                                         (:event/sender details)
+                                                         "unknown") "]"))
+            " "
+            (theme-fg theme "muted" (str "[" (short-time (:event/timestamp details)) "]")))]
+      (map #(theme-fg theme "customMessageLabel" %) wrapped))))
 
 (defn- matrix-metadata-lines
   [details]
@@ -654,24 +741,25 @@
                  (str label ": " value))))))
 
 (defn- matrix-message-render-lines
-  [message options theme _width]
-  (let [details (or (js->clj-safe (if (map? message)
+  [message options theme width]
+  (let [width (max 1 (or width 80))
+        details (or (js->clj-safe (if (map? message)
                                     (:details message)
                                     (aget message "details")))
                     {})
-        content-lines (map #(style-content-line theme %)
-                           (split-render-lines (message-content-text message)))
-        room-label (or (:room-label details) "matrix")
-        label (theme-fg theme "customMessageLabel" "[m]")
-        room (theme-fg theme "muted" (str "[" room-label "]"))
-        prefix (str label " " room " ")
-        main-lines (if-let [first-line (first content-lines)]
-                     (into [(str prefix first-line)] (rest content-lines))
-                     [prefix])
+        body-lines (style-wrapped-lines theme
+                                         "customMessageText"
+                                         width
+                                         (matrix-render-body details (message-content-text message)))
+        main-lines (vec (concat (matrix-header-lines theme details width)
+                                [""]
+                                body-lines))
         expanded? (boolean (when options (aget options "expanded")))
         metadata (when expanded?
-                   (map #(theme-fg theme "dim" (str "  " %))
-                        (matrix-metadata-lines details)))]
+                   (vec (concat [""]
+                                (style-wrapped-lines theme "dim" width "Matrix metadata:")
+                                (mapcat #(style-wrapped-lines theme "dim" width (str "  " %))
+                                        (matrix-metadata-lines details)))))]
     (vec (cond-> main-lines
            (seq metadata) (into metadata)))))
 
