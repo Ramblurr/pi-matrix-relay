@@ -247,6 +247,46 @@
                {::mx/timeout (Duration/ofSeconds 10)}]]
              @calls*)))))
 
+(deftest matrix-started-room-verification-requests-are-activated
+  (testing "room verification request events must be registered with Trixnity before they appear in status"
+    (let [calls* (atom [])
+          snapshot {::mx/verification-id "user:!dm:example.org:$request"
+                    ::mx/verification-kind :user
+                    ::mx/their-user-id "@alice:example.org"
+                    ::mx/room-id "!dm:example.org"
+                    ::mx/request-event-id "$request"
+                    ::mx/timestamp 123
+                    ::mx/verification-state {::mx/kind :their-request}}]
+      (with-redefs [event/text? (constantly true)
+                    event/body (constantly nil)
+                    event/room-id (constantly "!dm:example.org")
+                    event/event-id (constantly "$request")
+                    verification/get-active-user-verification!
+                    (fn [client room-id event-id]
+                      (swap! calls* conj [client room-id event-id])
+                      (m/sp snapshot))]
+        (is (= {:verification-id "user:!dm:example.org:$request"
+                :verification-kind :user
+                :their-user-id "@alice:example.org"
+                :room-id "!dm:example.org"
+                :request-event-id "$request"
+                :timestamp 123
+                :verification-state {:kind :their-request}}
+               (#'sut/activate-room-verification-request! :client ::event)))
+        (is (= [[:client "!dm:example.org" "$request"]]
+               @calls*))))))
+
+(deftest ordinary-text-messages-do-not-trigger-room-verification-activation
+  (let [calls* (atom [])]
+    (with-redefs [event/text? (constantly true)
+                  event/body (constantly "hello")
+                  verification/get-active-user-verification!
+                  (fn [& args]
+                    (swap! calls* conj args)
+                    (m/sp nil))]
+      (is (nil? (#'sut/activate-room-verification-request! :client ::event)))
+      (is (= [] @calls*)))))
+
 (deftest verification-actions-use-public-trixnity-verification-api
   (let [gateway (sut/gateway (gateway-config nil) {})
         calls* (atom [])

@@ -101,7 +101,7 @@
    (let [sender (event/sender ev)
          sender-is-bot? (= sender bot-user-id)]
      (cond
-       (event/text? ev)
+       (and (event/text? ev) (some? (event/body ev)))
        {:event "matrix.message"
         :data {:type "matrix.message"
                :room/id (event/room-id ev)
@@ -157,6 +157,18 @@
 (defn- verification-task-result
   [task]
   (wire-data (m/? task)))
+
+(defn- activate-room-verification-request!
+  [client ev]
+  (when (and (event/text? ev)
+             (nil? (event/body ev)))
+    (try
+      (verification-task-result
+       (verification/get-active-user-verification! client
+                                                  (event/room-id ev)
+                                                  (event/event-id ev)))
+      (catch Throwable _
+        nil))))
 
 (defn- verification-event-type
   [snapshot]
@@ -228,6 +240,7 @@
          (m/?
           (m/reduce
            (fn [_ ev]
+             (activate-room-verification-request! client ev)
              (when-let [normalized (normalized-event ev bot-user-id)]
                (publish! normalized))
              nil)
