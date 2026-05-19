@@ -312,6 +312,21 @@
               [?lease :lease/slot ?slot]]
             db project-id)))
 
+(defn- most-recently-released-slot-for-project-id
+  [db project-id]
+  (some->> (d/q '[:find ?slot ?released-at
+                  :in $ ?project-id
+                  :where
+                  [?project :project/id ?project-id]
+                  [?lease :lease/project ?project]
+                  [?lease :lease/state :released]
+                  [?lease :lease/released-at ?released-at]
+                  [?lease :lease/slot ?slot]]
+                db project-id)
+           (sort-by second)
+           last
+           first))
+
 (defn- active-leases-for-project-client
   [db project-id client-id]
   (d/q '[:find ?lease ?slot ?state
@@ -343,7 +358,11 @@
         client-active-leases (active-leases-for-project-client db project-id client-id)
         client-active-slots (set (map second client-active-leases))
         active-slots (set (remove client-active-slots (active-slots-for-project-id db project-id)))
-        slot (slots/first-free-slot active-slots)
+        most-recently-released-slot (most-recently-released-slot-for-project-id db project-id)
+        slot (if (and most-recently-released-slot
+                      (not (contains? active-slots most-recently-released-slot)))
+               most-recently-released-slot
+               (slots/first-free-slot active-slots))
         project-ref [:project/id project-id]]
     (cond-> []
       (nil? project-eid)

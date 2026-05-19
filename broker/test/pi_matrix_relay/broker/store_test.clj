@@ -137,6 +137,128 @@
                                                   :project {:project/id "project"}})]
           (is (= "A" (:slot reservation-3))))))))
 
+(deftest slot-reservations-prefer-most-recently-released-project-slot
+  (with-conn
+    (fn [conn]
+      (doseq [client-id ["client-a" "client-b" "client-c"]]
+        (store/register-client! conn {:now-ms 1000}
+                                {:client/instance-id client-id
+                                 :protocol/version 1
+                                 :project {:project/id "project"}}))
+      (let [reservation-a (store/reserve-slot! conn {:now-ms 1100}
+                                               {:client-id "client-a"
+                                                :project {:project/id "project"}})
+            reservation-b (store/reserve-slot! conn {:now-ms 1200}
+                                               {:client-id "client-b"
+                                                :project {:project/id "project"}})]
+        (store/complete-slot-reservation! conn {:now-ms 1300
+                                                :lease-id (:lease-id reservation-a)
+                                                :reservation-id (:reservation-id reservation-a)
+                                                :client-id "client-a"
+                                                :room-id "!project-A:example.org"
+                                                :room-name "project-A"})
+        (store/complete-slot-reservation! conn {:now-ms 1400
+                                                :lease-id (:lease-id reservation-b)
+                                                :reservation-id (:reservation-id reservation-b)
+                                                :client-id "client-b"
+                                                :room-id "!project-B:example.org"
+                                                :room-name "project-B"})
+        (is (= {:released true}
+               (store/release-slot! conn {:now-ms 1500 :client-id "client-a" :slot "A"})))
+        (is (= {:released true}
+               (store/release-slot! conn {:now-ms 1600 :client-id "client-b" :slot "B"})))
+        (let [reservation-c (store/reserve-slot! conn {:now-ms 1700}
+                                                 {:client-id "client-c"
+                                                  :project {:project/id "project"}})]
+          (is (= "B" (:slot reservation-c))))))))
+
+(deftest slot-reservation-recent-release-preference-is-project-scoped
+  (with-conn
+    (fn [conn]
+      (doseq [[client-id project-id] [["project-client" "project"]
+                                      ["new-project-client" "project"]
+                                      ["other-client-a" "other"]
+                                      ["other-client-b" "other"]]]
+        (store/register-client! conn {:now-ms 1000}
+                                {:client/instance-id client-id
+                                 :protocol/version 1
+                                 :project {:project/id project-id}}))
+      (let [project-reservation (store/reserve-slot! conn {:now-ms 1100}
+                                                     {:client-id "project-client"
+                                                      :project {:project/id "project"}})
+            other-reservation-a (store/reserve-slot! conn {:now-ms 1200}
+                                                     {:client-id "other-client-a"
+                                                      :project {:project/id "other"}})
+            other-reservation-b (store/reserve-slot! conn {:now-ms 1300}
+                                                     {:client-id "other-client-b"
+                                                      :project {:project/id "other"}})]
+        (store/complete-slot-reservation! conn {:now-ms 1400
+                                                :lease-id (:lease-id project-reservation)
+                                                :reservation-id (:reservation-id project-reservation)
+                                                :client-id "project-client"
+                                                :room-id "!project-A:example.org"
+                                                :room-name "project-A"})
+        (store/complete-slot-reservation! conn {:now-ms 1500
+                                                :lease-id (:lease-id other-reservation-a)
+                                                :reservation-id (:reservation-id other-reservation-a)
+                                                :client-id "other-client-a"
+                                                :room-id "!other-A:example.org"
+                                                :room-name "other-A"})
+        (store/complete-slot-reservation! conn {:now-ms 1600
+                                                :lease-id (:lease-id other-reservation-b)
+                                                :reservation-id (:reservation-id other-reservation-b)
+                                                :client-id "other-client-b"
+                                                :room-id "!other-B:example.org"
+                                                :room-name "other-B"})
+        (store/release-slot! conn {:now-ms 1700 :client-id "project-client" :slot "A"})
+        (store/release-slot! conn {:now-ms 1800 :client-id "other-client-b" :slot "B"})
+        (let [reservation (store/reserve-slot! conn {:now-ms 1900}
+                                               {:client-id "new-project-client"
+                                                :project {:project/id "project"}})]
+          (is (= "A" (:slot reservation))))))))
+
+(deftest slot-reservations-do-not-reuse-slot-with-suspect-active-lease
+  (with-conn
+    (fn [conn]
+      (doseq [client-id ["client-a" "client-b" "client-c" "client-d"]]
+        (store/register-client! conn {:now-ms 1000}
+                                {:client/instance-id client-id
+                                 :protocol/version 1
+                                 :project {:project/id "project"}}))
+      (let [reservation-a (store/reserve-slot! conn {:now-ms 1100}
+                                               {:client-id "client-a"
+                                                :project {:project/id "project"}})
+            reservation-b (store/reserve-slot! conn {:now-ms 1200}
+                                               {:client-id "client-b"
+                                                :project {:project/id "project"}})]
+        (store/complete-slot-reservation! conn {:now-ms 1300
+                                                :lease-id (:lease-id reservation-a)
+                                                :reservation-id (:reservation-id reservation-a)
+                                                :client-id "client-a"
+                                                :room-id "!project-A:example.org"
+                                                :room-name "project-A"})
+        (store/complete-slot-reservation! conn {:now-ms 1400
+                                                :lease-id (:lease-id reservation-b)
+                                                :reservation-id (:reservation-id reservation-b)
+                                                :client-id "client-b"
+                                                :room-id "!project-B:example.org"
+                                                :room-name "project-B"})
+        (store/release-slot! conn {:now-ms 1500 :client-id "client-b" :slot "B"})
+        (let [reservation-c (store/reserve-slot! conn {:now-ms 1600}
+                                                 {:client-id "client-c"
+                                                  :project {:project/id "project"}})]
+          (store/complete-slot-reservation! conn {:now-ms 1700
+                                                  :lease-id (:lease-id reservation-c)
+                                                  :reservation-id (:reservation-id reservation-c)
+                                                  :client-id "client-c"
+                                                  :room-id "!project-B:example.org"
+                                                  :room-name "project-B"})
+          (store/mark-client-suspect! conn "client-c" 1800)
+          (let [reservation-d (store/reserve-slot! conn {:now-ms 1900}
+                                                   {:client-id "client-d"
+                                                    :project {:project/id "project"}})]
+            (is (= "C" (:slot reservation-d)))))))))
+
 (deftest reserving-slot-for-same-client-replaces-existing-active-lease
   (with-conn
     (fn [conn]
