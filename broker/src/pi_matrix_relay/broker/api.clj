@@ -472,10 +472,25 @@
   (fn [request]
     (response/ok-response (idempotent! env :verification/start request #(matrix/verification-start! matrix-gateway (body-params request))))))
 
+(defn verification-accept-handler
+  [{:keys [matrix-gateway]}]
+  (fn [request]
+    (response/ok-response (matrix/verification-accept! matrix-gateway (get-in request [:path-params :verification-id])))))
+
+(defn verification-start-sas-handler
+  [{:keys [matrix-gateway]}]
+  (fn [request]
+    (response/ok-response (matrix/verification-start-sas! matrix-gateway (get-in request [:path-params :verification-id])))))
+
 (defn verification-confirm-handler
   [{:keys [matrix-gateway]}]
   (fn [request]
     (response/ok-response (matrix/verification-confirm! matrix-gateway (get-in request [:path-params :verification-id])))))
+
+(defn verification-no-match-handler
+  [{:keys [matrix-gateway]}]
+  (fn [request]
+    (response/ok-response (matrix/verification-no-match! matrix-gateway (get-in request [:path-params :verification-id])))))
 
 (defn verification-cancel-handler
   [{:keys [matrix-gateway]}]
@@ -516,7 +531,10 @@
     ["/matrix/rooms" {:get (list-rooms-handler env)
                       :post (create-room-handler env)}]
     ["/verification/start" {:post (verification-start-handler env)}]
+    ["/verification/:verification-id/accept" {:post (verification-accept-handler env)}]
+    ["/verification/:verification-id/start-sas" {:post (verification-start-sas-handler env)}]
     ["/verification/:verification-id/confirm" {:post (verification-confirm-handler env)}]
+    ["/verification/:verification-id/no-match" {:post (verification-no-match-handler env)}]
     ["/verification/:verification-id/cancel" {:post (verification-cancel-handler env)}]
     ["/verification/status" {:get (verification-status-handler env)}]]])
 

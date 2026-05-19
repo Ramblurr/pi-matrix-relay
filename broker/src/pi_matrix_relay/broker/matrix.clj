@@ -19,7 +19,10 @@
   (download-media! [gateway request])
   (transcribe-media! [gateway request])
   (verification-start! [gateway request])
+  (verification-accept! [gateway verification-id])
+  (verification-start-sas! [gateway verification-id])
   (verification-confirm! [gateway verification-id])
+  (verification-no-match! [gateway verification-id])
   (verification-cancel! [gateway verification-id])
   (verification-status [gateway]))
 
@@ -69,7 +72,13 @@
     (unavailable :transcription_unavailable "Broker-side transcription is not available." {:request request}))
   (verification-start! [_ request]
     (unavailable :verification_unavailable "Matrix verification is not implemented yet." {:request request}))
+  (verification-accept! [_ verification-id]
+    (unavailable :verification_unavailable "Matrix verification is not implemented yet." {:verification-id verification-id}))
+  (verification-start-sas! [_ verification-id]
+    (unavailable :verification_unavailable "Matrix verification is not implemented yet." {:verification-id verification-id}))
   (verification-confirm! [_ verification-id]
+    (unavailable :verification_unavailable "Matrix verification is not implemented yet." {:verification-id verification-id}))
+  (verification-no-match! [_ verification-id]
     (unavailable :verification_unavailable "Matrix verification is not implemented yet." {:verification-id verification-id}))
   (verification-cancel! [_ verification-id]
     (unavailable :verification_unavailable "Matrix verification is not implemented yet." {:verification-id verification-id}))

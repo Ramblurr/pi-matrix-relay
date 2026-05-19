@@ -8,6 +8,7 @@
             [ol.trixnity.room.message :as msg]
             [ol.trixnity.space :as space]
             [ol.trixnity.schemas :as mx]
+            [ol.trixnity.verification :as verification]
             [pi-matrix-relay.broker.matrix :as matrix]
             [pi-matrix-relay.broker.store :as store])
   (:import [java.time Duration Instant]))
@@ -125,6 +126,92 @@
                :event/reacts-to-id (event/relation-event-id ev)
                :reaction/key (event/key ev)}}))))
 
+(defn- unqualify-key
+  [k]
+  (if (keyword? k)
+    (keyword (name k))
+    k))
+
+(defn- wire-data
+  [value]
+  (cond
+    (or (map? value) (instance? java.util.Map value))
+    (into {}
+          (map (fn [[k v]]
+                 [(unqualify-key k) (wire-data v)]))
+          value)
+
+    (or (set? value) (instance? java.util.Set value))
+    (set (map wire-data value))
+
+    (sequential? value)
+    (mapv wire-data value)
+
+    :else value))
+
+(defn- verification-snapshots
+  [c]
+  (mapv wire-data (verification/status c)))
+
+(defn- verification-task-result
+  [task]
+  (wire-data (m/? task)))
+
+(defn- verification-event-type
+  [snapshot]
+  (let [state-kind (get-in snapshot [:verification-state :kind])
+        sas-kind (get-in snapshot [:verification-state :sas-state :kind])
+        sas-emojis (seq (get-in snapshot [:verification-state :sas-state :sas-emojis]))]
+    (cond
+      sas-emojis "verification.emoji"
+      (= :done state-kind) "verification.done"
+      (= :cancel state-kind) "verification.cancelled"
+      (or (= :their-request state-kind)
+          (= :own-request state-kind)
+          (= :ready state-kind)
+          (= :start state-kind)
+          (= :their-sas-start sas-kind))
+      "verification.requested")))
+
+(defn- verification-event-data
+  [event-type snapshot]
+  (cond-> (assoc snapshot :type event-type)
+    (= "verification.emoji" event-type)
+    (assoc :emojis (get-in snapshot [:verification-state :sas-state :sas-emojis]))
+
+    (= "verification.cancelled" event-type)
+    (assoc :reason (or (get-in snapshot [:verification-state :reason])
+                       (get-in snapshot [:verification-state :cancel-code])
+                       "cancelled"))
+
+    (= "verification.done" event-type)
+    (assoc :verified true)))
+
+(defn- verification-event
+  [snapshot]
+  (when-let [event-type (verification-event-type snapshot)]
+    {:event event-type
+     :data (verification-event-data event-type snapshot)}))
+
+(defn- verification-event-signature
+  [{:keys [event data]}]
+  [event
+   (:verification-id data)
+   (get-in data [:verification-state :kind])
+   (get-in data [:verification-state :sas-state :kind])
+   (get-in data [:verification-state :sas-state :sas-emojis])
+   (get-in data [:verification-state :cancel-code])
+   (get-in data [:verification-state :reason])])
+
+(defn- publish-verification-snapshot!
+  [publish! seen* snapshot]
+  (when-let [event (verification-event snapshot)]
+    (let [verification-id (get-in event [:data :verification-id])
+          signature (verification-event-signature event)]
+      (when-not (= signature (get @seen* verification-id))
+        (swap! seen* assoc verification-id signature)
+        (publish! event)))))
+
 (defn- start-virtual-thread!
   [f]
   (Thread/startVirtualThread
@@ -147,6 +234,39 @@
            (room/get-timeline-events-from-now-on
             client
             {::mx/decryption-timeout (Duration/ofSeconds 8)}))))))))
+
+(defn- publish-verification-emission!
+  [publish! seen* emission]
+  (cond
+    (nil? emission) nil
+
+    (or (map? emission) (instance? java.util.Map emission))
+    (publish-verification-snapshot! publish! seen* (wire-data emission))
+
+    (or (sequential? emission) (instance? java.lang.Iterable emission))
+    (doseq [snapshot emission]
+      (publish-verification-snapshot! publish! seen* (wire-data snapshot)))
+
+    :else nil))
+
+(defn- start-verification-flow!
+  [flow publish! seen*]
+  (start-virtual-thread!
+   (fn []
+     (m/?
+      (m/reduce
+       (fn [_ emission]
+         (publish-verification-emission! publish! seen* emission)
+         nil)
+       nil
+       flow)))))
+
+(defn- start-verification-loop!
+  [client event-sink]
+  (when-let [publish! (:publish! event-sink)]
+    (let [seen* (atom {})]
+      {:device (start-verification-flow! (verification/active-device-verification client) publish! seen*)
+       :users (start-verification-flow! (verification/active-user-verifications client) publish! seen*)})))
 
 (def ^:private default-space-key "default")
 (def ^:private space-join-timeout (Duration/ofSeconds 15))
@@ -340,6 +460,7 @@
           (reset! runtime* {:client opened
                             :user-id (client/current-user-id opened)
                             :timeline-loop (start-timeline-loop! opened event-sink)
+                            :verification-loop (start-verification-loop! opened event-sink)
                             :started-at (System/currentTimeMillis)}))))
     this)
   (stop! [_]
@@ -455,13 +576,23 @@
   (transcribe-media! [_ request]
     (matrix/unavailable :transcription_unavailable "Broker-side transcription is not available." {:request request}))
   (verification-start! [_ request]
-    (matrix/unavailable :verification_unavailable "Matrix verification is not implemented yet." {:request request}))
+    (let [c (:client @runtime*)
+          user-id (:user/id request)]
+      (if-let [device-id (:device/id request)]
+        (verification-task-result (verification/start-device-verification! c user-id device-id))
+        (verification-task-result (verification/start-user-verification! c user-id)))))
+  (verification-accept! [_ verification-id]
+    (verification-task-result (verification/accept! (:client @runtime*) verification-id)))
+  (verification-start-sas! [_ verification-id]
+    (verification-task-result (verification/start-sas! (:client @runtime*) verification-id)))
   (verification-confirm! [_ verification-id]
-    (matrix/unavailable :verification_unavailable "Matrix verification is not implemented yet." {:verification-id verification-id}))
+    (verification-task-result (verification/confirm! (:client @runtime*) verification-id)))
+  (verification-no-match! [_ verification-id]
+    (verification-task-result (verification/no-match! (:client @runtime*) verification-id)))
   (verification-cancel! [_ verification-id]
-    (matrix/unavailable :verification_unavailable "Matrix verification is not implemented yet." {:verification-id verification-id}))
+    (verification-task-result (verification/cancel! (:client @runtime*) verification-id nil)))
   (verification-status [_]
-    {:verifications []}))
+    {:verifications (verification-snapshots (:client @runtime*))}))
 
 (defn gateway
   ([config paths]

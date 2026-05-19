@@ -186,6 +186,75 @@
                      (mapv #(select-keys % [:slot :state])
                            (:slots (store/list-slots @conn "project"))))))))))))
 
+(deftest verification-endpoints-forward-to-matrix-gateway
+  (testing "verification HTTP routes expose broker-owned Matrix verification actions"
+    (with-env
+      (tu/fake-gateway)
+      (fn [env _]
+        (let [gateway (:matrix-gateway env)
+              app (api/app env)
+              start (tu/edn-request app :post "/v1/verification/start"
+                                    {:request/id "verification-start-1"
+                                     :user/id "@alice:example.org"
+                                     :device/id "ALICEDEVICE"})
+              accept (tu/edn-request app :post "/v1/verification/verification-1/accept" {})
+              start-sas (tu/edn-request app :post "/v1/verification/verification-1/start-sas" {})
+              confirm (tu/edn-request app :post "/v1/verification/verification-1/confirm" {})
+              no-match (tu/edn-request app :post "/v1/verification/verification-1/no-match" {})
+              cancel (tu/edn-request app :post "/v1/verification/verification-1/cancel" {})
+              status (tu/edn-request app :get "/v1/verification/status" nil)]
+          (is (= {:start {:ok true :data {:verification-id "verification-1"}}
+                  :accept {:ok true :data {:verification-id "verification-1"}}
+                  :start-sas {:ok true :data {:verification-id "verification-1"}}
+                  :confirm {:ok true :data {:verification-id "verification-1"}}
+                  :no-match {:ok true :data {:verification-id "verification-1"}}
+                  :cancel {:ok true :data {:verification-id "verification-1"}}
+                  :status {:ok true :data {:verifications [{:verification-id "verification-1"}]}}
+                  :calls [[:verification-start {:request/id "verification-start-1"
+                                                :user/id "@alice:example.org"
+                                                :device/id "ALICEDEVICE"}]
+                          [:verification-accept "verification-1"]
+                          [:verification-start-sas "verification-1"]
+                          [:verification-confirm "verification-1"]
+                          [:verification-no-match "verification-1"]
+                          [:verification-cancel "verification-1"]]}
+                 {:start start
+                  :accept accept
+                  :start-sas start-sas
+                  :confirm confirm
+                  :no-match no-match
+                  :cancel cancel
+                  :status status
+                  :calls (tu/calls gateway)})))))))
+
+(deftest verification-events-without-rooms-broadcast-to-subscribed-clients
+  (testing "verification to-device events are not tied to Matrix rooms"
+    (with-env
+      (fn [env _]
+        (tu/edn-request (api/app env) :post "/v1/clients"
+                        {:request/id "register-verification-events"
+                         :client/instance-id "client-verify"
+                         :protocol/version 1
+                         :project {:project/id "project"}})
+        (let [sends* (atom [])]
+          (with-redefs [hk/send! (fn
+                                   ([channel data]
+                                    (hk/send! channel data true))
+                                   ([channel data close-after-send?]
+                                    (swap! sends* conj [channel data close-after-send?])
+                                    true))]
+            (events/subscribe! (:runtime env) "client-verify" :channel)
+            (events/publish! env {:event "verification.requested"
+                                  :data {:type "verification.requested"
+                                         :verification-id "verification-1"}})
+            (is (some (fn [[channel payload close?]]
+                        (and (= :channel channel)
+                             (string? payload)
+                             (str/includes? payload "event: verification.requested")
+                             (str/includes? payload ":verification-id \"verification-1\"")
+                             (false? close?)))
+                      @sends*))))))))
+
 (deftest matrix-send-requires-known-room
   (testing "a client can send only to subscribed or acquired rooms"
     (with-env

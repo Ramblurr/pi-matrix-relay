@@ -30,7 +30,7 @@
 
   prep
   {:doc  "Prepare Clojure dependencies"
-   :task (apply clojure "-X:deps prep :aliases '[:dev :kaocha]'")}
+   :task (shell "clojure -X:deps prep :aliases '[:dev :kaocha]'")}
 
   deps-tree
   {:doc  "Show dependency tree"

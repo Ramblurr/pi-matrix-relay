@@ -101,6 +101,42 @@
                       (is false (.-stack err))
                       (done))))))))
 
+
+(deftest verification-helpers-use-versioned-endpoints
+  (async done
+    (let [calls* (atom [])
+          opts {:env #js {"XDG_RUNTIME_DIR" "/run/user/1000"}}]
+      (with-redefs [http/request-edn! (fn
+                                         ([method uri body]
+                                          (swap! calls* conj [{} method uri body])
+                                          (js/Promise.resolve {:ok true}))
+                                         ([opts method uri body]
+                                          (swap! calls* conj [opts method uri body])
+                                          (js/Promise.resolve {:ok true})))]
+        (-> (js/Promise.all
+             (clj->js [(broker-client/verification-start! opts {:user/id "@alice:example.org"
+                                                                 :device/id "DEVICE"})
+                       (broker-client/verification-accept! opts "verification/1")
+                       (broker-client/verification-start-sas! opts "verification/1")
+                       (broker-client/verification-confirm! opts "verification/1")
+                       (broker-client/verification-no-match! opts "verification/1")
+                       (broker-client/verification-cancel! opts "verification/1")
+                       (broker-client/verification-status! opts)]))
+            (.then (fn [_]
+                     (is (= [["POST" "/v1/verification/start"
+                              {:user/id "@alice:example.org"
+                               :device/id "DEVICE"}]
+                             ["POST" "/v1/verification/verification%2F1/accept" {}]
+                             ["POST" "/v1/verification/verification%2F1/start-sas" {}]
+                             ["POST" "/v1/verification/verification%2F1/confirm" {}]
+                             ["POST" "/v1/verification/verification%2F1/no-match" {}]
+                             ["POST" "/v1/verification/verification%2F1/cancel" {}]
+                             ["GET" "/v1/verification/status" nil]]
+                            (mapv (fn [[_opts method uri body]] [method uri body]) @calls*)))
+                     (done)))
+            (.catch (fn [err]
+                      (is false (.-stack err))
+                      (done))))))))
 (deftest client-path-helpers-url-encode-client-and-room-ids
   (async done
     (let [calls* (atom [])

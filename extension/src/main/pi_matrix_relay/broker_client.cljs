@@ -189,3 +189,49 @@
                               :key key}
                        (:client/id send-opts)
                        (assoc :client/id (:client/id send-opts))))))
+
+(defn verification-start!
+  ([request]
+   (verification-start! {} request))
+  ([opts request]
+   (http/request-edn! opts "POST" "/v1/verification/start" request)))
+
+(defn- verification-path
+  [verification-id suffix]
+  (str "/v1/verification/" (http/encode-path-segment verification-id) suffix))
+
+(defn verification-accept!
+  ([verification-id]
+   (verification-accept! {} verification-id))
+  ([opts verification-id]
+   (http/request-edn! opts "POST" (verification-path verification-id "/accept") {})))
+
+(defn verification-start-sas!
+  ([verification-id]
+   (verification-start-sas! {} verification-id))
+  ([opts verification-id]
+   (http/request-edn! opts "POST" (verification-path verification-id "/start-sas") {})))
+
+(defn verification-confirm!
+  ([verification-id]
+   (verification-confirm! {} verification-id))
+  ([opts verification-id]
+   (http/request-edn! opts "POST" (verification-path verification-id "/confirm") {})))
+
+(defn verification-no-match!
+  ([verification-id]
+   (verification-no-match! {} verification-id))
+  ([opts verification-id]
+   (http/request-edn! opts "POST" (verification-path verification-id "/no-match") {})))
+
+(defn verification-cancel!
+  ([verification-id]
+   (verification-cancel! {} verification-id))
+  ([opts verification-id]
+   (http/request-edn! opts "POST" (verification-path verification-id "/cancel") {})))
+
+(defn verification-status!
+  ([]
+   (verification-status! {}))
+  ([opts]
+   (http/request-edn! opts "GET" "/v1/verification/status" nil)))

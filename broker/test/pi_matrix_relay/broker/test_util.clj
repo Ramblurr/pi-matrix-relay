@@ -77,15 +77,24 @@
     {:transcript "hello"})
   (verification-start! [_ request]
     (swap! calls* conj [:verification-start request])
-    {:verification/id "verification-1"})
+    {:verification-id "verification-1"})
+  (verification-accept! [_ verification-id]
+    (swap! calls* conj [:verification-accept verification-id])
+    {:verification-id verification-id})
+  (verification-start-sas! [_ verification-id]
+    (swap! calls* conj [:verification-start-sas verification-id])
+    {:verification-id verification-id})
   (verification-confirm! [_ verification-id]
     (swap! calls* conj [:verification-confirm verification-id])
-    {:verification/id verification-id})
+    {:verification-id verification-id})
+  (verification-no-match! [_ verification-id]
+    (swap! calls* conj [:verification-no-match verification-id])
+    {:verification-id verification-id})
   (verification-cancel! [_ verification-id]
     (swap! calls* conj [:verification-cancel verification-id])
-    {:verification/id verification-id})
+    {:verification-id verification-id})
   (verification-status [_]
-    {:verifications []}))
+    {:verifications [{:verification-id "verification-1"}]}))
 
 (defn fake-gateway
   ([]

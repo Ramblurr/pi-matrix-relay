@@ -37,6 +37,42 @@
       :else
       (error "Usage: room bind <room> [alias] [mode]"))))
 
+(defn- parse-verify
+  [verify-args]
+  (let [parts (str/split (str/trim verify-args) #"\s+")
+        [action a b & more] parts]
+    (cond
+      (or (str/blank? verify-args) (str/blank? action))
+      (error "Usage: verify <start|accept|start-sas|confirm|no-match|cancel|status> ...")
+
+      (= "status" action)
+      (if (or a (seq more))
+        (error "Usage: verify status")
+        {:op :verify-status})
+
+      (= "start" action)
+      (cond
+        (or (str/blank? a) (seq more))
+        (error "Usage: verify start <user-id> [device-id]")
+
+        (str/blank? b)
+        {:op :verify-start
+         :user/id a}
+
+        :else
+        {:op :verify-start
+         :user/id a
+         :device/id b})
+
+      (#{"accept" "start-sas" "confirm" "no-match" "cancel"} action)
+      (if (or (str/blank? a) b (seq more))
+        (error (str "Usage: verify " action " <verification-id>"))
+        {:op (keyword (str "verify-" action))
+         :verification/id a})
+
+      :else
+      (error (str "Unknown verify action: " action)))))
+
 (defn parse
   "Parse `/matrix-relay` or `/mr` command arguments into data.
 
@@ -65,6 +101,8 @@
       (if-let [[_ request-id] (re-matches #"__new-session\s+(\S+)" args)]
         {:op :internal-new-session
          :request-id request-id}
+        (if-let [[_ verify-args] (re-matches #"verify\s+([\s\S]+)" args)]
+          (parse-verify verify-args)
         (if-let [[_ bind-args] (re-matches #"room\s+bind\s+([\s\S]+)" args)]
           (parse-room-bind bind-args)
           (if-let [[_ target mode] (re-matches #"room\s+mode\s+(\S+)\s+(\S+)" args)]
@@ -80,4 +118,4 @@
                 {:op :send
                  :target target
                  :message message}
-                (error (str "Unknown matrix-relay command: " args))))))))))
+                (error (str "Unknown matrix-relay command: " args)))))))))))

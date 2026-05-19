@@ -1071,7 +1071,8 @@
                      (is (str/includes? message "disconnect"))
                      (is (str/includes? message "reconnect"))
                      (is (str/includes? message "room bind <room> [alias]"))
-                     (is (str/includes? message "send <alias-or-room-id> <message>")))
+                     (is (str/includes? message "send <alias-or-room-id> <message>"))
+                     (is (str/includes? message "verify start <user> [device]")))
                    (done)))
           (.catch (fn [err]
                     (is false (.-stack err))
@@ -1214,6 +1215,61 @@
                           @sent*))
                    (is (= [["Sent Matrix message $event:example.org" "info"]]
                           @notifications*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest verify-command-delegates-to-broker-verification-actions
+  (async done
+    (let [calls* (atom [])
+          notifications* (atom [])
+          snapshot {:verification-id "verification-1"
+                    :their-user-id "@alice:example.org"
+                    :their-device-id "DEVICE"}
+          deps {:verification-start! (fn [request]
+                                       (swap! calls* conj [:start request])
+                                       (js/Promise.resolve snapshot))
+                :verification-accept! (fn [verification-id]
+                                        (swap! calls* conj [:accept verification-id])
+                                        (js/Promise.resolve snapshot))
+                :verification-start-sas! (fn [verification-id]
+                                           (swap! calls* conj [:start-sas verification-id])
+                                           (js/Promise.resolve snapshot))
+                :verification-confirm! (fn [verification-id]
+                                         (swap! calls* conj [:confirm verification-id])
+                                         (js/Promise.resolve snapshot))
+                :verification-no-match! (fn [verification-id]
+                                          (swap! calls* conj [:no-match verification-id])
+                                          (js/Promise.resolve snapshot))
+                :verification-cancel! (fn [verification-id]
+                                        (swap! calls* conj [:cancel verification-id])
+                                        (js/Promise.resolve snapshot))
+                :verification-status! (fn []
+                                        (swap! calls* conj [:status])
+                                        (js/Promise.resolve {:verifications [snapshot]}))}
+          ctx #js {:cwd "/work/project"
+                   :ui #js {:notify (fn [message level]
+                                      (swap! notifications* conj [message level]))}}]
+      (-> (extension/handle-command! deps "verify start @alice:example.org DEVICE" ctx)
+          (.then (fn [_] (extension/handle-command! deps "verify start @alice:example.org" ctx)))
+          (.then (fn [_] (extension/handle-command! deps "verify accept verification-1" ctx)))
+          (.then (fn [_] (extension/handle-command! deps "verify start-sas verification-1" ctx)))
+          (.then (fn [_] (extension/handle-command! deps "verify confirm verification-1" ctx)))
+          (.then (fn [_] (extension/handle-command! deps "verify no-match verification-1" ctx)))
+          (.then (fn [_] (extension/handle-command! deps "verify cancel verification-1" ctx)))
+          (.then (fn [_] (extension/handle-command! deps "verify status" ctx)))
+          (.then (fn [_]
+                   (is (= [[:start {:user/id "@alice:example.org" :device/id "DEVICE"}]
+                           [:start {:user/id "@alice:example.org"}]
+                           [:accept "verification-1"]
+                           [:start-sas "verification-1"]
+                           [:confirm "verification-1"]
+                           [:no-match "verification-1"]
+                           [:cancel "verification-1"]
+                           [:status]]
+                          @calls*))
+                   (is (some #(str/includes? (first %) "verification-1") @notifications*))
                    (done)))
           (.catch (fn [err]
                     (is false (.-stack err))
@@ -1942,6 +1998,33 @@
           (.catch (fn [err]
                     (is false (.-stack err))
                     (done)))))))
+
+(deftest verification-broker-events-notify-operator
+  (let [notifications* (atom [])
+        ctx #js {:ui #js {:notify (fn [message level]
+                                   (swap! notifications* conj [message level]))}}
+        relay-state {}
+        pi (pi-capturing-pi-messages (atom []))]
+    (doseq [event [{:type "verification.requested"
+                    :verification-id "verification-1"
+                    :their-user-id "@alice:example.org"
+                    :their-device-id "DEVICE"}
+                   {:type "verification.emoji"
+                    :verification-id "verification-1"
+                    :their-user-id "@alice:example.org"
+                    :emojis [{:emoji "🐱" :description "cat"}
+                             {:emoji "🚀" :description "rocket"}]}
+                   {:type "verification.done"
+                    :verification-id "verification-1"}
+                   {:type "verification.cancelled"
+                    :verification-id "verification-1"
+                    :reason "m.user"}]]
+      (extension/handle-broker-event! {} pi ctx relay-state event))
+    (is (= 4 (count @notifications*)))
+    (is (str/includes? (ffirst @notifications*) "verification-1"))
+    (is (str/includes? (first (second @notifications*)) "🐱 cat"))
+    (is (str/includes? (first (nth @notifications* 2)) "completed"))
+    (is (str/includes? (first (nth @notifications* 3)) "cancelled"))))
 
 (deftest authorized-slot-room-message-is-injected-with-all-mode
   (let [sent* (atom [])

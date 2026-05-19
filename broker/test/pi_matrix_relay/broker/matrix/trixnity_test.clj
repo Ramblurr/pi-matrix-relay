@@ -5,6 +5,7 @@
             [ol.trixnity.room :as room]
             [ol.trixnity.schemas :as mx]
             [ol.trixnity.space :as space]
+            [ol.trixnity.verification :as verification]
             [org.httpkit.client :as http]
             [pi-matrix-relay.broker.db :as db]
             [pi-matrix-relay.broker.matrix :as matrix]
@@ -244,3 +245,120 @@
                {::mx/via #{"example.org"}}
                {::mx/timeout (Duration/ofSeconds 10)}]]
              @calls*)))))
+
+(deftest verification-actions-use-public-trixnity-verification-api
+  (let [gateway (sut/gateway (gateway-config nil) {})
+        calls* (atom [])
+        snapshot {::mx/verification-id "device:@alice:example.org:DEVICE:txn"
+                  ::mx/verification-kind :device
+                  ::mx/their-user-id "@alice:example.org"
+                  ::mx/their-device-id "DEVICE"
+                  ::mx/timestamp 123
+                  ::mx/verification-state {::mx/kind :ready}}]
+    (reset! (:runtime* gateway) {:client :client})
+    (with-redefs [verification/start-device-verification!
+                  (fn [client user-id device-id]
+                    (swap! calls* conj [:start-device client user-id device-id])
+                    (m/sp snapshot))
+                  verification/start-user-verification!
+                  (fn [client user-id]
+                    (swap! calls* conj [:start-user client user-id])
+                    (m/sp (assoc snapshot ::mx/verification-kind :user)))
+                  verification/accept!
+                  (fn [client verification-id]
+                    (swap! calls* conj [:accept client verification-id])
+                    (m/sp snapshot))
+                  verification/start-sas!
+                  (fn [client verification-id]
+                    (swap! calls* conj [:start-sas client verification-id])
+                    (m/sp snapshot))
+                  verification/confirm!
+                  (fn [client verification-id]
+                    (swap! calls* conj [:confirm client verification-id])
+                    (m/sp snapshot))
+                  verification/no-match!
+                  (fn [client verification-id]
+                    (swap! calls* conj [:no-match client verification-id])
+                    (m/sp snapshot))
+                  verification/cancel!
+                  (fn [client verification-id reason]
+                    (swap! calls* conj [:cancel client verification-id reason])
+                    (m/sp snapshot))
+                  verification/status
+                  (fn [client]
+                    (swap! calls* conj [:status client])
+                    [snapshot])]
+      (let [device-result (matrix/verification-start! gateway {:user/id "@alice:example.org"
+                                                               :device/id "DEVICE"})
+            user-result (matrix/verification-start! gateway {:user/id "@alice:example.org"})
+            accept-result (matrix/verification-accept! gateway "verification-1")
+            start-sas-result (matrix/verification-start-sas! gateway "verification-1")
+            confirm-result (matrix/verification-confirm! gateway "verification-1")
+            no-match-result (matrix/verification-no-match! gateway "verification-1")
+            cancel-result (matrix/verification-cancel! gateway "verification-1")
+            status-result (matrix/verification-status gateway)]
+        (is (= {:device {:verification-id "device:@alice:example.org:DEVICE:txn"
+                         :verification-kind :device
+                         :their-user-id "@alice:example.org"
+                         :their-device-id "DEVICE"
+                         :timestamp 123
+                         :verification-state {:kind :ready}}
+                :user {:verification-id "device:@alice:example.org:DEVICE:txn"
+                       :verification-kind :user
+                       :their-user-id "@alice:example.org"
+                       :their-device-id "DEVICE"
+                       :timestamp 123
+                       :verification-state {:kind :ready}}
+                :accept {:verification-id "device:@alice:example.org:DEVICE:txn"
+                         :verification-kind :device
+                         :their-user-id "@alice:example.org"
+                         :their-device-id "DEVICE"
+                         :timestamp 123
+                         :verification-state {:kind :ready}}
+                :start-sas {:verification-id "device:@alice:example.org:DEVICE:txn"
+                            :verification-kind :device
+                            :their-user-id "@alice:example.org"
+                            :their-device-id "DEVICE"
+                            :timestamp 123
+                            :verification-state {:kind :ready}}
+                :confirm {:verification-id "device:@alice:example.org:DEVICE:txn"
+                          :verification-kind :device
+                          :their-user-id "@alice:example.org"
+                          :their-device-id "DEVICE"
+                          :timestamp 123
+                          :verification-state {:kind :ready}}
+                :no-match {:verification-id "device:@alice:example.org:DEVICE:txn"
+                           :verification-kind :device
+                           :their-user-id "@alice:example.org"
+                           :their-device-id "DEVICE"
+                           :timestamp 123
+                           :verification-state {:kind :ready}}
+                :cancel {:verification-id "device:@alice:example.org:DEVICE:txn"
+                         :verification-kind :device
+                         :their-user-id "@alice:example.org"
+                         :their-device-id "DEVICE"
+                         :timestamp 123
+                         :verification-state {:kind :ready}}
+                :status {:verifications [{:verification-id "device:@alice:example.org:DEVICE:txn"
+                                           :verification-kind :device
+                                           :their-user-id "@alice:example.org"
+                                           :their-device-id "DEVICE"
+                                           :timestamp 123
+                                           :verification-state {:kind :ready}}]}
+                :calls [[:start-device :client "@alice:example.org" "DEVICE"]
+                        [:start-user :client "@alice:example.org"]
+                        [:accept :client "verification-1"]
+                        [:start-sas :client "verification-1"]
+                        [:confirm :client "verification-1"]
+                        [:no-match :client "verification-1"]
+                        [:cancel :client "verification-1" nil]
+                        [:status :client]]}
+               {:device device-result
+                :user user-result
+                :accept accept-result
+                :start-sas start-sas-result
+                :confirm confirm-result
+                :no-match no-match-result
+                :cancel cancel-result
+                :status status-result
+                :calls @calls*}))))))

@@ -36,6 +36,13 @@
    :send-message! broker-client/send-message!
    :set-typing! broker-client/set-typing!
    :send-reaction! broker-client/send-reaction!
+   :verification-start! broker-client/verification-start!
+   :verification-accept! broker-client/verification-accept!
+   :verification-start-sas! broker-client/verification-start-sas!
+   :verification-confirm! broker-client/verification-confirm!
+   :verification-no-match! broker-client/verification-no-match!
+   :verification-cancel! broker-client/verification-cancel!
+   :verification-status! broker-client/verification-status!
    :set-interval! js/setInterval
    :clear-interval! js/clearInterval
    :set-timeout! js/setTimeout
@@ -1641,6 +1648,8 @@
           true))
       false)))
 
+(declare handle-verification-event!)
+
 (defn- handle-broker-event-unsafe!
   [deps pi ctx relay-state event]
   (case (:type event)
@@ -1675,6 +1684,18 @@
 
     "broker.notice"
     (notify! ctx (:message event) (or (:level event) "info"))
+
+    "verification.requested"
+    (handle-verification-event! ctx event)
+
+    "verification.emoji"
+    (handle-verification-event! ctx event)
+
+    "verification.done"
+    (handle-verification-event! ctx event)
+
+    "verification.cancelled"
+    (handle-verification-event! ctx event)
 
     nil))
 
@@ -2308,13 +2329,17 @@
        "  room bind <room> [alias] [mode]    Bind a Matrix room alias/id to a local target.\n"
        "  room mode <target> <mode>          Set a bound prompt mode: all, mentions, commands-only.\n"
        "  progress <quiet|normal|verbose>  Configure slot-room typing/progress detail.\n"
-       "  send <alias-or-room-id> <message>  Send a message to a bound room or raw room id.\n\n"
+       "  send <alias-or-room-id> <message>  Send a message to a bound room or raw room id.\n"
+       "  verify start <user> [device]       Start Matrix verification.\n"
+       "  verify accept|start-sas|confirm|no-match|cancel <id>  Continue verification.\n"
+       "  verify status                      Show active Matrix verifications.\n\n"
        "Examples:\n"
        "  /mr status\n"
        "  /mr room bind #ops:example.org ops mentions\n"
        "  /mr room mode ops commands-only\n"
        "  /mr progress normal\n"
-       "  /mr send ops hello from Pi"))
+       "  /mr send ops hello from Pi\n"
+       "  /mr verify status"))
 
 (defn- handle-help!
   [ctx]
@@ -2543,6 +2568,112 @@
         (notify-error! ctx (str "No Matrix room binding for target " target))
         (promise nil)))))
 
+(defn- verification-id-from
+  [value]
+  (or (:verification-id value)
+      (:verification/id value)))
+
+(defn- verification-peer
+  [value]
+  (str (or (:their-user-id value)
+           (:user-id value)
+           (:user/id value)
+           "unknown user")
+       (when-let [device-id (or (:their-device-id value)
+                                (:device-id value)
+                                (:device/id value))]
+         (str " / " device-id))))
+
+(defn- emoji-line
+  [emoji]
+  (if (map? emoji)
+    (str (or (:emoji emoji) (:symbol emoji) "")
+         (when-let [description (or (:description emoji) (:name emoji))]
+           (str " " description)))
+    (str emoji)))
+
+(defn- verification-summary
+  [action result]
+  (case action
+    :start (str "Started Matrix verification " (or (verification-id-from result) "")
+                " with " (verification-peer result) ".")
+    :accept (str "Accepted Matrix verification " (or (verification-id-from result) "") ".")
+    :start-sas (str "Started SAS for Matrix verification " (or (verification-id-from result) "") ".")
+    :confirm (str "Confirmed Matrix verification " (or (verification-id-from result) "") ".")
+    :no-match (str "Rejected Matrix verification " (or (verification-id-from result) "") " as not matching.")
+    :cancel (str "Cancelled Matrix verification " (or (verification-id-from result) "") ".")
+    :status (let [verifications (:verifications result)]
+              (if (seq verifications)
+                (str "Active Matrix verifications:\n"
+                     (str/join "\n" (map (fn [verification]
+                                           (str "- " (or (verification-id-from verification) "<unknown>")
+                                                " with " (verification-peer verification)))
+                                         verifications)))
+                "No active Matrix verifications."))))
+
+(defn- verification-event-message
+  [event]
+  (case (:type event)
+    "verification.requested"
+    (str "Matrix verification requested: " (or (verification-id-from event) "<unknown>")
+         " with " (verification-peer event)
+         ". Use /mr verify accept " (or (verification-id-from event) "<id>") " to continue.")
+
+    "verification.emoji"
+    (str "Matrix verification emoji for " (or (verification-id-from event) "<unknown>") ":\n"
+         (str/join "  " (map emoji-line (or (:emojis event)
+                                             (get-in event [:verification-state :sas-state :sas-emojis])
+                                             [])))
+         "\nIf they match, use /mr verify confirm " (or (verification-id-from event) "<id>")
+         "; otherwise use /mr verify no-match " (or (verification-id-from event) "<id>") ".")
+
+    "verification.done"
+    (str "Matrix verification completed: " (or (verification-id-from event) "<unknown>"))
+
+    "verification.cancelled"
+    (str "Matrix verification cancelled: " (or (verification-id-from event) "<unknown>")
+         (when-let [reason (:reason event)]
+           (str " (" reason ")")))
+
+    nil))
+
+(defn- handle-verification-event!
+  [ctx event]
+  (when-let [message (verification-event-message event)]
+    (notify! ctx message (if (#{"verification.cancelled"} (:type event)) "warning" "info"))))
+
+(defn- handle-verify-command!
+  [{:keys [verification-start! verification-accept! verification-start-sas!
+           verification-confirm! verification-no-match! verification-cancel!
+           verification-status!]} command ctx]
+  (let [op (:op command)
+        verification-id (:verification/id command)
+        action (case op
+                 :verify-start :start
+                 :verify-accept :accept
+                 :verify-start-sas :start-sas
+                 :verify-confirm :confirm
+                 :verify-no-match :no-match
+                 :verify-cancel :cancel
+                 :verify-status :status)
+        request (cond-> {:user/id (:user/id command)}
+                  (:device/id command) (assoc :device/id (:device/id command)))
+        call (case op
+               :verify-start #(verification-start! request)
+               :verify-accept #(verification-accept! verification-id)
+               :verify-start-sas #(verification-start-sas! verification-id)
+               :verify-confirm #(verification-confirm! verification-id)
+               :verify-no-match #(verification-no-match! verification-id)
+               :verify-cancel #(verification-cancel! verification-id)
+               :verify-status #(verification-status!))]
+    (-> (promise (call))
+        (.then (fn [result]
+                 (notify! ctx (verification-summary action result))
+                 result))
+        (.catch (fn [err]
+                  (notify-error! ctx (str "Matrix verification failed: " (or (.-message err) (str err))))
+                  nil)))))
+
 (defn handle-command!
   ([args ctx]
    (handle-command! default-deps args ctx))
@@ -2557,6 +2688,13 @@
        :room-prompt-mode (handle-room-prompt-mode! deps command ctx)
        :progress-verbosity (handle-progress-verbosity! deps command ctx)
        :send (handle-send! deps command ctx)
+       :verify-start (handle-verify-command! deps command ctx)
+       :verify-accept (handle-verify-command! deps command ctx)
+       :verify-start-sas (handle-verify-command! deps command ctx)
+       :verify-confirm (handle-verify-command! deps command ctx)
+       :verify-no-match (handle-verify-command! deps command ctx)
+       :verify-cancel (handle-verify-command! deps command ctx)
+       :verify-status (handle-verify-command! deps command ctx)
        :internal-new-session (handle-internal-new-session-command! deps (:request-id command) ctx)
        :error (do
                 (notify-error! ctx message)
