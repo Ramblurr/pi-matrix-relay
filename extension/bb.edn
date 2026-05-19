@@ -22,7 +22,7 @@
   install-local-extension {:depends [shadow-release]
                            :task (do
                                    (shell "mkdir -p ../.pi/extensions")
-                                   (doseq [file (fs/glob "../.pi/extensions" "pi-matrix-relay*")]
+                                   (doseq [file (fs/glob ".." ".pi/extensions/pi-matrix-relay*")]
                                      (if (fs/directory? file)
                                        (fs/delete-tree file)
                                        (fs/delete-if-exists file)))
