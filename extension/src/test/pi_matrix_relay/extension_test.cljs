@@ -175,11 +175,6 @@
                                             :timeout/ms 30000}
                                            opts)))
                                  @calls*))
-                       (is (some (fn [[kind room-id message _opts]]
-                                   (and (= :message kind)
-                                        (= "!slot:example.org" room-id)
-                                        (str/includes? message "Pi is working")))
-                                 @calls*))
                        (is (some #(= :interval (first %)) @calls*))
                        (reset! calls* [])
                        (call-handler! tool-start #js {:toolName "bash"

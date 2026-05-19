@@ -771,19 +771,6 @@
       (when-not (str/blank? summary)
         (str " " summary)))))
 
-(defn- send-slot-progress!
-  [{:keys [send-message! diagnostics*]} relay-state message]
-  (if (and send-message!
-           (progress-enabled? relay-state)
-           (:client-id relay-state)
-           (slot-room-id relay-state))
-    (-> (promise (send-message! (slot-room-id relay-state)
-                                message
-                                {:client/id (:client-id relay-state)}))
-        (.catch (fn [err]
-                  (record-diagnostic! diagnostics* :progress/send-error (or (.-message err) (str err)))
-                  nil)))
-    (js/Promise.resolve nil)))
 
 (defn- send-slot-status!
   [{:keys [send-message! diagnostics*]} relay-state message]
@@ -899,9 +886,7 @@
 (defn- handle-agent-start-progress!
   [deps relay-state* relay-state]
   (if (and relay-state (progress-enabled? relay-state))
-    (js/Promise.all
-     (clj->js [(start-slot-typing! deps relay-state* relay-state)
-               (send-slot-progress! deps relay-state "Pi is working…")]))
+    (start-slot-typing! deps relay-state* relay-state)
     (js/Promise.resolve nil)))
 
 (defn- handle-tool-start-progress!
