@@ -25,7 +25,8 @@
   (verification-confirm! [gateway verification-id])
   (verification-no-match! [gateway verification-id])
   (verification-cancel! [gateway verification-id])
-  (verification-status [gateway]))
+  (verification-status [gateway])
+  (verification-targets [gateway]))
 
 (defn ex
   [code message details]
@@ -86,7 +87,9 @@
   (verification-cancel! [_ verification-id]
     (unavailable :verification_unavailable "Matrix verification is not implemented yet." {:verification-id verification-id}))
   (verification-status [_]
-    {:verifications []}))
+    {:verifications []})
+  (verification-targets [_]
+    {:targets []}))
 
 (defn disabled-gateway
   ([] (disabled-gateway "missing Matrix credentials"))

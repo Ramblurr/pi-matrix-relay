@@ -1259,6 +1259,26 @@
                     (is false (.-stack err))
                     (done)))))))
 
+(defn- scripted-custom-ui
+  ([renders* notifications* inputs]
+   (scripted-custom-ui renders* notifications* inputs nil))
+  ([renders* notifications* inputs keybindings]
+   (let [idx* (atom 0)]
+     #js {:custom (fn [factory _opts]
+                    (js/Promise.
+                     (fn [resolve _reject]
+                       (let [^js component (factory #js {:requestRender (fn [])} nil keybindings resolve)
+                             lines (js->clj (.render component 120))
+                             idx @idx*
+                             input-script (nth inputs idx "\u001b")
+                             input-script (if (sequential? input-script) input-script [input-script])]
+                         (swap! idx* inc)
+                         (swap! renders* conj lines)
+                         (doseq [input input-script]
+                           (.handleInput component input))))))
+          :notify (fn [message level]
+                    (swap! notifications* conj [message level]))})))
+
 (deftest verify-command-delegates-to-broker-verification-actions
   (async done
     (let [calls* (atom [])
@@ -1317,6 +1337,342 @@
                            [:status]]
                           @calls*))
                    (is (some #(str/includes? (first %) "verification-1") @notifications*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest verify-command-without-arguments-starts-interactive-flow-from-joined-dm-targets
+  (async done
+    (let [calls* (atom [])
+          selections* (atom [])
+          notifications* (atom [])
+          deps {:verification-status! (fn []
+                                        (swap! calls* conj [:status])
+                                        (js/Promise.resolve {:verifications []}))
+                :verification-targets! (fn []
+                                        (swap! calls* conj [:targets])
+                                        (js/Promise.resolve {:targets [{:user/id "@ramblurr:example.org"
+                                                                       :room/id "!dm:example.org"}]}))
+                :verification-start! (fn [request]
+                                      (swap! calls* conj [:start request])
+                                      (js/Promise.resolve {:verification-id "verification-1"
+                                                           :their-user-id (:user/id request)}))}
+          ctx #js {:cwd "/work/project"
+                   :ui #js {:select (fn [title options]
+                                      (let [choices (js->clj options)]
+                                        (swap! selections* conj [title choices])
+                                        (js/Promise.resolve (first choices))))
+                            :notify (fn [message level]
+                                      (swap! notifications* conj [message level]))}}]
+      (-> (extension/handle-command! deps "verify" ctx)
+          (.then (fn [_]
+                   (is (= [[:status] [:targets] [:start {:user/id "@ramblurr:example.org"}]]
+                          @calls*))
+                   (is (= 2 (count @selections*)))
+                   (is (str/includes? (first (second (second @selections*)))
+                                      "@ramblurr:example.org"))
+                   (is (some #(str/includes? (first %) "Waiting for them to accept") @notifications*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest verify-center-selects-incoming-request-and-accepts-without-id
+  (async done
+    (let [calls* (atom [])
+          renders* (atom [])
+          notifications* (atom [])
+          incoming {:verification-id "verification-1"
+                    :their-user-id "@ramblurr:example.org"
+                    :verification-state {:kind :their-request}}
+          own {:verification-id "verification-2"
+               :their-user-id "@casey:example.org"
+               :verification-state {:kind :own-request}}
+          deps {:verification-status! (fn []
+                                        (swap! calls* conj [:status])
+                                        (js/Promise.resolve {:verifications [own incoming]}))
+                :verification-accept! (fn [verification-id]
+                                        (swap! calls* conj [:accept verification-id])
+                                        (js/Promise.resolve incoming))}
+          ctx #js {:cwd "/work/project"
+                   :ui (scripted-custom-ui renders* notifications* ["\r" "\u001b"])}]
+      (-> (extension/handle-command! deps "verify" ctx)
+          (.then (fn [_]
+                   (is (= [[:status] [:accept "verification-1"]]
+                          @calls*))
+                   (is (some #(str/includes? % "Incoming requests") (first @renders*)))
+                   (is (not (some #(str/includes? % "verification-1") (first @renders*))))
+                   (is (some #(str/includes? (first %) "Accepted Matrix verification request") @notifications*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest verify-center-shows-own-request-as-waiting-not-acceptable
+  (async done
+    (let [calls* (atom [])
+          renders* (atom [])
+          notifications* (atom [])
+          own {:verification-id "verification-2"
+               :their-user-id "@casey:example.org"
+               :verification-state {:kind :own-request}}
+          deps {:verification-status! (fn []
+                                        (swap! calls* conj [:status])
+                                        (js/Promise.resolve {:verifications [own]}))
+                :verification-accept! (fn [verification-id]
+                                        (swap! calls* conj [:accept verification-id])
+                                        (js/Promise.resolve own))}
+          ctx #js {:cwd "/work/project"
+                   :ui (scripted-custom-ui renders* notifications* [["\u001b[B" "\r"] "\u001b"])}]
+      (-> (extension/handle-command! deps "verify" ctx)
+          (.then (fn [_]
+                   (is (= [[:status]] @calls*))
+                   (is (some #(str/includes? % "Waiting for them to accept in Element")
+                             (second @renders*)))
+                   (is (empty? @notifications*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest verify-center-starts-new-verification-from-joined-dm-target
+  (async done
+    (let [calls* (atom [])
+          renders* (atom [])
+          notifications* (atom [])
+          deps {:verification-status! (fn []
+                                        (swap! calls* conj [:status])
+                                        (js/Promise.resolve {:verifications []}))
+                :verification-targets! (fn []
+                                        (swap! calls* conj [:targets])
+                                        (js/Promise.resolve {:targets [{:user/id "@ramblurr:example.org"
+                                                                       :room/id "!dm:example.org"}]}))
+                :verification-start! (fn [request]
+                                      (swap! calls* conj [:start request])
+                                      (js/Promise.resolve {:verification-id "verification-3"
+                                                           :their-user-id (:user/id request)
+                                                           :verification-state {:kind :own-request}}))}
+          ctx #js {:cwd "/work/project"
+                   :ui (scripted-custom-ui renders* notifications* ["\r" "\r" "\r" "\u001b"])}]
+      (-> (extension/handle-command! deps "verify" ctx)
+          (.then (fn [_]
+                   (is (= [[:status] [:targets] [:start {:user/id "@ramblurr:example.org"}]]
+                          @calls*))
+                   (is (some #(str/includes? % "@ramblurr:example.org") (second @renders*)))
+                   (is (not (some #(str/includes? % "@casey:example.org") (second @renders*))))
+                   (is (some #(str/includes? (first %) "Waiting for them to accept in Element") @notifications*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest verify-center-monitor-lets-user-accept-emoji-comparison
+  (async done
+    (let [calls* (atom [])
+          renders* (atom [])
+          notifications* (atom [])
+          own {:verification-id "verification-1"
+               :their-user-id "@ramblurr:example.org"
+               :verification-state {:kind :own-request}}
+          their-sas {:verification-id "verification-1"
+                     :their-user-id "@ramblurr:example.org"
+                     :verification-state {:kind :start
+                                          :sas-state {:kind :their-sas-start}}}
+          accepted {:verification-id "verification-1"
+                    :their-user-id "@ramblurr:example.org"
+                    :verification-state {:kind :start
+                                         :sas-state {:kind :comparison-by-user
+                                                     :sas-emojis [{:emoji "🐱"
+                                                                   :description "Cat"}]}}}
+          status-count* (atom 0)
+          enter (str (char 13))
+          esc (str (char 27))
+          deps {:verification-status! (fn []
+                                        (swap! calls* conj [:status])
+                                        (let [n (swap! status-count* inc)]
+                                          (js/Promise.resolve {:verifications (case n
+                                                                                1 []
+                                                                                2 [their-sas]
+                                                                                [accepted])})))
+                :verification-targets! (fn []
+                                        (swap! calls* conj [:targets])
+                                        (js/Promise.resolve {:targets [{:user/id "@ramblurr:example.org"
+                                                                       :room/id "!dm:example.org"}]}))
+                :verification-start! (fn [request]
+                                      (swap! calls* conj [:start request])
+                                      (js/Promise.resolve own))
+                :verification-accept! (fn [verification-id]
+                                        (swap! calls* conj [:accept verification-id])
+                                        (js/Promise.resolve accepted))}
+          ctx #js {:cwd "/work/project"
+                   :ui (scripted-custom-ui renders* notifications* [enter enter enter "r" esc]) }]
+      (-> (extension/handle-command! deps "verify" ctx)
+          (.then (fn [_]
+                   (is (= [[:status]
+                           [:targets]
+                           [:start {:user/id "@ramblurr:example.org"}]
+                           [:status]
+                           [:accept "verification-1"]
+                           [:status]]
+                          @calls*))
+                   (is (some #(str/includes? % "Waiting for them to accept in Element")
+                             (nth @renders* 3)))
+                   (is (some #(str/includes? % "Compare emojis with Element")
+                             (nth @renders* 4)))
+                   (is (some #(str/includes? (first %) "Accepted emoji comparison") @notifications*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest verify-center-monitor-auto-refresh-continues-to-emoji-screen
+  (async done
+    (let [calls* (atom [])
+          renders* (atom [])
+          notifications* (atom [])
+          own {:verification-id "verification-1"
+               :their-user-id "@ramblurr:example.org"
+               :verification-state {:kind :own-request}}
+          their-sas {:verification-id "verification-1"
+                     :their-user-id "@ramblurr:example.org"
+                     :verification-state {:kind :start
+                                          :sas-state {:kind :their-sas-start}}}
+          accepted {:verification-id "verification-1"
+                    :their-user-id "@ramblurr:example.org"
+                    :verification-state {:kind :start
+                                         :sas-state {:kind :comparison-by-user
+                                                     :sas-emojis [{:emoji "🐱"
+                                                                   :description "Cat"}]}}}
+          status-count* (atom 0)
+          enter (str (char 13))
+          esc (str (char 27))
+          deps {:verification-center-refresh-ms -1
+                :verification-monitor-refresh-ms 0
+                :verification-status! (fn []
+                                        (swap! calls* conj [:status])
+                                        (let [n (swap! status-count* inc)]
+                                          (js/Promise.resolve {:verifications (if (= n 1)
+                                                                                []
+                                                                                [their-sas])})))
+                :verification-targets! (fn []
+                                        (swap! calls* conj [:targets])
+                                        (js/Promise.resolve {:targets [{:user/id "@ramblurr:example.org"
+                                                                       :room/id "!dm:example.org"}]}))
+                :verification-start! (fn [request]
+                                      (swap! calls* conj [:start request])
+                                      (js/Promise.resolve own))
+                :verification-accept! (fn [verification-id]
+                                        (swap! calls* conj [:accept verification-id])
+                                        (js/Promise.resolve accepted))}
+          ctx #js {:cwd "/work/project"
+                   :ui (scripted-custom-ui renders* notifications* [enter enter enter [] esc])}]
+      (-> (extension/handle-command! deps "verify" ctx)
+          (.then (fn [_]
+                   (is (= [[:status]
+                           [:targets]
+                           [:start {:user/id "@ramblurr:example.org"}]
+                           [:status]
+                           [:accept "verification-1"]
+                           [:status]]
+                          @calls*))
+                   (is (some #(str/includes? % "Waiting for them to accept in Element")
+                             (nth @renders* 3)))
+                   (is (some #(str/includes? % "Compare emojis with Element")
+                             (nth @renders* 4)))
+                   (is (some #(str/includes? % "🐱 Cat")
+                             (nth @renders* 4)))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest verify-center-monitor-auto-refresh-closes-when-verification-disappears
+  (async done
+    (let [calls* (atom [])
+          renders* (atom [])
+          notifications* (atom [])
+          own {:verification-id "verification-1"
+               :their-user-id "@ramblurr:example.org"
+               :verification-state {:kind :own-request}}
+          enter (str (char 13))
+          deps {:verification-center-refresh-ms -1
+                :verification-monitor-refresh-ms 0
+                :verification-status! (fn []
+                                        (swap! calls* conj [:status])
+                                        (js/Promise.resolve {:verifications []}))
+                :verification-targets! (fn []
+                                        (swap! calls* conj [:targets])
+                                        (js/Promise.resolve {:targets [{:user/id "@ramblurr:example.org"
+                                                                       :room/id "!dm:example.org"}]}))
+                :verification-start! (fn [request]
+                                      (swap! calls* conj [:start request])
+                                      (js/Promise.resolve own))}
+          ctx #js {:cwd "/work/project"
+                   :ui (scripted-custom-ui renders* notifications* [enter enter enter [] (str (char 27))])}]
+      (-> (extension/handle-command! deps "verify" ctx)
+          (.then (fn [_]
+                   (is (= [[:status]
+                           [:targets]
+                           [:start {:user/id "@ramblurr:example.org"}]
+                           [:status]
+                           [:status]]
+                          @calls*))
+                   (is (some #(str/includes? % "Waiting for them to accept in Element")
+                             (nth @renders* 3)))
+                   (is (some #(str/includes? (first %) "is no longer active") @notifications*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest verify-center-custom-ui-uses-pi-keybindings
+  (async done
+    (let [calls* (atom [])
+          renders* (atom [])
+          notifications* (atom [])
+          keybindings #js {:matches (fn [data key-id]
+                                      (or (and (= data "CUSTOM_DOWN")
+                                               (= key-id "tui.select.down"))
+                                          (and (= data "CUSTOM_ESC")
+                                               (= key-id "tui.select.cancel"))))}
+          deps {:verification-status! (fn []
+                                        (swap! calls* conj [:status])
+                                        (js/Promise.resolve {:verifications []}))
+                :verification-bootstrap! (fn [request]
+                                           (swap! calls* conj [:bootstrap request])
+                                           (js/Promise.resolve {:kind "success"}))}
+          ctx #js {:cwd "/work/project"
+                   :ui (scripted-custom-ui renders* notifications* [["CUSTOM_DOWN" "\r"]] keybindings)}]
+      (-> (extension/handle-command! deps "verify" ctx)
+          (.then (fn [_]
+                   (is (= [[:status] [:bootstrap {}] [:status]] @calls*))
+                   (is (some #(str/includes? (first %) "Matrix cross-signing bootstrap") @notifications*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest verify-center-start-screen-escape-returns-to-center
+  (async done
+    (let [calls* (atom [])
+          renders* (atom [])
+          notifications* (atom [])
+          deps {:verification-status! (fn []
+                                        (swap! calls* conj [:status])
+                                        (js/Promise.resolve {:verifications []}))
+                :verification-targets! (fn []
+                                        (swap! calls* conj [:targets])
+                                        (js/Promise.resolve {:targets [{:user/id "@ramblurr:example.org"
+                                                                       :room/id "!dm:example.org"}]}))}
+          ctx #js {:cwd "/work/project"
+                   :ui (scripted-custom-ui renders* notifications* ["\r" "\u001b" "\u001b"])}]
+      (-> (extension/handle-command! deps "verify" ctx)
+          (.then (fn [_]
+                   (is (= [[:status] [:targets] [:status]] @calls*))
+                   (is (some #(str/includes? % "Start verification with:") (second @renders*)))
+                   (is (some #(str/includes? % "Matrix Verification") (nth @renders* 2)))
+                   (is (empty? @notifications*))
                    (done)))
           (.catch (fn [err]
                     (is false (.-stack err))
@@ -1620,6 +1976,67 @@
                    (is (str/includes? (:message (first @sent*)) "source: event-stream"))
                    (is (str/includes? (:message (first @sent*)) "socket hang up"))
                    (is (= {:deliverAs "followUp"} (:options (first @sent*))))
+                   (is (= [["Matrix relay event stream closed; reconnecting." "warning"]
+                           ["Matrix relay event stream reconnected." "info"]]
+                          @notifications*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
+(deftest connected-event-stream-close-without-error-reconnects-without-debug-context
+  (async done
+    (let [stream-opts* (atom [])
+          notifications* (atom [])
+          sent* (atom [])
+          relay-state* (atom nil)
+          stream-id* (atom 0)
+          deps {:relay-state* relay-state*
+                :event-stream-reconnect-ms 0
+                :read-project-config! (fn [_cwd] {})
+                :health! (fn [] (js/Promise.resolve {:matrix/connected? true
+                                                     :user/id "@bot:example.org"}))
+                :register-client! (fn [_request]
+                                    (js/Promise.resolve {:client/id "client-1"
+                                                         :heartbeat/seconds 30
+                                                         :matrix/global-operators []}))
+                :acquire-slot! (fn [_client-id _project _invite]
+                                 (js/Promise.resolve {:slot "A"
+                                                      :room/id "!slot:example.org"
+                                                      :room/name "project-A"}))
+                :update-subscriptions! (fn [_client-id _rooms]
+                                         (js/Promise.resolve {:rooms []}))
+                :send-message! (fn [_room-id _message _opts]
+                                (js/Promise.resolve {:event/id "$start:example.org"}))
+                :heartbeat! (fn [_client-id]
+                              (js/Promise.resolve {:heartbeat/seconds 30}))
+                :set-interval! (fn [_f _ms] :interval-1)
+                :set-timeout! (fn [f _ms]
+                                (f)
+                                :timeout-1)
+                :open-event-stream! (fn [opts _client-id _on-event]
+                                      (let [stream-id (swap! stream-id* inc)]
+                                        (swap! stream-opts* conj opts)
+                                        #js {:close (fn [])
+                                             :diagnostics (fn []
+                                                            (clj->js {:stream/id stream-id
+                                                                      :stream/connected? true
+                                                                      :stream/closed? false}))}))}
+          pi #js {:sendUserMessage (fn [message options]
+                                     (swap! sent* conj {:message message
+                                                        :options (some-> options (js->clj :keywordize-keys true))}))}
+          ctx #js {:cwd "/work/project"
+                   :ui #js {:notify (fn [message level]
+                                      (swap! notifications* conj [message level]))
+                            :setStatus (fn [_id _status])}}]
+      (-> (extension/start-relay! deps pi ctx)
+          (.then (fn [_]
+                   ((:on-close (first @stream-opts*)) {:stream/connected? true
+                                                       :stream/closed? true
+                                                       :stream/close-reason "response-close"})
+                   (when-let [on-open (:on-open (second @stream-opts*))]
+                     (on-open {:stream/connected? true}))
+                   (is (= [] @sent*))
                    (is (= [["Matrix relay event stream closed; reconnecting." "warning"]
                            ["Matrix relay event stream reconnected." "info"]]
                           @notifications*))
@@ -2055,7 +2472,8 @@
     (doseq [event [{:type "verification.requested"
                     :verification-id "verification-1"
                     :their-user-id "@alice:example.org"
-                    :their-device-id "DEVICE"}
+                    :their-device-id "DEVICE"
+                    :verification-state {:kind :their-request}}
                    {:type "verification.emoji"
                     :verification-id "verification-1"
                     :their-user-id "@alice:example.org"
@@ -2068,7 +2486,7 @@
                     :reason "m.user"}]]
       (extension/handle-broker-event! {} pi ctx relay-state event))
     (is (= 4 (count @notifications*)))
-    (is (str/includes? (ffirst @notifications*) "verification-1"))
+    (is (str/includes? (ffirst @notifications*) "Incoming Matrix verification from @alice:example.org"))
     (is (str/includes? (first (second @notifications*)) "🐱 cat"))
     (is (str/includes? (first (nth @notifications* 2)) "completed"))
     (is (str/includes? (first (nth @notifications* 3)) "cancelled"))))

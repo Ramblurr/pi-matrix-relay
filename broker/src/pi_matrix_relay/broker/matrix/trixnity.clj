@@ -12,7 +12,8 @@
             [ol.trixnity.verification :as verification]
             [pi-matrix-relay.broker.matrix :as matrix]
             [pi-matrix-relay.broker.store :as store])
-  (:import [java.time Duration Instant]))
+  (:import [de.connect2x.trixnity.core.model.events.m.room MemberEventContent]
+           [java.time Duration Instant]))
 
 (defn- require-nonblank
   [config k]
@@ -133,19 +134,27 @@
     (keyword (name k))
     k))
 
+(defn- raw-key?
+  [k]
+  (and (keyword? k)
+       (= "raw" (name k))))
+
 (defn- wire-data
   [value]
   (cond
     (or (map? value) (instance? java.util.Map value))
     (into {}
-          (map (fn [[k v]]
-                 [(unqualify-key k) (wire-data v)]))
+          (keep (fn [[k v]]
+                  (when-not (raw-key? k)
+                    [(unqualify-key k) (wire-data v)])))
           value)
 
     (or (set? value) (instance? java.util.Set value))
     (set (map wire-data value))
 
-    (sequential? value)
+    (or (sequential? value)
+        (and (instance? java.lang.Iterable value)
+             (not (string? value))))
     (mapv wire-data value)
 
     :else value))
@@ -157,6 +166,61 @@
 (defn- verification-task-result
   [task]
   (wire-data (m/? task)))
+
+(defn- joined-direct-room?
+  [room-snapshot]
+  (and (= "join" (some-> (::mx/membership room-snapshot) name))
+       (true? (::mx/is-direct room-snapshot))))
+
+(defn- member-content-value
+  [content k]
+  (cond
+    (map? content)
+    (case k
+      :membership (or (get content :membership) (::mx/membership content))
+      :display-name (or (get content :display-name) (::mx/display-name content))
+      (get content k))
+    (instance? MemberEventContent content)
+    (case k
+      :membership (some-> ^MemberEventContent content .getMembership .getValue)
+      :display-name (.getDisplayName ^MemberEventContent content)
+      nil)
+    :else nil))
+
+(defn- joined-member?
+  [content]
+  (= "join" (some-> (member-content-value content :membership) name)))
+
+(defn- member-display-name
+  [content]
+  (member-content-value content :display-name))
+
+(defn- joined-dm-verification-targets
+  [client bot-user-id]
+  (let [rooms (or (flow-value (room/get-all-flat client)) [])]
+    (->> rooms
+         (filter joined-direct-room?)
+         (mapcat (fn [room-snapshot]
+                   (let [room-id (::mx/room-id room-snapshot)
+                         member-flows (or (flow-value
+                                           (room/get-all-state client room-id MemberEventContent))
+                                          {})]
+                     (keep (fn [[user-id event-flow]]
+                             (let [state-event (flow-value event-flow)
+                                   content (::mx/content state-event)]
+                               (when (and (not= user-id bot-user-id)
+                                          (joined-member? content))
+                                 (cond-> {:user/id user-id
+                                          :room/id room-id
+                                          :room/direct? true}
+                                   (::mx/room-name room-snapshot)
+                                   (assoc :room/name (::mx/room-name room-snapshot))
+
+                                   (member-display-name content)
+                                   (assoc :user/display-name (member-display-name content))))))
+                           member-flows))))
+         (sort-by (juxt :user/id :room/id))
+         vec)))
 
 (defn- activate-room-verification-request!
   [client ev]
@@ -195,20 +259,27 @@
          (keep #(activate-room-verification-request! client %))
          vec)))
 
+(defn- kind-name
+  [value]
+  (cond
+    (keyword? value) (name value)
+    (string? value) value
+    (some? value) (str value)))
+
 (defn- verification-event-type
   [snapshot]
-  (let [state-kind (get-in snapshot [:verification-state :kind])
-        sas-kind (get-in snapshot [:verification-state :sas-state :kind])
+  (let [state-kind (kind-name (get-in snapshot [:verification-state :kind]))
+        sas-kind (kind-name (get-in snapshot [:verification-state :sas-state :kind]))
         sas-emojis (seq (get-in snapshot [:verification-state :sas-state :sas-emojis]))]
     (cond
       sas-emojis "verification.emoji"
-      (= :done state-kind) "verification.done"
-      (= :cancel state-kind) "verification.cancelled"
-      (or (= :their-request state-kind)
-          (= :own-request state-kind)
-          (= :ready state-kind)
-          (= :start state-kind)
-          (= :their-sas-start sas-kind))
+      (= "done" state-kind) "verification.done"
+      (= "cancel" state-kind) "verification.cancelled"
+      (or (= "their-request" state-kind)
+          (= "own-request" state-kind)
+          (= "ready" state-kind)
+          (= "start" state-kind)
+          (= "their-sas-start" sas-kind))
       "verification.requested")))
 
 (defn- verification-event-data
@@ -683,7 +754,10 @@
   (verification-cancel! [_ verification-id]
     (verification-task-result (verification/cancel! (:client @runtime*) verification-id nil)))
   (verification-status [_]
-    {:verifications (verification-snapshots (:client @runtime*))}))
+    {:verifications (verification-snapshots (:client @runtime*))})
+  (verification-targets [_]
+    {:targets (joined-dm-verification-targets (:client @runtime*)
+                                               (bot-user-id runtime* config))}))
 
 (defn gateway
   ([config paths]

@@ -43,7 +43,7 @@
         [action a b & more] parts]
     (cond
       (or (str/blank? verify-args) (str/blank? action))
-      (error "Usage: verify <bootstrap|start|accept|start-sas|confirm|no-match|cancel|status> ...")
+      {:op :verify-ui}
 
       (= "status" action)
       (if (or a (seq more))
@@ -106,8 +106,8 @@
       (if-let [[_ request-id] (re-matches #"__new-session\s+(\S+)" args)]
         {:op :internal-new-session
          :request-id request-id}
-        (if-let [[_ verify-args] (re-matches #"verify\s+([\s\S]+)" args)]
-          (parse-verify verify-args)
+        (if-let [[_ verify-args] (re-matches #"verify(?:\s+([\s\S]+))?" args)]
+          (parse-verify (or verify-args ""))
         (if-let [[_ bind-args] (re-matches #"room\s+bind\s+([\s\S]+)" args)]
           (parse-room-bind bind-args)
           (if-let [[_ target mode] (re-matches #"room\s+mode\s+(\S+)\s+(\S+)" args)]

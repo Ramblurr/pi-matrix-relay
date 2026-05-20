@@ -243,3 +243,9 @@
    (verification-status! {}))
   ([opts]
    (http/request-edn! opts "GET" "/v1/verification/status" nil)))
+
+(defn verification-targets!
+  ([]
+   (verification-targets! {}))
+  ([opts]
+   (http/request-edn! opts "GET" "/v1/verification/targets" nil)))

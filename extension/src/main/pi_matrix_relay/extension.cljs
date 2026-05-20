@@ -44,9 +44,12 @@
    :verification-no-match! broker-client/verification-no-match!
    :verification-cancel! broker-client/verification-cancel!
    :verification-status! broker-client/verification-status!
+   :verification-targets! broker-client/verification-targets!
    :set-interval! js/setInterval
    :clear-interval! js/clearInterval
    :set-timeout! js/setTimeout
+   :verification-center-refresh-ms 10000
+   :verification-monitor-refresh-ms 1000
    :read-project-config! config/read-project-config!
    :write-project-config! config/write-project-config!
    :run-setup! setup/run-setup!})
@@ -604,6 +607,10 @@
   [state]
   (js/Error. (or (get-in state [:error/last :message])
                  (str "Event stream closed: " (:stream/close-reason state)))))
+
+(defn- reportable-event-stream-close?
+  [state]
+  (some? (:error/last state)))
 
 (defn- js->clj-safe
   [value]
@@ -1898,7 +1905,8 @@
                                                (dissoc relay-state :stream)
                                                relay-state))))
                                   (when (:stream/connected? state)
-                                    (inject-extension-error-notice! deps pi @relay-state* {:source "event-stream"} (event-stream-close-error state))
+                                    (when (reportable-event-stream-close? state)
+                                      (inject-extension-error-notice! deps pi @relay-state* {:source "event-stream"} (event-stream-close-error state)))
                                     (notify! ctx "Matrix relay event stream closed; reconnecting." "warning"))
                                   (schedule-event-stream-reconnect! deps relay-state* client-id reopen!)))}
                    client-id
@@ -2331,9 +2339,10 @@
        "  room mode <target> <mode>          Set a bound prompt mode: all, mentions, commands-only.\n"
        "  progress <quiet|normal|verbose>  Configure slot-room typing/progress detail.\n"
        "  send <alias-or-room-id> <message>  Send a message to a bound room or raw room id.\n"
+       "  verify                            Open interactive Matrix verification center.\n"
        "  verify bootstrap                 Bootstrap bot cross-signing.\n"
-       "  verify start <user> [device]       Start Matrix verification.\n"
-       "  verify accept|start-sas|confirm|no-match|cancel <id>  Continue verification.\n"
+       "  verify start <user> [device]       Advanced: start Matrix verification by id.\n"
+       "  verify accept|start-sas|confirm|no-match|cancel <id>  Advanced: continue verification by id.\n"
        "  verify status                      Show active Matrix verifications.\n\n"
        "Examples:\n"
        "  /mr status\n"
@@ -2341,7 +2350,7 @@
        "  /mr room mode ops commands-only\n"
        "  /mr progress normal\n"
        "  /mr send ops hello from Pi\n"
-       "  /mr verify status"))
+       "  /mr verify"))
 
 (defn- handle-help!
   [ctx]
@@ -2620,7 +2629,7 @@
     :start (str "Started Matrix verification " (or (verification-id-from result) "")
                 " with " (verification-peer result) ".")
     :accept (str "Accepted Matrix verification " (or (verification-id-from result) "") ".")
-    :start-sas (str "Started SAS for Matrix verification " (or (verification-id-from result) "") ".")
+    :start-sas (str "Started emoji comparison for Matrix verification " (or (verification-id-from result) "") ".")
     :confirm (str "Confirmed Matrix verification " (or (verification-id-from result) "") ".")
     :no-match (str "Rejected Matrix verification " (or (verification-id-from result) "") " as not matching.")
     :cancel (str "Cancelled Matrix verification " (or (verification-id-from result) "") ".")
@@ -2637,23 +2646,33 @@
   [event]
   (case (:type event)
     "verification.requested"
-    (str "Matrix verification requested: " (or (verification-id-from event) "<unknown>")
-         " with " (verification-peer event)
-         ". Use /mr verify accept " (or (verification-id-from event) "<id>") " to continue.")
+    (let [kind (get-in event [:verification-state :kind])
+          kind-name (cond
+                      (keyword? kind) (name kind)
+                      (string? kind) kind
+                      (some? kind) (str kind))]
+      (if (= "their-request" kind-name)
+        (str "Incoming Matrix verification from " (verification-peer event)
+             "\n\nOpen /mr verify to respond.")
+        (str "Matrix verification update with " (verification-peer event)
+             ". Open /mr verify to continue.")))
 
     "verification.emoji"
-    (str "Matrix verification emoji for " (or (verification-id-from event) "<unknown>") ":\n"
+    (str "Matrix verification emoji comparison is ready for " (verification-peer event) ":\n"
          (str/join "  " (map emoji-line (or (:emojis event)
                                              (get-in event [:verification-state :sas-state :sas-emojis])
                                              [])))
-         "\nIf they match, use /mr verify confirm " (or (verification-id-from event) "<id>")
-         "; otherwise use /mr verify no-match " (or (verification-id-from event) "<id>") ".")
+         "\nOpen /mr verify to confirm whether they match.")
 
     "verification.done"
-    (str "Matrix verification completed: " (or (verification-id-from event) "<unknown>"))
+    (if (or (:their-user-id event) (:user-id event) (:user/id event))
+      (str "Matrix verification completed with " (verification-peer event) ".")
+      "Matrix verification completed.")
 
     "verification.cancelled"
-    (str "Matrix verification cancelled: " (or (verification-id-from event) "<unknown>")
+    (str "Matrix verification cancelled"
+         (when (or (:their-user-id event) (:user-id event) (:user/id event))
+           (str " with " (verification-peer event)))
          (when-let [reason (:reason event)]
            (str " (" reason ")")))
 
@@ -2663,6 +2682,837 @@
   [ctx event]
   (when-let [message (verification-event-message event)]
     (notify! ctx message (if (#{"verification.cancelled"} (:type event)) "warning" "info"))))
+
+(defn- state-name
+  [value]
+  (cond
+    (keyword? value) (name value)
+    (string? value) value
+    (some? value) (str value)
+    :else nil))
+
+(defn- verification-state-name
+  [verification]
+  (state-name (get-in verification [:verification-state :kind])))
+
+(defn- verification-comparison-state-name
+  [verification]
+  (state-name (get-in verification [:verification-state :sas-state :kind])))
+
+(defn- verification-emojis
+  [verification]
+  (or (:emojis verification)
+      (get-in verification [:verification-state :sas-state :sas-emojis])
+      []))
+
+(defn- emoji-comparison-ready?
+  [verification]
+  (or (seq (verification-emojis verification))
+      (= "comparison-by-user" (verification-state-name verification))
+      (= "comparison-by-user" (verification-comparison-state-name verification))))
+
+(defn- verification-cancel-reason
+  [verification]
+  (or (get-in verification [:verification-state :reason])
+      (get-in verification [:verification-state :cancel-code])
+      (:reason verification)))
+
+(defn- verification-phase
+  [verification]
+  (let [state (verification-state-name verification)
+        comparison-state (verification-comparison-state-name verification)]
+    (cond
+      (emoji-comparison-ready? verification)
+      "emoji ready"
+
+      (= "their-sas-start" comparison-state)
+      "ready to accept emoji comparison"
+
+      (= "their-request" state)
+      "incoming request"
+
+      (= "own-request" state)
+      "outgoing request — waiting for them"
+
+      (= "ready" state)
+      "ready to start emoji comparison"
+
+      (= "wait-for-done" state)
+      "waiting for Matrix to finish"
+
+      (= "done" state)
+      "completed"
+
+      (= "cancel" state)
+      (str "cancelled" (when-let [reason (verification-cancel-reason verification)]
+                          (str " — " reason)))
+
+      :else
+      (or state "unknown state"))))
+
+(defn- verification-monitor-state
+  [verification]
+  (let [state (verification-state-name verification)
+        comparison-state (verification-comparison-state-name verification)]
+    (cond
+      (emoji-comparison-ready? verification) "Emoji comparison is ready"
+      (= "their-sas-start" comparison-state) "Waiting for you to accept the emoji comparison"
+      (= "their-request" state) "Incoming request waiting for you to accept"
+      (= "own-request" state) "Waiting for them to accept in Element"
+      (= "ready" state) "Ready to start emoji comparison"
+      (= "wait-for-done" state) "Waiting for Matrix to finish"
+      (= "done" state) "Completed"
+      (= "cancel" state) (str "Cancelled" (when-let [reason (verification-cancel-reason verification)]
+                                           (str " — " reason)))
+      :else (or state "unknown state"))))
+
+(defn- verification-next-action-label
+  [verification]
+  (let [state (verification-state-name verification)
+        comparison-state (verification-comparison-state-name verification)]
+    (cond
+      (emoji-comparison-ready? verification) "Compare now"
+      (= "their-sas-start" comparison-state) "Accept"
+      (= "their-request" state) "Accept"
+      (= "own-request" state) "Waiting"
+      (= "ready" state) "Start emoji comparison"
+      (= "wait-for-done" state) "Wait"
+      (= "done" state) "Dismiss"
+      (= "cancel" state) "Dismiss"
+      :else "Open")))
+
+(defn- verification-continue-action-label
+  [verification]
+  (let [state (verification-state-name verification)
+        comparison-state (verification-comparison-state-name verification)]
+    (cond
+      (emoji-comparison-ready? verification) "compare"
+      (= "their-sas-start" comparison-state) "accept"
+      (= "their-request" state) "accept"
+      (= "ready" state) "start emoji comparison"
+      :else nil)))
+
+
+(defn- incoming-verification?
+  [verification]
+  (= "their-request" (verification-state-name verification)))
+
+(defn- recent-verification?
+  [verification]
+  (contains? #{"done" "cancel"} (verification-state-name verification)))
+
+(defn- active-verification?
+  [verification]
+  (and (not (incoming-verification? verification))
+       (not (recent-verification? verification))))
+
+(defn- target-label
+  [target]
+  (str (:user/id target)
+       (when-let [display-name (:user/display-name target)]
+         (str " (" display-name ")"))))
+
+(defn- target-detail
+  [target]
+  (str "joined DM " (:room/id target)))
+
+(defn- truncate-line
+  [line width]
+  (let [line (str line)
+        width (max 1 (or width 80))]
+    (if (<= (count line) width)
+      line
+      (str (subs line 0 (max 0 (dec width))) "…"))))
+
+(defn- pad-right
+  [value n]
+  (let [s (str value)]
+    (if (< (count s) n)
+      (str s (apply str (repeat (- n (count s)) " ")))
+      s)))
+
+(defn- ui-method
+  [^js ctx method-name]
+  (some-> ctx .-ui (aget method-name)))
+
+(defn- request-render!
+  [^js tui]
+  (when-let [request-render (some-> tui (aget "requestRender"))]
+    (.call request-render tui)))
+
+(defn- js-call-ui
+  [^js ctx method-name & args]
+  (when-let [ui (.-ui ctx)]
+    (when-let [method (aget ui method-name)]
+      (.apply method ui (into-array args)))))
+
+(defn- custom-ui?
+  [ctx]
+  (boolean (ui-method ctx "custom")))
+
+(defn- show-custom-screen!
+  [ctx component-factory]
+  (if (custom-ui? ctx)
+    (promise
+     (js-call-ui ctx
+                 "custom"
+                 (fn [tui _theme keybindings done]
+                   (component-factory tui keybindings done))
+                 #js {:overlay false}))
+    (promise nil)))
+
+(defn- keybinding-matches?
+  [keybindings data key-id]
+  (try
+    (boolean (and keybindings
+                  (.-matches keybindings)
+                  (.matches keybindings data key-id)))
+    (catch js/Error _
+      false)))
+
+(defn- regex-test?
+  [pattern data]
+  (boolean (and (string? data)
+                (.test (js/RegExp. pattern) data))))
+
+(defn- enter-key?
+  ([data]
+   (enter-key? nil data))
+  ([keybindings data]
+   (or (keybinding-matches? keybindings data "tui.select.confirm")
+       (= data "\r")
+       (= data "\n")
+       (= data "\u001bOM")
+       (regex-test? "^\\u001b\\[(13|57414)(;1)?u$" data))))
+
+(defn- arrow-key?
+  [keybindings data direction]
+  (let [legacy (case direction
+                 :up ["\u001b[A" "\u001bOA"]
+                 :down ["\u001b[B" "\u001bOB"]
+                 :left ["\u001b[D" "\u001bOD"]
+                 :right ["\u001b[C" "\u001bOC"])
+        suffix (case direction
+                 :up "A"
+                 :down "B"
+                 :right "C"
+                 :left "D")
+        binding-id (case direction
+                     :up "tui.select.up"
+                     :down "tui.select.down"
+                     :left "tui.editor.cursorLeft"
+                     :right "tui.editor.cursorRight")]
+    (or (keybinding-matches? keybindings data binding-id)
+        (contains? (set legacy) data)
+        (regex-test? (str "^\\u001b\\[1;\\d+(?::\\d+)?" suffix "$") data))))
+
+(defn- up-key?
+  ([data]
+   (up-key? nil data))
+  ([keybindings data]
+   (arrow-key? keybindings data :up)))
+
+(defn- down-key?
+  ([data]
+   (down-key? nil data))
+  ([keybindings data]
+   (arrow-key? keybindings data :down)))
+
+(defn- escape-key?
+  ([data]
+   (escape-key? nil data))
+  ([keybindings data]
+   (or (keybinding-matches? keybindings data "tui.select.cancel")
+       (= data "\u001b")
+       (= data "\u0003")
+       (regex-test? "^\\u001b\\[27(;1)?u$" data)
+       (regex-test? "^\\u001b\\[27;1;27~$" data))))
+
+(defn- menu-selectable-indexes
+  [entries]
+  (vec (keep-indexed (fn [idx entry]
+                       (when (= :item (:kind entry))
+                         idx))
+                     entries)))
+
+(defn- bounded-selection
+  [selected count direction]
+  (cond
+    (zero? count) 0
+    (= :up direction) (max 0 (dec selected))
+    (= :down direction) (min (dec count) (inc selected))
+    :else selected))
+
+(defn- selected-entry
+  [entries selected]
+  (let [indexes (menu-selectable-indexes entries)
+        entry-index (get indexes selected)]
+    (when (some? entry-index)
+      (get entries entry-index))))
+
+(defn- render-menu-entry
+  [entry selected?]
+  (case (:kind entry)
+    :header (str "  " (:label entry))
+    :note (str "    " (:label entry))
+    :item (let [prefix (if selected? "> " "  ")
+                label (or (:label entry) "")
+                detail (:detail entry)
+                action (:action-label entry)
+                left (str prefix label (when detail (str "   " detail)))]
+            (if action
+              (str (pad-right (truncate-line left 63) 63) " " action)
+              left))
+    ""))
+
+(defn- make-menu-component
+  [{:keys [title body entries footer selected-index key-actions escape-action auto-action auto-delay-ms]} tui keybindings done]
+  (let [entries (vec entries)
+        selectable-count (count (menu-selectable-indexes entries))
+        selected* (atom (min (or selected-index 0) (max 0 (dec selectable-count))))
+        timer* (atom nil)
+        close! (fn [result]
+                 (when-let [timer @timer*]
+                   (js/clearTimeout timer)
+                   (reset! timer* nil))
+                 (done result))
+        hotkey-action (fn [data]
+                        (some (fn [[k result]]
+                                (when (= data k)
+                                  (if (fn? result)
+                                    (result (selected-entry entries @selected*))
+                                    result)))
+                              key-actions))
+        component #js {:handleInput
+                       (fn [data]
+                         (cond
+                           (up-key? keybindings data)
+                           (do (swap! selected* bounded-selection selectable-count :up)
+                               (request-render! tui))
+
+                           (down-key? keybindings data)
+                           (do (swap! selected* bounded-selection selectable-count :down)
+                               (request-render! tui))
+
+                           (enter-key? keybindings data)
+                           (when-let [entry (selected-entry entries @selected*)]
+                             (close! (:result entry)))
+
+                           (escape-key? keybindings data)
+                           (close! {:action (or escape-action :close)})
+
+                           :else
+                           (when-let [result (hotkey-action data)]
+                             (close! result))))
+                       :render
+                       (fn [width]
+                         (let [selected @selected*
+                               selectable-indexes (menu-selectable-indexes entries)
+                               selected-entry-index (get selectable-indexes selected)
+                               lines (vec (concat [title ""]
+                                                  (when body [body ""])
+                                                  (map-indexed (fn [idx entry]
+                                                                 (render-menu-entry entry (= idx selected-entry-index)))
+                                                               entries)
+                                                  ["" footer]))]
+                           (clj->js (map #(truncate-line % width) lines))))
+                       :invalidate (fn [] nil)}]
+    (when (and auto-action (number? auto-delay-ms) (not (neg? auto-delay-ms)))
+      (reset! timer* (js/setTimeout #(close! auto-action) auto-delay-ms)))
+    component))
+
+(defn- make-info-component
+  [{:keys [lines key-actions auto-action auto-delay-ms]} _tui keybindings done]
+  (let [timer* (atom nil)
+        close! (fn [result]
+                 (when-let [timer @timer*]
+                   (js/clearTimeout timer)
+                   (reset! timer* nil))
+                 (done result))
+        component #js {:handleInput
+                       (fn [data]
+                         (cond
+                           (escape-key? keybindings data) (close! {:action :back})
+                           :else (when-let [result (some (fn [[k result]]
+                                                           (when (or (= data k)
+                                                                     (and (= k :enter) (enter-key? keybindings data)))
+                                                             result))
+                                                         key-actions)]
+                                   (close! result))))
+                       :render
+                       (fn [width]
+                         (clj->js (map #(truncate-line % width) lines)))
+                       :invalidate (fn [] nil)}]
+    (when (and auto-action (number? auto-delay-ms) (not (neg? auto-delay-ms)))
+      (reset! timer* (js/setTimeout #(close! auto-action) auto-delay-ms)))
+    component))
+
+(defn- select-option!
+  [^js ctx title options]
+  (if-let [select (ui-method ctx "select")]
+    (promise (.call select (.-ui ctx) title (clj->js options)))
+    (do
+      (notify-error! ctx "Interactive verification needs Pi TUI support.")
+      (promise nil))))
+
+(defn- input-option!
+  [^js ctx title placeholder]
+  (if-let [input (ui-method ctx "input")]
+    (promise (.call input (.-ui ctx) title placeholder))
+    (do
+      (notify-error! ctx "Typing a Matrix user id needs Pi TUI input support. Use /mr verify start <user> as advanced mode.")
+      (promise nil))))
+
+(defn- choose-item!
+  [ctx title items]
+  (let [indexed (map-indexed (fn [idx item]
+                               (assoc item :ui/label (str (inc idx) ". " (:label item))))
+                             items)
+        labels (mapv :ui/label indexed)
+        by-label (into {} (map (juxt :ui/label identity) indexed))]
+    (.then (select-option! ctx title labels)
+           (fn [label]
+             (get by-label label)))))
+
+(defn- center-entry
+  [verification]
+  {:kind :item
+   :label (verification-peer verification)
+   :detail (verification-phase verification)
+   :action-label (verification-next-action-label verification)
+   :result {:action :verification
+            :verification verification}})
+
+(defn- verification-center-entries
+  [verifications]
+  (let [incoming (filter incoming-verification? verifications)
+        active (filter active-verification? verifications)
+        recent (filter recent-verification? verifications)]
+    (vec (concat [{:kind :header :label "Recommended"}
+                  {:kind :item
+                   :label "Start a new verification"
+                   :action-label "Start"
+                   :result {:action :start-new}}]
+                 (when (seq incoming)
+                   (concat [{:kind :header :label "Incoming requests"}]
+                           (map (fn [verification]
+                                  {:kind :item
+                                   :label (str (verification-peer verification) " wants to verify with Pi")
+                                   :action-label "Accept"
+                                   :result {:action :verification
+                                            :verification verification}})
+                                incoming)))
+                 (when (seq active)
+                   (concat [{:kind :header :label "In progress"}]
+                           (map center-entry active)))
+                 (when (seq recent)
+                   (concat [{:kind :header :label "Recent"}]
+                           (map center-entry recent)))
+                 [{:kind :header :label "Keys"}
+                  {:kind :item
+                   :label "Bootstrap Pi cross-signing"
+                   :action-label "Bootstrap"
+                   :result {:action :bootstrap}}]))))
+
+(defn- preferred-center-selection
+  [entries]
+  (let [items (keep (fn [entry]
+                      (when (= :item (:kind entry)) entry))
+                    entries)
+        incoming-idx (first (keep-indexed (fn [idx entry]
+                                            (when (incoming-verification? (get-in entry [:result :verification]))
+                                              idx))
+                                          items))]
+    (or incoming-idx 0)))
+
+(defn- show-verification-center!
+  [ctx verifications refresh-ms]
+  (let [entries (verification-center-entries verifications)]
+    (show-custom-screen!
+     ctx
+     (fn [tui keybindings done]
+       (make-menu-component
+        {:title "Matrix Verification"
+         :entries entries
+         :selected-index (preferred-center-selection entries)
+         :footer "↑↓ select • Enter action • n new • r refresh • c cancel selected • Esc close"
+         :auto-action {:action :refresh}
+         :auto-delay-ms refresh-ms
+         :key-actions [["n" {:action :start-new}]
+                       ["r" {:action :refresh}]
+                       ["c" (fn [entry]
+                              (if-let [verification (get-in entry [:result :verification])]
+                                {:action :cancel-verification
+                                 :verification verification}
+                                {:action :close}))]]}
+        tui
+        keybindings
+        done)))))
+
+(defn- show-start-screen!
+  [ctx targets]
+  (let [target-entries (mapv (fn [target]
+                               {:kind :item
+                                :label (target-label target)
+                                :detail (target-detail target)
+                                :result {:action :target
+                                         :target target}})
+                             targets)
+        entries (vec (concat [{:kind :header :label "Joined DM users"}]
+                             (if (seq target-entries)
+                               target-entries
+                               [{:kind :note :label "No joined direct-message users yet."}])
+                             [{:kind :header :label "Other"}
+                              {:kind :item
+                               :label "Type Matrix user id..."
+                               :result {:action :typed-user}}
+                              {:kind :item
+                               :label "Verify specific device..."
+                               :result {:action :specific-device}}]))]
+    (show-custom-screen!
+     ctx
+     (fn [tui keybindings done]
+       (make-menu-component
+        {:title "Start verification with:"
+         :entries entries
+         :footer "↑↓ select • Enter choose • Esc back"
+         :escape-action :back}
+        tui
+        keybindings
+        done)))))
+
+(defn- show-start-confirmation!
+  [ctx request]
+  (let [peer (verification-peer request)]
+    (show-custom-screen!
+     ctx
+     (fn [tui keybindings done]
+       (make-info-component
+        {:lines ["Start verification"
+                 ""
+                 (str "Start verification with " peer "?")
+                 ""
+                 "This will send a Matrix verification request."
+                 "Element must accept it before Pi can continue."
+                 ""
+                 "Enter start • Esc back"]
+         :key-actions [[:enter {:action :start}]]}
+        tui
+        keybindings
+        done)))))
+
+(defn- show-monitor-screen!
+  [ctx verification refresh-ms]
+  (let [continue-label (verification-continue-action-label verification)
+        footer (if continue-label
+                 (str "Enter " continue-label " • r refresh • c cancel • Esc close")
+                 "r refresh • c cancel • Esc close")
+        key-actions (cond-> [["r" {:action :refresh}]
+                             ["c" {:action :cancel}]]
+                      continue-label
+                      (conj [:enter {:action :continue}]))]
+    (show-custom-screen!
+     ctx
+     (fn [tui keybindings done]
+       (make-info-component
+        {:lines [(str "Verifying " (verification-peer verification))
+                 ""
+                 (str "State: " (verification-monitor-state verification) ".")
+                 ""
+                 footer]
+         :key-actions key-actions
+         :auto-action {:action :refresh}
+         :auto-delay-ms refresh-ms}
+        tui
+        keybindings
+        done)))))
+
+(defn- show-emoji-screen!
+  [ctx verification]
+  (show-custom-screen!
+   ctx
+   (fn [tui keybindings done]
+     (make-info-component
+      {:lines (vec (concat ["Compare emojis with Element"
+                            ""]
+                           (map emoji-line (verification-emojis verification))
+                           [""
+                            "Do they match?"
+                            ""
+                            "Enter yes, confirm • n no, reject • c cancel • Esc back"]))
+       :key-actions [[:enter {:action :confirm}]
+                     ["n" {:action :no-match}]
+                     ["c" {:action :cancel}]]}
+      tui
+      keybindings
+      done))))
+
+(defn- notify-verification-result!
+  [ctx verb result]
+  (notify! ctx (str verb " Matrix verification with " (verification-peer result) ".")))
+
+(defn- find-verification
+  [verifications verification]
+  (let [verification-id (verification-id-from verification)]
+    (some #(when (= verification-id (verification-id-from %)) %) verifications)))
+
+(defn- fallback-start-ui!
+  [{:keys [verification-targets!]} ctx after-start!]
+  (.then (promise (verification-targets!))
+         (fn [{:keys [targets]}]
+           (let [targets (vec targets)]
+             (if (seq targets)
+               (.then (choose-item! ctx
+                                    "Start Matrix verification with which joined direct-message user?"
+                                    (mapv (fn [target]
+                                            {:label (str (target-label target) " — " (target-detail target))
+                                             :target target})
+                                          targets))
+                      (fn [choice]
+                        (when-let [target (:target choice)]
+                          (after-start! {:user/id (:user/id target)}))))
+               (do
+                 (notify! ctx "No joined direct-message users are available to verify. Open or join a DM with the user first, then run /mr verify." "warning")
+                 (promise nil)))))))
+
+(declare open-verification-center!)
+
+(defn- start-verification-request!
+  [{:keys [verification-start!]} ctx request]
+  (.then (promise (verification-start! request))
+         (fn [result]
+           (notify! ctx (str "Started Matrix verification with " (verification-peer result)
+                              ". Waiting for them to accept in Element."))
+           result)))
+
+(defn- confirm-and-start-verification!
+  [_deps ctx request after-start! after-back!]
+  (if (custom-ui? ctx)
+    (.then (show-start-confirmation! ctx request)
+           (fn [choice]
+             (case (:action choice)
+               :start (after-start! request)
+               :back (after-back!)
+               (promise nil))))
+    (after-start! request)))
+
+(defn- handle-start-choice!
+  [deps ctx choice after-start! after-back! after-confirm-back!]
+  (case (:action choice)
+    :target (confirm-and-start-verification! deps ctx
+                                             {:user/id (get-in choice [:target :user/id])}
+                                             after-start!
+                                             after-confirm-back!)
+    :typed-user (.then (input-option! ctx "Matrix user id" "@user:example.org")
+                       (fn [user-id]
+                         (when (seq (str/trim (str user-id)))
+                           (confirm-and-start-verification! deps ctx
+                                                            {:user/id (str/trim (str user-id))}
+                                                            after-start!
+                                                            after-confirm-back!))))
+    :specific-device (.then (input-option! ctx "Matrix user id" "@user:example.org")
+                            (fn [user-id]
+                              (when (seq (str/trim (str user-id)))
+                                (.then (input-option! ctx "Device id" "DEVICEID")
+                                       (fn [device-id]
+                                         (when (seq (str/trim (str device-id)))
+                                           (confirm-and-start-verification! deps ctx
+                                                                            {:user/id (str/trim (str user-id))
+                                                                             :device/id (str/trim (str device-id))}
+                                                                            after-start!
+                                                                            after-confirm-back!)))))))
+    :back (after-back!)
+    (promise nil)))
+
+(defn- handle-verify-start-ui!
+  [{:keys [verification-targets!] :as deps} ctx after-start! after-back!]
+  (if (custom-ui? ctx)
+    (letfn [(open-start! []
+              (.then (promise (verification-targets!))
+                     (fn [{:keys [targets]}]
+                       (.then (show-start-screen! ctx (vec targets))
+                              (fn [choice]
+                                (handle-start-choice! deps ctx choice after-start! after-back! open-start!))))))]
+      (open-start!))
+    (fallback-start-ui! deps ctx after-start!)))
+
+(declare handle-selected-verification!)
+
+(defn- handle-monitor!
+  [{:keys [verification-status! verification-cancel! verification-monitor-refresh-ms] :as deps} ctx verification after-close!]
+  (.then (show-monitor-screen! ctx verification verification-monitor-refresh-ms)
+         (fn [choice]
+           (case (:action choice)
+             :refresh
+             (.then (promise (verification-status!))
+                    (fn [{:keys [verifications]}]
+                      (if-let [updated (find-verification verifications verification)]
+                        (if (or (emoji-comparison-ready? updated)
+                                (verification-continue-action-label updated))
+                          (handle-selected-verification! deps ctx updated after-close!)
+                          (handle-monitor! deps ctx updated after-close!))
+                        (do
+                          (notify! ctx
+                                   (str "Matrix verification with " (verification-peer verification)
+                                        " is no longer active. Open /mr verify to start again if needed.")
+                                   "warning")
+                          (after-close!)))))
+
+             :continue
+             (handle-selected-verification! deps ctx verification after-close!)
+
+             :cancel
+             (.then (promise (verification-cancel! (verification-id-from verification)))
+                    (fn [result]
+                      (notify-verification-result! ctx "Cancelled" result)
+                      (after-close!)))
+
+             :back (promise nil)
+             :close (promise nil)
+             (promise nil)))))
+
+(defn- handle-emoji-choice!
+  [{:keys [verification-confirm! verification-no-match! verification-cancel!]} ctx verification choice after-close!]
+  (case (:action choice)
+    :confirm (.then (promise (verification-confirm! (verification-id-from verification)))
+                    (fn [result]
+                      (notify-verification-result! ctx "Confirmed" result)
+                      (after-close!)))
+    :no-match (.then (promise (verification-no-match! (verification-id-from verification)))
+                     (fn [result]
+                       (notify! ctx (str "Rejected Matrix verification with " (verification-peer result) " as not matching."))
+                       (after-close!)))
+    :cancel (.then (promise (verification-cancel! (verification-id-from verification)))
+                   (fn [result]
+                     (notify-verification-result! ctx "Cancelled" result)
+                     (after-close!)))
+    :back (after-close!)
+    :close (promise nil)
+    (promise nil)))
+
+(defn- handle-selected-verification!
+  [{:keys [verification-accept! verification-start-sas!] :as deps} ctx verification after-close!]
+  (let [verification-id (verification-id-from verification)
+        state (verification-state-name verification)
+        comparison-state (verification-comparison-state-name verification)]
+    (cond
+      (emoji-comparison-ready? verification)
+      (.then (show-emoji-screen! ctx verification)
+             (fn [choice]
+               (handle-emoji-choice! deps ctx verification choice after-close!)))
+
+      (= "their-sas-start" comparison-state)
+      (.then (promise (verification-accept! verification-id))
+             (fn [result]
+               (notify! ctx (str "Accepted emoji comparison for Matrix verification with " (verification-peer result) "."))
+               (if (emoji-comparison-ready? result)
+                 (.then (show-emoji-screen! ctx result)
+                        (fn [choice]
+                          (handle-emoji-choice! deps ctx result choice after-close!)))
+                 (handle-monitor! deps ctx result after-close!))))
+
+      (= "their-request" state)
+      (.then (promise (verification-accept! verification-id))
+             (fn [result]
+               (notify! ctx (str "Accepted Matrix verification request from " (verification-peer result) "."))
+               (handle-monitor! deps ctx result after-close!)))
+
+      (= "ready" state)
+      (.then (promise (verification-start-sas! verification-id))
+             (fn [result]
+               (notify! ctx (str "Started emoji comparison with " (verification-peer result) "."))
+               (handle-monitor! deps ctx result after-close!)))
+
+      (= "own-request" state)
+      (handle-monitor! deps ctx verification after-close!)
+
+      (= "wait-for-done" state)
+      (do
+        (notify! ctx (str "Waiting for Matrix to finish verification with " (verification-peer verification) "."))
+        (after-close!))
+
+      (= "done" state)
+      (do
+        (notify! ctx (str "Matrix verification with " (verification-peer verification) " is complete."))
+        (after-close!))
+
+      (= "cancel" state)
+      (do
+        (notify! ctx (str "Matrix verification with " (verification-peer verification) " is cancelled."
+                          (when-let [reason (verification-cancel-reason verification)]
+                            (str " " reason)))
+                 "warning")
+        (after-close!))
+
+      :else
+      (do
+        (notify! ctx (str "No automatic action for Matrix verification state " (or state "unknown") ".") "warning")
+        (after-close!)))))
+
+(defn- handle-center-choice!
+  [{:keys [verification-bootstrap! verification-cancel!] :as deps} ctx choice refresh!]
+  (case (:action choice)
+    :close (promise nil)
+    :refresh (refresh!)
+    :start-new (handle-verify-start-ui! deps ctx
+                                        (fn [request]
+                                          (.then (start-verification-request! deps ctx request)
+                                                 (fn [result]
+                                                   (if (custom-ui? ctx)
+                                                     (handle-monitor! deps ctx result refresh!)
+                                                     result))))
+                                        refresh!)
+    :bootstrap (.then (promise (verification-bootstrap! {}))
+                      (fn [result]
+                        (notify! ctx (verification-summary :bootstrap result))
+                        (refresh!)))
+    :verification (handle-selected-verification! deps ctx (:verification choice) refresh!)
+    :cancel-verification (.then (promise (verification-cancel! (verification-id-from (:verification choice))))
+                                (fn [result]
+                                  (notify-verification-result! ctx "Cancelled" result)
+                                  (refresh!)))
+    (promise nil)))
+
+(defn- fallback-verify-ui!
+  [{:keys [verification-status!] :as deps} ctx]
+  (.then (promise (verification-status!))
+         (fn [{:keys [verifications]}]
+           (let [verifications (vec verifications)
+                 verification-items (map (fn [verification]
+                                           {:label (str (verification-peer verification)
+                                                        " — "
+                                                        (verification-phase verification))
+                                            :action :verification
+                                            :verification verification})
+                                         verifications)
+                 items (vec (concat [{:label "Start a new verification"
+                                      :action :start-new}]
+                                    verification-items
+                                    [{:label "Bootstrap Pi cross-signing"
+                                      :action :bootstrap}]))]
+             (.then (choose-item! ctx "Matrix verification" items)
+                    (fn [choice]
+                      (handle-center-choice! deps ctx choice
+                                             (fn [] (fallback-verify-ui! deps ctx)))))))))
+
+(defn- open-verification-center!
+  [{:keys [verification-status! verification-center-refresh-ms] :as deps} ctx]
+  (letfn [(refresh! []
+            (.then (promise (verification-status!))
+                   (fn [{:keys [verifications]}]
+                     (.then (show-verification-center! ctx (vec verifications) verification-center-refresh-ms)
+                            (fn [choice]
+                              (handle-center-choice! deps ctx choice refresh!))))))]
+    (if (custom-ui? ctx)
+      (refresh!)
+      (fallback-verify-ui! deps ctx))))
+
+(defn- handle-verify-ui!
+  [deps ctx]
+  (.catch (promise (open-verification-center! deps ctx))
+          (fn [err]
+            (notify-error! ctx (str "Matrix verification failed: " (or (.-message err) (str err))))
+            nil)))
 
 (defn- handle-verify-command!
   [{:keys [verification-bootstrap! verification-start! verification-accept! verification-start-sas!
@@ -2712,6 +3562,7 @@
        :room-prompt-mode (handle-room-prompt-mode! deps command ctx)
        :progress-verbosity (handle-progress-verbosity! deps command ctx)
        :send (handle-send! deps command ctx)
+       :verify-ui (handle-verify-ui! deps ctx)
        :verify-bootstrap (handle-verify-command! deps command ctx)
        :verify-start (handle-verify-command! deps command ctx)
        :verify-accept (handle-verify-command! deps command ctx)

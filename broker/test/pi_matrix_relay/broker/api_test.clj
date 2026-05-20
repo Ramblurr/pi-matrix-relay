@@ -204,7 +204,8 @@
               confirm (tu/edn-request app :post "/v1/verification/verification-1/confirm" {})
               no-match (tu/edn-request app :post "/v1/verification/verification-1/no-match" {})
               cancel (tu/edn-request app :post "/v1/verification/verification-1/cancel" {})
-              status (tu/edn-request app :get "/v1/verification/status" nil)]
+              status (tu/edn-request app :get "/v1/verification/status" nil)
+              targets (tu/edn-request app :get "/v1/verification/targets" nil)]
           (is (= {:start {:ok true :data {:verification-id "verification-1"}}
                   :bootstrap {:ok true :data {:kind "success"
                                                :recovery-key "RECOVERY"
@@ -215,6 +216,8 @@
                   :no-match {:ok true :data {:verification-id "verification-1"}}
                   :cancel {:ok true :data {:verification-id "verification-1"}}
                   :status {:ok true :data {:verifications [{:verification-id "verification-1"}]}}
+                  :targets {:ok true :data {:targets [{:user/id "@alice:example.org"
+                                                       :room/id "!alice:example.org"}]}}
                   :calls [[:verification-start {:request/id "verification-start-1"
                                                 :user/id "@alice:example.org"
                                                 :device/id "ALICEDEVICE"}]
@@ -232,6 +235,7 @@
                   :no-match no-match
                   :cancel cancel
                   :status status
+                  :targets targets
                   :calls (tu/calls gateway)})))))))
 
 (deftest verification-events-without-rooms-broadcast-to-subscribed-clients

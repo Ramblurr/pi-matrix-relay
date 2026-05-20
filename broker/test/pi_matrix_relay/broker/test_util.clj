@@ -99,7 +99,10 @@
     (swap! calls* conj [:verification-cancel verification-id])
     {:verification-id verification-id})
   (verification-status [_]
-    {:verifications [{:verification-id "verification-1"}]}))
+    {:verifications [{:verification-id "verification-1"}]})
+  (verification-targets [_]
+    {:targets [{:user/id "@alice:example.org"
+                :room/id "!alice:example.org"}]}))
 
 (defn fake-gateway
   ([]

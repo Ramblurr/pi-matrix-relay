@@ -507,6 +507,11 @@
   (fn [_]
     (response/ok-response (matrix/verification-status matrix-gateway))))
 
+(defn verification-targets-handler
+  [{:keys [matrix-gateway]}]
+  (fn [_]
+    (response/ok-response (matrix/verification-targets matrix-gateway))))
+
 (defn routes
   [env]
   [["/v1"
@@ -542,7 +547,8 @@
     ["/verification/:verification-id/confirm" {:post (verification-confirm-handler env)}]
     ["/verification/:verification-id/no-match" {:post (verification-no-match-handler env)}]
     ["/verification/:verification-id/cancel" {:post (verification-cancel-handler env)}]
-    ["/verification/status" {:get (verification-status-handler env)}]]])
+    ["/verification/status" {:get (verification-status-handler env)}]
+    ["/verification/targets" {:get (verification-targets-handler env)}]]])
 
 (defn app
   [env]

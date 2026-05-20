@@ -46,6 +46,8 @@
             :verbosity "verbose"}
            (commands/parse "progress verbose"))))
   (testing "verification commands parse bootstrap and active verification actions"
+    (is (= {:op :verify-ui}
+           (commands/parse "verify")))
     (is (= {:op :verify-bootstrap}
            (commands/parse "verify bootstrap")))
     (is (= {:op :verify-start

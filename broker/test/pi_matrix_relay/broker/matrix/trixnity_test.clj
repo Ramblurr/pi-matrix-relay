@@ -341,6 +341,70 @@
               [:activate-recent :client "!dm:example.org"]]
              @calls*)))))
 
+(deftest verification-wire-data-drops-raw-trixnity-objects
+  (let [snapshot {::mx/verification-id "verification-1"
+                  ::mx/verification-kind :user
+                  ::mx/raw (Object.)
+                  ::mx/verification-state {::mx/kind :start
+                                           ::mx/raw (Object.)
+                                           ::mx/sas-state {::mx/kind :comparison-by-user
+                                                           ::mx/raw (Object.)
+                                                           ::mx/sas-emojis [{::mx/emoji "⚓"
+                                                                             ::mx/description "Anchor"
+                                                                             ::mx/raw (Object.)}]}}}
+        result (#'sut/wire-data snapshot)]
+    (is (= {:verification-id "verification-1"
+            :verification-kind :user
+            :verification-state {:kind :start
+                                 :sas-state {:kind :comparison-by-user
+                                             :sas-emojis [{:emoji "⚓"
+                                                           :description "Anchor"}]}}}
+           result))
+    (is (not (.contains (pr-str result) "#object")))))
+
+(deftest verification-events-accept-string-and-keyword-state-kinds
+  (is (= {:event "verification.requested"
+          :data {:verification-id "verification-1"
+                 :verification-state {:kind "their-request"}
+                 :type "verification.requested"}}
+         (#'sut/verification-event {:verification-id "verification-1"
+                                     :verification-state {:kind "their-request"}})))
+  (is (= {:event "verification.done"
+          :data {:verification-id "verification-1"
+                 :verification-state {:kind :done}
+                 :type "verification.done"
+                 :verified true}}
+         (#'sut/verification-event {:verification-id "verification-1"
+                                     :verification-state {:kind :done}}))))
+
+(deftest verification-targets-include-only-joined-users-from-joined-direct-rooms
+  (let [rooms [{::mx/room-id "!dm:example.org"
+                ::mx/membership "join"
+                ::mx/is-direct true}
+               {::mx/room-id "!invited:example.org"
+                ::mx/membership "invite"
+                ::mx/is-direct true}
+               {::mx/room-id "!project:example.org"
+                ::mx/membership "join"
+                ::mx/is-direct false}]
+        dm-members {"@bot:example.org" (m/seed [{::mx/state-key "@bot:example.org"
+                                                  ::mx/content {:membership "join"}}])
+                    "@alice:example.org" (m/seed [{::mx/state-key "@alice:example.org"
+                                                    ::mx/content {:membership "join"
+                                                                  :display-name "Alice"}}])
+                    "@casey:example.org" (m/seed [{::mx/state-key "@casey:example.org"
+                                                    ::mx/content {:membership "invite"}}])}]
+    (with-redefs [room/get-all-flat (fn [_client]
+                                      (m/seed [rooms]))
+                  room/get-all-state (fn [_client room-id _event-content-class]
+                                       (m/seed [(case room-id
+                                                  "!dm:example.org" dm-members
+                                                  {})]))]
+      (is (= [{:user/id "@alice:example.org"
+               :user/display-name "Alice"
+               :room/id "!dm:example.org"
+               :room/direct? true}]
+             (#'sut/joined-dm-verification-targets :client "@bot:example.org"))))))
 
 (deftest verification-actions-use-public-trixnity-verification-api
   (let [gateway (sut/gateway (gateway-config nil) {})

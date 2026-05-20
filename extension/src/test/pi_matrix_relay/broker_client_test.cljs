@@ -122,7 +122,8 @@
                        (broker-client/verification-confirm! opts "verification/1")
                        (broker-client/verification-no-match! opts "verification/1")
                        (broker-client/verification-cancel! opts "verification/1")
-                       (broker-client/verification-status! opts)]))
+                       (broker-client/verification-status! opts)
+                       (broker-client/verification-targets! opts)]))
             (.then (fn [_]
                      (is (= [["POST" "/v1/verification/start"
                               {:user/id "@alice:example.org"
@@ -133,7 +134,8 @@
                              ["POST" "/v1/verification/verification%2F1/confirm" {}]
                              ["POST" "/v1/verification/verification%2F1/no-match" {}]
                              ["POST" "/v1/verification/verification%2F1/cancel" {}]
-                             ["GET" "/v1/verification/status" nil]]
+                             ["GET" "/v1/verification/status" nil]
+                             ["GET" "/v1/verification/targets" nil]]
                             (mapv (fn [[_opts method uri body]] [method uri body]) @calls*)))
                      (done)))
             (.catch (fn [err]
