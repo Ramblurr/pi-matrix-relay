@@ -4,7 +4,7 @@
          http-kit/http-kit                 {:mvn/version "2.8.1"}
          metosin/reitit-ring               {:mvn/version "0.10.1"}
          ring/ring-core                    {:mvn/version "1.15.2"}
-         com.cnuernber/charred             {:mvn/version "1.037"}
+         com.cnuernber/charred             {:mvn/version "1.041"}
          missionary/missionary             {:mvn/version "b.47"}
          org.replikativ/datahike           {:mvn/version "0.8.1686"
                                             :exclusions  [org.clojure/clojurescript]}
