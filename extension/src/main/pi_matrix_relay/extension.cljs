@@ -13,8 +13,6 @@
 
 (def matrix-message-custom-type "matrix-relay")
 
-(def node-path (js/require "path"))
-
 (def default-deps
   {:health! broker-client/health!
    :register-client! broker-client/register-client!
@@ -57,10 +55,6 @@
 (defn- promise
   [value]
   (js/Promise.resolve value))
-
-(defn- bundled-skills-path
-  []
-  (.join node-path js/__dirname "skills"))
 
 (defn- ctx-cwd
   [^js ctx]
@@ -1687,8 +1681,10 @@
                  (authorized-sender? relay-state (:event/sender reaction))
                  (reaction-allowed-by-mode? binding))
         (let [prompt (matrix-reaction-prompt (:project-config relay-state) binding event)
-              custom-message (matrix-custom-message binding event prompt "reaction")]
-          (deliver-matrix-message! pi ctx relay-state room-id custom-message))))
+              custom-message (matrix-custom-message binding event prompt "reaction")
+              delivered? (deliver-matrix-message! pi ctx relay-state room-id custom-message)]
+          (when delivered?
+            (record-pending-auto-reply! relay-state binding room-id (:event/reacts-to-id reaction))))))
 
     "broker.notice"
     (notify! ctx (:message event) (or (:level event) "info"))
@@ -2267,20 +2263,31 @@
 (defn execute-matrix-relay-control!
   [deps params pi ctx]
   (let [{:keys [relay-state* diagnostics*]} deps
-        action (or (:action params) "status")]
+        action (or (:action params) "status")
+        relay-state (some-> relay-state* deref)
+        explicit-user-command? (true? (:explicit-user-command? params))
+        connect-rejected (fn []
+                           (js/Promise.reject
+                            (js/Error. "Matrix relay is disconnected. Use /mr connect to opt in.")))]
     (case action
       "status"
       (control-diagnostics deps ctx)
 
       "start"
-      (if (and relay-state* @relay-state*)
+      (cond
+        relay-state
         (control-diagnostics deps ctx)
+
+        (not explicit-user-command?)
+        (connect-rejected)
+
+        :else
         (-> (start-relay! deps pi ctx)
-            (.then (fn [relay-state]
+            (.then (fn [started-relay-state]
                      (when relay-state*
-                       (reset! relay-state* relay-state))
-                     (record-diagnostic! diagnostics* :control-started {:client/id (:client-id relay-state)})
-                     relay-state))
+                       (reset! relay-state* started-relay-state))
+                     (record-diagnostic! diagnostics* :control-started {:client/id (:client-id started-relay-state)})
+                     started-relay-state))
             (.then (fn [_]
                      (control-diagnostics deps ctx)))
             (.catch (fn [err]
@@ -2288,7 +2295,7 @@
                       (js/Promise.reject err)))))
 
       "stop"
-      (if-let [relay-state (and relay-state* @relay-state*)]
+      (if relay-state
         (-> (stop-relay! deps ctx relay-state)
             (.then (fn [_]
                      (when relay-state*
@@ -2300,27 +2307,29 @@
         (control-diagnostics deps ctx))
 
       "restart"
-      (let [stop-promise (if-let [relay-state (and relay-state* @relay-state*)]
-                           (-> (stop-relay! deps ctx relay-state)
-                               (.then (fn [_]
-                                        (when relay-state*
-                                          (reset! relay-state* nil))
-                                        (record-diagnostic! diagnostics* :control-stopped)
-                                        nil)))
-                           (promise nil))]
-        (-> stop-promise
-            (.then (fn [_]
-                     (start-relay! deps pi ctx)))
-            (.then (fn [relay-state]
-                     (when relay-state*
-                       (reset! relay-state* relay-state))
-                     (record-diagnostic! diagnostics* :control-started {:client/id (:client-id relay-state)})
-                     relay-state))
-            (.then (fn [_]
-                     (control-diagnostics deps ctx)))
-            (.catch (fn [err]
-                      (record-diagnostic! diagnostics* :control-restart-error (error-summary err))
-                      (js/Promise.reject err)))))
+      (if (or relay-state explicit-user-command?)
+        (let [stop-promise (if relay-state
+                             (-> (stop-relay! deps ctx relay-state)
+                                 (.then (fn [_]
+                                          (when relay-state*
+                                            (reset! relay-state* nil))
+                                          (record-diagnostic! diagnostics* :control-stopped)
+                                          nil)))
+                             (promise nil))]
+          (-> stop-promise
+              (.then (fn [_]
+                       (start-relay! deps pi ctx)))
+              (.then (fn [started-relay-state]
+                       (when relay-state*
+                         (reset! relay-state* started-relay-state))
+                       (record-diagnostic! diagnostics* :control-started {:client/id (:client-id started-relay-state)})
+                       started-relay-state))
+              (.then (fn [_]
+                       (control-diagnostics deps ctx)))
+              (.catch (fn [err]
+                        (record-diagnostic! diagnostics* :control-restart-error (error-summary err))
+                        (js/Promise.reject err)))))
+        (connect-rejected))
 
       (js/Promise.reject (js/Error. (str "Unknown matrix relay control action: " action))))))
 
@@ -2455,7 +2464,8 @@
 (defn- handle-control!
   [deps action ctx]
   (-> (execute-matrix-relay-control! deps
-                                     {:action (tui-control-action action)}
+                                     {:action (tui-control-action action)
+                                      :explicit-user-command? true}
                                      (or (:pi deps) #js {})
                                      ctx)
       (.then (fn [result]
@@ -3768,17 +3778,18 @@
        :additionalProperties false
        :required #js ["action"]
        :properties #js {:action #js {:type "string"
-                                     :enum #js ["status" "start" "stop" "restart"]
-                                     :description "Relay lifecycle action for this Pi process."}}})
+                                     :enum #js ["status" "stop" "restart"]
+                                     :description "Lifecycle action for an already connected relay in this Pi process."}}})
 
 (defn register-control-tool!
   [^js pi deps]
   (.registerTool pi
                  #js {:name "matrix_relay_control"
                       :label "Matrix Relay Control"
-                      :description "Start, stop, restart, or inspect this Pi process' Matrix relay without using slash commands."
-                      :promptSnippet "Use matrix_relay_control when the relay needs to be started or restarted for this Pi session during debugging."
-                      :promptGuidelines #js ["Use status or matrix_relay_diagnostics before mutating relay state."
+                      :description "Inspect, stop, or restart an already connected Matrix relay in this Pi process."
+                      :promptSnippet "Use matrix_relay_control to inspect or troubleshoot an already connected relay."
+                      :promptGuidelines #js ["This tool cannot opt in a disconnected session; ask the user to run /mr connect."
+                                             "Use status or matrix_relay_diagnostics before mutating relay state."
                                              "Use restart only when the current relay state is stale or failed and the user is debugging the relay."]
                       :parameters matrix-relay-control-parameters
                       :execute (fn [_tool-call-id params _signal _on-update ctx]
@@ -3829,23 +3840,9 @@
      (register-diagnostics-tool! pi deps)
      (register-control-tool! pi deps)
      (when-let [on (.-on pi)]
-       (on "resources_discover"
-           (fn [_event _ctx]
-             #js {:skillPaths #js [(bundled-skills-path)]}))
        (on "session_start"
-           (fn [event ctx]
-             (let [reason (:reason (js->clj-safe event))]
-               (activate-relay-tools! pi)
-               (-> (start-relay! deps pi ctx)
-                   (.then (fn [relay-state]
-                            (reset! relay-state* relay-state)
-                            (if (= "reload" reason)
-                              (-> (send-slot-status! deps relay-state reload-completed-message)
-                                  (.then (fn [_] relay-state)))
-                              relay-state)))
-                   (.catch (fn [err]
-                             (record-diagnostic! diagnostics* :start-error (error-summary err))
-                             (notify! ctx (str "Matrix relay receive disabled: " (.-message err)) "warning"))))))
+           (fn [_event _ctx]
+             (activate-relay-tools! pi)))
        (on "agent_start"
            (fn [_event _ctx]
              (when-let [relay-state @relay-state*]
@@ -3895,4 +3892,4 @@
                    (.then (fn [_]
                             (stop-relay! deps ctx relay-state)))
                    (.finally (fn []
-                               (reset! relay-state* nil))))))))))))
+                               (reset! relay-state* nil)))))))))))

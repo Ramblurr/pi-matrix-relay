@@ -5,14 +5,18 @@
             [pi-matrix-relay.extension :as extension]))
 
 (defn- pi-with-events
-  [events*]
-  #js {:registerCommand (fn [_name _opts])
-       :registerTool (fn [_tool])
-       :getActiveTools (fn []
-                         #js [])
-       :setActiveTools (fn [_tools])
-       :on (fn [event handler]
-             (swap! events* assoc event handler))})
+  ([events*]
+   (pi-with-events events* nil))
+  ([events* commands*]
+   #js {:registerCommand (fn [name opts]
+                           (when commands*
+                             (swap! commands* assoc name opts)))
+        :registerTool (fn [_tool])
+        :getActiveTools (fn []
+                          #js [])
+        :setActiveTools (fn [_tools])
+        :on (fn [event handler]
+              (swap! events* assoc event handler))}))
 
 (defn- progress-test-deps
   [project-config calls*]
@@ -64,6 +68,17 @@
 (defn- call-handler!
   [handler event ctx]
   (js/Promise.resolve (handler event ctx)))
+
+(defn- call-command!
+  [commands* command args ctx]
+  (call-handler! (.-handler ^js (get @commands* command)) args ctx))
+
+(defn- connected-session-start-handler
+  [events* commands*]
+  (fn [event ctx]
+    (-> (call-handler! (get @events* "session_start") event ctx)
+        (.then (fn [_]
+                 (call-command! commands* "mr" "connect" ctx))))))
 
 (defn- message-call?
   [[kind]]
@@ -189,42 +204,63 @@
     (is (fn? (.-execute ^js (get @tools* "matrix_relay_diagnostics"))))
     (is (fn? (.-execute ^js (get @tools* "matrix_relay_control"))))))
 
-(deftest activates-relay-tools-after-session-start
-  (let [events* (atom {})
-        active-tools* (atom ["read" "bash"])
-        deps (assoc extension/default-deps
-                    :start-relay! (fn [_deps _pi _ctx]
-                                    (js/Promise.resolve nil)))
-        pi #js {:registerCommand (fn [_name _opts])
-                :registerTool (fn [_tool])
-                :getActiveTools (fn []
-                                  (clj->js @active-tools*))
-                :setActiveTools (fn [tools]
-                                  (reset! active-tools* (js->clj tools)))
-                :on (fn [event handler]
-                      (swap! events* assoc event handler))}]
-    (extension/init pi deps)
-    (is (= ["read" "bash"] @active-tools*))
-    ((get @events* "session_start") #js {} #js {})
-    (is (every? (set @active-tools*) extension/relay-tool-names))
-    (is (contains? (set @active-tools*) "read"))))
+(deftest package-manifest-remains-sole-skill-discovery-source
+  (let [events* (atom {})]
+    (extension/init (pi-with-events events*))
+    (is (nil? (get @events* "resources_discover"))
+        "runtime discovery must not resolve skills relative to the dist bundle")))
+
+(deftest session-start-activates-tools-without-connecting
+  (async done
+    (let [events* (atom {})
+          active-tools* (atom ["read" "bash"])
+          connection-attempts* (atom 0)
+          statuses* (atom [])
+          deps (assoc extension/default-deps
+                      :health! (fn []
+                                 (swap! connection-attempts* inc)
+                                 (js/Promise.reject (js/Error. "unexpected startup connection"))))
+          pi #js {:registerCommand (fn [_name _opts])
+                  :registerTool (fn [_tool])
+                  :getActiveTools (fn []
+                                    (clj->js @active-tools*))
+                  :setActiveTools (fn [tools]
+                                    (reset! active-tools* (js->clj tools)))
+                  :on (fn [event handler]
+                        (swap! events* assoc event handler))}
+          ctx #js {:ui #js {:notify (fn [_message _level])
+                             :setStatus (fn [key status]
+                                          (swap! statuses* conj [key status]))}}]
+      (extension/init pi deps)
+      (is (= ["read" "bash"] @active-tools*))
+      (-> (call-handler! (get @events* "session_start") #js {:reason "startup"} ctx)
+          (.then (fn [_]
+                   (is (every? (set @active-tools*) extension/relay-tool-names))
+                   (is (contains? (set @active-tools*) "read"))
+                   (is (= 0 @connection-attempts*))
+                   (is (= [] @statuses*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
 
 
 (deftest slot-progress-events-send-typing-and-tool-labels-to-slot-room-only
   (async done
     (let [events* (atom {})
+          commands* (atom {})
           calls* (atom [])
           project-config {:project {:project/id "project"}
                           :rooms {"ops" {:alias "ops"
                                            :room/id "!project:example.org"
                                            :mode "all"}}}
-          pi (pi-with-events events*)
+          pi (pi-with-events events* commands*)
           ctx #js {:cwd "/work/project"
                    :ui #js {:setStatus (fn [_key _status])
                             :notify (fn [_message _level])}}
           deps (progress-test-deps project-config calls*)]
       (extension/init pi deps)
-      (let [session-start (get @events* "session_start")
+      (let [session-start (connected-session-start-handler events* commands*)
             agent-start (get @events* "agent_start")
             tool-start (get @events* "tool_execution_start")
             agent-end (get @events* "agent_end")]
@@ -289,15 +325,16 @@
 (deftest turn-end-clears-slot-typing-even-before-agent-end
   (async done
     (let [events* (atom {})
+          commands* (atom {})
           calls* (atom [])
           project-config {:project {:project/id "project"}}
-          pi (pi-with-events events*)
+          pi (pi-with-events events* commands*)
           ctx #js {:cwd "/work/project"
                    :ui #js {:setStatus (fn [_key _status])
                             :notify (fn [_message _level])}}
           deps (progress-test-deps project-config calls*)]
       (extension/init pi deps)
-      (let [session-start (get @events* "session_start")
+      (let [session-start (connected-session-start-handler events* commands*)
             agent-start (get @events* "agent_start")
             turn-end (get @events* "turn_end")]
         (is (fn? turn-end))
@@ -328,16 +365,17 @@
 (deftest quiet-progress-verbosity-disables-automatic-progress-and-typing-start
   (async done
     (let [events* (atom {})
+          commands* (atom {})
           calls* (atom [])
           project-config {:project {:project/id "project"}
                           :progress {:verbosity "quiet"}}
-          pi (pi-with-events events*)
+          pi (pi-with-events events* commands*)
           ctx #js {:cwd "/work/project"
                    :ui #js {:setStatus (fn [_key _status])
                             :notify (fn [_message _level])}}
           deps (progress-test-deps project-config calls*)]
       (extension/init pi deps)
-      (let [session-start (get @events* "session_start")
+      (let [session-start (connected-session-start-handler events* commands*)
             agent-start (get @events* "agent_start")
             tool-start (get @events* "tool_execution_start")]
         (is (fn? agent-start))
@@ -365,10 +403,11 @@
 (deftest tool-message-send-failure-records-diagnostic-without-crashing
   (async done
     (let [events* (atom {})
+          commands* (atom {})
           calls* (atom [])
           ;; init owns the diagnostics atom; this test verifies the rejected send path settles instead of crashing Pi.
           project-config {:project {:project/id "project"}}
-          pi (pi-with-events events*)
+          pi (pi-with-events events* commands*)
           ctx #js {:cwd "/work/project"
                    :ui #js {:setStatus (fn [_key _status])
                             :notify (fn [_message _level])}}
@@ -376,7 +415,7 @@
                       :send-message! (fn [_room-id _message _opts]
                                       (js/Promise.reject (js/Error. "send failed"))))]
       (extension/init pi deps)
-      (let [session-start (get @events* "session_start")
+      (let [session-start (connected-session-start-handler events* commands*)
             tool-start (get @events* "tool_execution_start")]
         (if-not (and session-start tool-start)
           (done)
@@ -397,9 +436,10 @@
 (deftest room-tool-message-preference-off-disables-tool-labels-but-not-typing
   (async done
     (let [events* (atom {})
+          commands* (atom {})
           calls* (atom [])
           project-config {:project {:project/id "project"}}
-          pi (pi-with-events events*)
+          pi (pi-with-events events* commands*)
           ctx #js {:cwd "/work/project"
                    :ui #js {:setStatus (fn [_key _status])
                             :notify (fn [_message _level])}}
@@ -410,7 +450,7 @@
                                              :room/tool-messages-enabled? false
                                              :room/tool-message-batch-ms 60000})))]
       (extension/init pi deps)
-      (let [session-start (get @events* "session_start")
+      (let [session-start (connected-session-start-handler events* commands*)
             agent-start (get @events* "agent_start")
             tool-start (get @events* "tool_execution_start")]
         (if-not (and session-start agent-start tool-start)
@@ -435,13 +475,14 @@
                         (is false (.-stack err))
                         (done)))))))))
 
-(deftest reload-events-send-direct-status-messages-to-slot-room
+(deftest reload-disconnects-and-session-start-stays-opt-in
   (async done
     (let [events* (atom {})
+          commands* (atom {})
           calls* (atom [])
           project-config {:project {:project/id "project"}
                           :progress {:verbosity "quiet"}}
-          pi (pi-with-events events*)
+          pi (pi-with-events events* commands*)
           ctx #js {:cwd "/work/project"
                    :ui #js {:setStatus (fn [_key _status])
                             :notify (fn [_message _level])}}
@@ -460,6 +501,8 @@
           (done)
           (-> (call-handler! session-start #js {:reason "startup"} ctx)
               (.then (fn [_]
+                       (call-command! commands* "mr" "connect" ctx)))
+              (.then (fn [_]
                        (reset! calls* [])
                        (call-handler! session-shutdown #js {:reason "reload"} ctx)))
               (.then (fn [_]
@@ -473,13 +516,7 @@
                        (reset! calls* [])
                        (call-handler! session-start #js {:reason "reload"} ctx)))
               (.then (fn [_]
-                       (let [messages (filter message-call? @calls*)]
-                         (is (some (fn [[_kind room-id message opts]]
-                                     (and (= "!slot:example.org" room-id)
-                                          (str/includes? message "Reload complete")
-                                          (= {:client/id "client-1"} opts)))
-                                   messages))
-                         (is (not-any? #(= :timeout (first %)) @calls*)))
+                       (is (= [] @calls*))
                        (done)))
               (.catch (fn [err]
                         (is false (.-stack err))
@@ -488,10 +525,11 @@
 (deftest compaction-events-send-direct-status-messages-to-slot-room
   (async done
     (let [events* (atom {})
+          commands* (atom {})
           calls* (atom [])
           project-config {:project {:project/id "project"}
                           :progress {:verbosity "quiet"}}
-          pi (pi-with-events events*)
+          pi (pi-with-events events* commands*)
           ctx #js {:cwd "/work/project"
                    :ui #js {:setStatus (fn [_key _status])
                             :notify (fn [_message _level])}}
@@ -502,7 +540,7 @@
                                              :room/tool-messages-enabled? false
                                              :room/tool-message-batch-ms 60000})))]
       (extension/init pi deps)
-      (let [session-start (get @events* "session_start")
+      (let [session-start (connected-session-start-handler events* commands*)
             session-before-compact (get @events* "session_before_compact")
             session-compact (get @events* "session_compact")]
         (is (fn? session-start))
@@ -941,6 +979,42 @@
                     (is false (.-stack err))
                     (done)))))))
 
+(deftest matrix-relay-control-agent-tool-cannot-opt-in-disconnected-session
+  (async done
+    (let [connection-attempts* (atom 0)
+          relay-state* (atom nil)
+          deps {:relay-state* relay-state*
+                :diagnostics* (atom {})
+                :read-project-config! (fn [_cwd] {})
+                :register-client! (fn [_request]
+                                    (swap! connection-attempts* inc)
+                                    (js/Promise.reject (js/Error. "unexpected connection attempt")))}
+          ctx #js {:cwd "/work/project"}
+          pi #js {}
+          capture-rejection (fn [result]
+                              (.then result
+                                     (fn [_] nil)
+                                     identity))]
+      (is (= ["status" "stop" "restart"]
+             (get-in (js->clj extension/matrix-relay-control-parameters :keywordize-keys true)
+                     [:properties :action :enum])))
+      (-> (js/Promise.all
+           #js [(capture-rejection
+                 (extension/execute-matrix-relay-control! deps {:action "start"} pi ctx))
+                (capture-rejection
+                 (extension/execute-matrix-relay-control! deps {:action "restart"} pi ctx))])
+          (.then (fn [errors]
+                   (doseq [err (array-seq errors)]
+                     (is (instance? js/Error err))
+                     (when err
+                       (is (str/includes? (.-message err) "/mr connect"))))
+                   (is (= 0 @connection-attempts*))
+                   (is (nil? @relay-state*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
+
 (deftest matrix-relay-control-restarts-relay-from-agent-tool
   (async done
     (let [calls* (atom [])
@@ -1007,6 +1081,7 @@
   (async done
     (let [calls* (atom [])
           notifications* (atom [])
+          statuses* (atom [])
           start-count* (atom 0)
           relay-state* (atom nil)
           next-client-id (fn []
@@ -1065,10 +1140,13 @@
           ctx #js {:cwd "/work/project"
                    :ui #js {:notify (fn [message level]
                                       (swap! notifications* conj [message level]))
-                            :setStatus (fn [_id _status])}}]
+                            :setStatus (fn [id status]
+                                         (swap! statuses* conj [id status]))}}]
       (-> (extension/handle-command! deps "connect" ctx)
           (.then (fn [_]
                    (is (= "client-1" (:client-id @relay-state*)))
+                   (is (= ["pi-matrix-relay" "[m]: slot A"]
+                          (last @statuses*)))
                    (is (str/includes? (ffirst @notifications*)
                                       "extension: running slot A project-A"))
                    (extension/handle-command! deps "reconnect" ctx)))
@@ -1085,6 +1163,8 @@
                    (is (some #{[:release-slot "client-2" "!slot-b:example.org" "B"]} @calls*))
                    (is (some #{[:unregister-client "client-2" "shutdown"]} @calls*))
                    (is (nil? @relay-state*))
+                   (is (= ["pi-matrix-relay" nil]
+                          (last @statuses*)))
                    (is (str/includes? (first (last @notifications*))
                                       "extension: not running"))
                    (done)))
@@ -2539,6 +2619,53 @@
     (is (= [{:room-id "!slot:example.org"
              :event-id "$slot-event:example.org"}]
            @pending*))))
+
+(deftest slot-room-reaction-sends-assistant-response-as-automatic-reply
+  (async done
+    (let [injected* (atom [])
+          sent* (atom [])
+          pending* (atom [])
+          pi (pi-capturing-pi-messages injected*)
+          ctx #js {:cwd "/work/project"
+                   :isIdle (fn [] true)}
+          deps {:send-message! (fn [room-id message opts]
+                                 (swap! sent* conj {:room-id room-id
+                                                    :message message
+                                                    :opts opts})
+                                 (js/Promise.resolve {:event/id "$reply:example.org"}))}
+          relay-state {:project-config {}
+                       :global-operators #{"@alice:example.org"}
+                       :bot-user-id "@bot:example.org"
+                       :client-id "client-1"
+                       :slot "A"
+                       :room-id "!slot:example.org"
+                       :room-name "project-A"
+                       :pending-auto-replies* pending*}
+          reaction {:type "matrix.reaction"
+                    :room/id "!slot:example.org"
+                    :event/id "$reaction:example.org"
+                    :event/sender "@alice:example.org"
+                    :event/timestamp "2026-05-16T12:34:56Z"
+                    :event/reacts-to-id "$message:example.org"
+                    :reaction/key "👍"}
+          agent-end {:messages [{:role "assistant"
+                                 :stopReason "stop"
+                                 :content [{:type "text"
+                                            :text "Thanks for the reaction!"}]}]}]
+      (extension/handle-broker-event! deps pi ctx relay-state reaction)
+      (-> (extension/handle-agent-end! deps relay-state agent-end)
+          (.then (fn [_]
+                   (is (= [{:room-id "!slot:example.org"
+                            :message "Thanks for the reaction!"
+                            :opts {:client/id "client-1"
+                                   :reply-to/event-id "$message:example.org"
+                                   :formatted-body "<p>Thanks for the reaction!</p>"}}]
+                          @sent*))
+                   (is (= [] @pending*))
+                   (done)))
+          (.catch (fn [err]
+                    (is false (.-stack err))
+                    (done)))))))
 
 (deftest project-room-message-does-not-record-auto-reply-target
   (let [sent* (atom [])
