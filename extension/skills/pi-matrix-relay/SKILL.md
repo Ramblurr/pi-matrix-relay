@@ -53,11 +53,11 @@ Use a text Matrix message instead of a reaction when the operator needs details,
 
 Use one format mode consistently for each `send_matrix_message` call:
 
-- `text/markdown` renders Markdown to Matrix HTML. Use Markdown syntax only; do not embed raw HTML tags such as `<code>`, `<p>`, `<br>`, or `<table>` inside Markdown messages.
+- `text/markdown` renders Markdown to Matrix HTML. Use Markdown syntax only; do not embed raw HTML tags such as `<strong>`, `<code>`, `<p>`, `<br>`, or `<table>` inside Markdown messages.
 - `text/plain` sends literal text. Prefer it for terse Matrix replies, verification emoji, status notes, and anything that does not need Markdown formatting.
 - `text/html` is only for fully pre-rendered Matrix-safe HTML.
 
-Do not mix Markdown and HTML in one Matrix message. For inline code in Markdown, use backticks, not raw `<code>` tags.
+Unlike normal markdown, in matrix messages you cannot mix HTML and markdown, no matter how simple. This means you must use backticks for code and asterisks for bolding etc. 
 
 ## Etiquette
 
