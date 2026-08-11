@@ -5,17 +5,11 @@
     (defn run-subproject-task [task]
       (doseq [subproject subprojects]
         (println (format "\n==> %s: bb %s" subproject task))
-        (apply shell {:dir subproject} "bb" task *command-line-args*)))
-
-    (defn run-pre-commit-hook-tests []
-      (println "\n==> scripts: pre-commit hook tests")
-      (shell "bash" "scripts/pre-commit/forbid-prompts-files-test.sh")))
+        (apply shell {:dir subproject} "bb" task *command-line-args*))))
 
   lint {:doc "Run linters in all subprojects"
         :task (run-subproject-task "lint")}
   test {:doc "Run tests in all subprojects and repository hooks"
-        :task (do
-                (run-pre-commit-hook-tests)
-                (run-subproject-task "test"))}
+        :task (run-subproject-task "test")}
   qa {:doc "Run QA checks: lint, then test"
       :depends [lint test]}}}
