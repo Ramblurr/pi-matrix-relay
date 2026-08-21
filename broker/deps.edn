@@ -7,7 +7,7 @@
          ring/ring-core                    {:mvn/version "1.15.2"}
          com.cnuernber/charred             {:mvn/version "1.037"}
          missionary/missionary             {:mvn/version "b.47"}
-         org.replikativ/datahike           {:mvn/version "0.8.1686"
+         org.replikativ/datahike           {:mvn/version "0.8.1784"
                                             :exclusions  [org.clojure/clojurescript]}
          com.outskirtslabs/dirs            {:mvn/version "0.1.0"}
          com.outskirtslabs/datahike-sqlite {:git/url    "https://github.com/outskirtslabs/datahike-sqlite.git"
