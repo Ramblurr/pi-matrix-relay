@@ -1,6 +1,6 @@
 {:paths ["src" "resources"]
  :deps  {org.clojure/clojure               {:mvn/version "1.12.4"}
-         party.donut/system                {:mvn/version "1.0.258"}
+         party.donut/system                {:mvn/version "1.0.259"}
          http-kit/http-kit                 {:mvn/version "2.9.0-beta3"}
          metosin/muuntaja                  {:mvn/version "0.6.11"}
          metosin/reitit-ring               {:mvn/version "0.10.1"}
