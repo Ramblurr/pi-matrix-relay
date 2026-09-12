@@ -4,7 +4,7 @@
          http-kit/http-kit                 {:mvn/version "2.9.0-beta3"}
          metosin/muuntaja                  {:mvn/version "0.6.11"}
          metosin/reitit-ring               {:mvn/version "0.10.1"}
-         ring/ring-core                    {:mvn/version "1.15.2"}
+         ring/ring-core                    {:mvn/version "1.15.5"}
          com.cnuernber/charred             {:mvn/version "1.037"}
          missionary/missionary             {:mvn/version "b.47"}
          org.replikativ/datahike           {:mvn/version "0.8.1686"
